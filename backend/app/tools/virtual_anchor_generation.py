@@ -263,6 +263,93 @@ def build_comfyui_extra_data(raw_workflow: Dict[str, Any], cloudberry_mode: bool
         return False
 
 
+def extract_comfyui_execution_error(history_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract a structured execution error from a ComfyUI history entry."""
+    status = history_item.get("status")
+    if not isinstance(status, dict):
+        return None
+
+    messages = status.get("messages") or []
+    for message in messages:
+        if not isinstance(message, list) or len(message) < 2:
+            continue
+        message_type, payload = message[0], message[1]
+        if message_type != "execution_error" or not isinstance(payload, dict):
+            continue
+
+        error_message = str(
+            payload.get("exception_message")
+            or payload.get("message")
+            or payload.get("exception_type")
+            or "ComfyUI execution error"
+        )
+        result = {
+            "message": error_message,
+            "node_id": payload.get("node_id"),
+            "class_type": payload.get("node_type") or payload.get("class_type"),
+        }
+        if "Resource not found" in error_message and "ms.sc4.ai" in error_message:
+            result["reason"] = "cloud_model_resource_not_found"
+            result["suggestion"] = (
+                "Cloudberry/BizyAir cloud model mirror cannot resolve this workflow model. "
+                "Use a model file that exists in the cloud mirror, or upload/sync the model "
+                "to the cloud resource repository used by the provider."
+            )
+        elif (
+            "No such file or directory" in error_message
+            and ("/temp/outputs/" in error_message or "/output/outputs/" in error_message)
+        ):
+            result["reason"] = "cloudberry_local_output_missing"
+            result["suggestion"] = (
+                "Cloudberry could not write a localized output file. Ensure the local ComfyUI "
+                "output/outputs and temp/outputs directories exist, and keep the final video "
+                "combine node saving to the output directory."
+            )
+        return result
+
+    return None
+
+
+def resolve_comfyui_workflow_path(
+    workflow_path: Optional[str],
+    default_workflow_path: str,
+) -> tuple[Path, bool]:
+    """Resolve the workflow path, falling back to the configured default when possible."""
+    requested_path = workflow_path or default_workflow_path
+    if not requested_path:
+        return Path(""), False
+
+    def to_path(path_value: str) -> Path:
+        if path_value.startswith("/storage/") or path_value.startswith("storage/"):
+            return BASE_DIR / path_value.lstrip("/")
+        path_obj = Path(path_value)
+        if not path_obj.is_absolute():
+            path_obj = BASE_DIR / path_value
+        return path_obj
+
+    resolved_path = to_path(requested_path)
+    if resolved_path.exists():
+        return resolved_path, False
+
+    if workflow_path and default_workflow_path:
+        fallback_path = to_path(default_workflow_path)
+        if fallback_path.exists():
+            return fallback_path, True
+
+    return resolved_path, False
+
+
+def comfyui_video_download_candidates(
+    filename: str,
+    subfolder: str,
+) -> list[tuple[str, str, str]]:
+    """Return ComfyUI /view lookup candidates for localized Cloudberry video outputs."""
+    candidates = [(filename, subfolder or "", "output")]
+    if not subfolder:
+        candidates.append((filename, "outputs", "output"))
+    return candidates
+
+
 def _ui_link_lookup(workflow: Dict[str, Any]) -> Dict[int, list]:
     """Build ComfyUI UI link id -> API link value lookup."""
     nodes_by_id = {node.get("id"): node for node in workflow.get("nodes", []) if isinstance(node, dict)}
@@ -450,7 +537,9 @@ def configure_infinitetalk_workflow(
     wav2vec_inputs = workflow[INFINITETALK_NODE_IDS["wav2vec"]]["inputs"]
     wav2vec_inputs["num_frames"] = num_frames
     wav2vec_inputs["fps"] = fps
-    workflow[INFINITETALK_NODE_IDS["video"]]["inputs"]["frame_rate"] = fps
+    video_inputs = workflow[INFINITETALK_NODE_IDS["video"]]["inputs"]
+    video_inputs["frame_rate"] = fps
+    video_inputs["save_output"] = True
 
 # 优先加载 backend/.env
 BASE_DIR = Path(__file__).parent.parent.parent
@@ -982,7 +1071,10 @@ class GenerateVirtualAnchorInput(BaseModel):
     """虚拟主播生成输入参数"""
     image_url: str = Field(description="肖像图片URL或本地路径（如 /storage/images/xxx.jpg）")
     audio_url: str = Field(description="音频文件URL或本地路径（如 /storage/audios/xxx.mp3）")
-    workflow_path: Optional[str] = Field(default=None, description="工作流JSON文件路径，默认从环境变量读取")
+    workflow_path: Optional[str] = Field(
+        default=None,
+        description="工作流JSON文件路径。通常不要传此参数，后端默认使用 COMFYUI_WORKFLOW_PATH。",
+    )
     prompt_text: Optional[str] = Field(default=None, description="提示词文本")
     negative_prompt: Optional[str] = Field(default=None, description="负面提示词")
     seed: Optional[int] = Field(default=None, description="随机种子")
@@ -1056,29 +1148,28 @@ def generate_virtual_anchor_tool(
             }, ensure_ascii=False)
         
         # 确定工作流路径
-        if workflow_path is None:
-            workflow_path = COMFYUI_WORKFLOW_PATH
-        
-        if not workflow_path:
+        if not workflow_path and not COMFYUI_WORKFLOW_PATH:
             return json.dumps({
                 "error": "未指定工作流路径",
                 "message": "请提供 workflow_path 参数或在 backend/.env 中设置 COMFYUI_WORKFLOW_PATH"
             }, ensure_ascii=False)
-        
-        # 处理路径：支持 /storage/ 开头的相对路径和绝对路径
-        if workflow_path.startswith("/storage/") or workflow_path.startswith("storage/"):
-            workflow_path_obj = BASE_DIR / workflow_path.lstrip("/")
-        else:
-            workflow_path_obj = Path(workflow_path)
-            # 如果是相对路径，则相对于 BASE_DIR
-            if not workflow_path_obj.is_absolute():
-                workflow_path_obj = BASE_DIR / workflow_path
+
+        workflow_path_obj, used_default_workflow = resolve_comfyui_workflow_path(
+            workflow_path,
+            COMFYUI_WORKFLOW_PATH,
+        )
+        workflow_path_for_error = workflow_path or COMFYUI_WORKFLOW_PATH
         
         if not workflow_path_obj.exists():
             return json.dumps({
-                "error": f"工作流文件不存在: {workflow_path}",
+                "error": f"工作流文件不存在: {workflow_path_for_error}",
                 "message": f"请检查工作流文件路径（已解析为: {workflow_path_obj}）"
             }, ensure_ascii=False)
+        if used_default_workflow:
+            logger.warning(
+                f"⚠️ 指定的工作流不存在，已回退到默认工作流: requested={workflow_path}, "
+                f"default={COMFYUI_WORKFLOW_PATH}"
+            )
         
         logger.info(f"🎬 开始生成虚拟人视频: image={image_url}, audio={audio_url}")
         
@@ -1103,7 +1194,7 @@ def generate_virtual_anchor_tool(
         logger.info(f"✅ 音频已上传: {uploaded_audio}")
         
         # 步骤4：加载工作流
-        logger.info(f"📋 加载工作流: {workflow_path}")
+        logger.info(f"📋 加载工作流: {workflow_path_obj}")
         with open(workflow_path_obj, 'r', encoding='utf-8') as f:
             raw_workflow = json.load(f)
         extra_data = build_comfyui_extra_data(raw_workflow, COMFYUI_CLOUDBERRY_MODE)
@@ -1162,7 +1253,23 @@ def generate_virtual_anchor_tool(
                 try:
                     history = client.get_history(prompt_id)
                     if prompt_id in history:
-                        outputs = history[prompt_id].get("outputs", {})
+                        history_item = history[prompt_id]
+                        execution_error = extract_comfyui_execution_error(history_item)
+                        if execution_error:
+                            logger.error(
+                                "❌ ComfyUI任务执行失败: "
+                                f"node_id={execution_error.get('node_id')}, "
+                                f"class_type={execution_error.get('class_type')}, "
+                                f"message={sanitize_error_message(execution_error.get('message', ''))}"
+                            )
+                            return json.dumps({
+                                "error": "ComfyUI任务执行失败",
+                                "success": False,
+                                "prompt_id": prompt_id,
+                                "execution_error": execution_error,
+                            }, ensure_ascii=False)
+
+                        outputs = history_item.get("outputs", {})
                         if outputs:
                             logger.info(f"✅ 任务完成: prompt_id={prompt_id}")
                             break
@@ -1197,7 +1304,43 @@ def generate_virtual_anchor_tool(
                 }, ensure_ascii=False)
             
             logger.info(f"📥 下载视频: {video_filename} (subfolder: {video_subfolder})")
-            video_data = client.get_image(video_filename, subfolder=video_subfolder, folder_type='output')
+            video_data = None
+            download_errors = []
+            for candidate_filename, candidate_subfolder, candidate_type in comfyui_video_download_candidates(
+                video_filename,
+                video_subfolder,
+            ):
+                try:
+                    video_data = client.get_image(
+                        candidate_filename,
+                        subfolder=candidate_subfolder,
+                        folder_type=candidate_type,
+                    )
+                    logger.info(
+                        f"✅ 视频下载成功: filename={candidate_filename}, "
+                        f"subfolder={candidate_subfolder}, type={candidate_type}"
+                    )
+                    break
+                except requests.HTTPError as e:
+                    status_code = e.response.status_code if e.response is not None else None
+                    download_errors.append({
+                        "filename": candidate_filename,
+                        "subfolder": candidate_subfolder,
+                        "type": candidate_type,
+                        "status_code": status_code,
+                        "error": str(e),
+                    })
+                    if status_code != 404:
+                        raise
+
+            if video_data is None:
+                return json.dumps({
+                    "error": "无法下载生成的视频",
+                    "message": "ComfyUI已生成视频，但后端无法通过 /view 下载",
+                    "download_errors": download_errors,
+                    "video_filename": video_filename,
+                    "video_subfolder": video_subfolder,
+                }, ensure_ascii=False)
             
             # 步骤9：保存视频到本地
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

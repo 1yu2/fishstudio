@@ -1,13 +1,30 @@
 import unittest
 from pathlib import Path
 import sys
+import types
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+if "langchain_core.tools" not in sys.modules:
+    langchain_core = types.ModuleType("langchain_core")
+    tools_module = types.ModuleType("langchain_core.tools")
+
+    def tool_stub(*args, **kwargs):
+        if args and callable(args[0]):
+            return args[0]
+        return lambda wrapped: wrapped
+
+    tools_module.tool = tool_stub
+    sys.modules["langchain_core"] = langchain_core
+    sys.modules["langchain_core.tools"] = tools_module
 
 from app.tools.virtual_anchor_generation import (
     build_drop_first_frame_command,
     build_comfyui_extra_data,
     configure_infinitetalk_workflow,
+    comfyui_video_download_candidates,
+    extract_comfyui_execution_error,
+    resolve_comfyui_workflow_path,
     safe_comfyui_upload_filename,
     normalize_comfyui_workflow,
 )
@@ -171,7 +188,10 @@ class VirtualAnchorWorkflowTests(unittest.TestCase):
                 "class_type": "MultiTalkWav2VecEmbeds",
                 "inputs": {"num_frames": 100, "fps": 25},
             },
-            "131": {"class_type": "VHS_VideoCombine", "inputs": {"frame_rate": 25}},
+            "131": {
+                "class_type": "VHS_VideoCombine",
+                "inputs": {"frame_rate": 25, "save_output": False},
+            },
         }
 
         configure_infinitetalk_workflow(
@@ -193,6 +213,7 @@ class VirtualAnchorWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow["194"]["inputs"]["num_frames"], 400)
         self.assertEqual(workflow["194"]["inputs"]["fps"], 24)
         self.assertEqual(workflow["131"]["inputs"]["frame_rate"], 24)
+        self.assertTrue(workflow["131"]["inputs"]["save_output"])
 
     def test_safe_comfyui_upload_filename_removes_non_ascii(self):
         filename = safe_comfyui_upload_filename(
@@ -226,6 +247,84 @@ class VirtualAnchorWorkflowTests(unittest.TestCase):
         workflow = extra_data["extra_pnginfo"]["workflow"]
         self.assertTrue(workflow["extra"]["existing"])
         self.assertTrue(workflow["extra"]["cloudberry_mode"])
+
+    def test_extracts_cloudberry_resource_not_found_error_from_history(self):
+        history_item = {
+            "status": {
+                "status_str": "error",
+                "messages": [
+                    [
+                        "execution_error",
+                        {
+                            "node_id": 122,
+                            "node_type": "WanVideoModelLoader",
+                            "exception_message": (
+                                "Resource not found, the requested resource does not exist at "
+                                "the specified location, URL: "
+                                "https://ms.sc4.ai:10443/models/siliconflow/awesome-comfyui-models/"
+                                "resolve/master/diffusion_models/WanVideo/"
+                                "wan2.1-i2v-14b-480p-Q8_0.gguf"
+                            ),
+                        },
+                    ]
+                ],
+            }
+        }
+
+        error = extract_comfyui_execution_error(history_item)
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error["node_id"], 122)
+        self.assertEqual(error["class_type"], "WanVideoModelLoader")
+        self.assertIn("wan2.1-i2v-14b-480p-Q8_0.gguf", error["message"])
+        self.assertEqual(error["reason"], "cloud_model_resource_not_found")
+
+    def test_extracts_cloudberry_missing_local_output_error_from_history(self):
+        history_item = {
+            "status": {
+                "messages": [
+                    [
+                        "execution_error",
+                        {
+                            "node_id": "cloudberry_wrapper",
+                            "node_type": "CloudBerrySubgraphNode",
+                            "exception_message": (
+                                "[Errno 2] No such file or directory: "
+                                "'/Users/fishyuu/idea_project/ComfyUI-master/output/outputs/"
+                                "WanVideo2_1_InfiniteTalk_00001-audio.mp4'"
+                            ),
+                        },
+                    ]
+                ],
+            }
+        }
+
+        error = extract_comfyui_execution_error(history_item)
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error["reason"], "cloudberry_local_output_missing")
+
+    def test_invalid_tool_workflow_path_falls_back_to_default_workflow(self):
+        default_path = Path(__file__).resolve()
+
+        workflow_path, used_fallback = resolve_comfyui_workflow_path(
+            "virtual_anchor_basic.json",
+            str(default_path),
+        )
+
+        self.assertEqual(workflow_path, default_path)
+        self.assertTrue(used_fallback)
+
+    def test_video_download_candidates_try_cloudberry_outputs_subfolder(self):
+        candidates = comfyui_video_download_candidates("video.mp4", "")
+
+        self.assertEqual(
+            candidates,
+            [
+                ("video.mp4", "", "output"),
+                ("video.mp4", "outputs", "output"),
+            ],
+        )
 
 
 if __name__ == "__main__":
