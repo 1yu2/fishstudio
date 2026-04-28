@@ -32,6 +32,29 @@ AUDIOS_DIR.mkdir(parents=True, exist_ok=True)
 BGM_DIR.mkdir(parents=True, exist_ok=True)
 PODCASTS_DIR.mkdir(parents=True, exist_ok=True)
 
+try:
+    import imageio_ffmpeg
+
+    IMAGEIO_FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_bin_dir = BASE_DIR / ".bin"
+    ffmpeg_bin_dir.mkdir(parents=True, exist_ok=True)
+    ffmpeg_dir = str(ffmpeg_bin_dir)
+    ffmpeg_link = ffmpeg_bin_dir / "ffmpeg"
+    if not ffmpeg_link.exists():
+        try:
+            ffmpeg_link.symlink_to(IMAGEIO_FFMPEG_PATH)
+        except Exception:
+            pass
+    ffprobe_link = ffmpeg_bin_dir / "ffprobe"
+    if ffprobe_link.is_symlink():
+        try:
+            ffprobe_link.unlink()
+        except Exception:
+            pass
+    os.environ["PATH"] = f"{ffmpeg_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+except Exception:
+    IMAGEIO_FFMPEG_PATH = ""
+
 # 检查pydub是否可用
 try:
     from pydub import AudioSegment
@@ -40,6 +63,41 @@ try:
 except ImportError:
     PYDUB_AVAILABLE = False
     logger.warning("⚠️ 未安装 pydub，音频混音功能将不可用。请安装：pip install pydub")
+
+
+def configure_pydub_ffmpeg() -> str:
+    """Point pydub at the bundled imageio-ffmpeg binary when available."""
+    if not PYDUB_AVAILABLE:
+        return ""
+
+    ffmpeg_path = IMAGEIO_FFMPEG_PATH
+
+    if ffmpeg_path:
+        AudioSegment.converter = ffmpeg_path
+        AudioSegment.ffmpeg = ffmpeg_path
+        AudioSegment.ffprobe = ffmpeg_path
+        logger.info(f"✅ pydub 使用 imageio-ffmpeg: {ffmpeg_path}")
+
+    return ffmpeg_path
+
+
+configure_pydub_ffmpeg()
+
+
+def load_audio_segment(file_path: Path) -> AudioSegment:
+    """Load an audio file through ffmpeg without requiring ffprobe."""
+    suffix = file_path.suffix.lower().lstrip(".")
+    codec_by_format = {
+        "mp3": "mp3",
+        "m4a": "aac",
+        "aac": "aac",
+        "ogg": "libvorbis",
+        "flac": "flac",
+    }
+    codec = codec_by_format.get(suffix)
+    if codec:
+        return AudioSegment.from_file(str(file_path), format=suffix, codec=codec)
+    return AudioSegment.from_file(str(file_path))
 
 
 class ConcatenateAudioInput(BaseModel):
@@ -91,7 +149,7 @@ def concatenate_audio_tool(
                 return f"Error: 文件不存在: {audio_path}"
             
             logger.info(f"📁 加载音频: {file_path.name}")
-            audio = AudioSegment.from_file(str(file_path))
+            audio = load_audio_segment(file_path)
             audio_segments.append(audio)
         
         # 拼接音频
@@ -206,7 +264,7 @@ def select_bgm_tool(
             logger.info(f"✅ 匹配到BGM: {best_match.name} (匹配度: {best_score})")
         
         # 加载BGM
-        bgm = AudioSegment.from_file(str(best_match))
+        bgm = load_audio_segment(best_match)
         original_duration = len(bgm) / 1000.0
         
         # 如果指定了时长，调整BGM
@@ -310,7 +368,7 @@ def mix_audio_with_bgm_tool(
         if not voice_path.exists():
             return f"Error: 主音频文件不存在: {voice_audio}"
         
-        voice = AudioSegment.from_file(str(voice_path))
+        voice = load_audio_segment(voice_path)
         voice_duration = len(voice) / 1000.0
         logger.info(f"📁 加载主音频: {voice_path.name}, 时长: {voice_duration:.2f}s")
         
@@ -323,7 +381,7 @@ def mix_audio_with_bgm_tool(
         if not bgm_path.exists():
             return f"Error: BGM文件不存在: {bgm_audio}"
         
-        bgm = AudioSegment.from_file(str(bgm_path))
+        bgm = load_audio_segment(bgm_path)
         bgm_duration = len(bgm) / 1000.0
         logger.info(f"📁 加载BGM: {bgm_path.name}, 时长: {bgm_duration:.2f}s")
         
