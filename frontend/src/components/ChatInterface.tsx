@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useMemo, memo } from 'react'
-import { Send, Paperclip, Image as ImageIcon, Sparkles, X, ChevronDown, ChevronRight, Link as LinkIcon, ArrowLeft, Sun, Moon, Download, Pause, Play } from 'lucide-react'
+import { useState, useRef, useEffect, useMemo } from 'react'
+import { Send, Paperclip, Image as ImageIcon, Sparkles, X, ChevronDown, ChevronRight, Link as LinkIcon, ArrowLeft, Sun, Moon, Download, Pause, Play, Settings } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import './ChatInterface.css'
 import ExcalidrawCanvas, {
@@ -35,6 +35,8 @@ interface Message {
   toolCalls?: ToolCall[]
   imageUrls?: string[] // 用户消息中的图片URL列表
   audioUrls?: string[] // 用户消息中的音频URL列表
+  videoUrls?: string[] // 用户消息中的视频URL列表
+  skillMatched?: string
 }
 
 interface CanvasImage {
@@ -64,12 +66,16 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
   const [isPaused, setIsPaused] = useState(false) // 暂停状态
   const [uploadedImages, setUploadedImages] = useState<string[]>([]) // 上传的图片URL列表
   const [uploadedAudios, setUploadedAudios] = useState<string[]>([]) // 上传的音频URL列表
+  const [uploadedVideos, setUploadedVideos] = useState<string[]>([]) // 上传的视频URL列表
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatMessagesRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null) // 用于取消请求
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null) // 保存reader引用，用于暂停时关闭
   const isPausedRef = useRef<boolean>(false) // 使用ref确保能立即检查暂停状态
+  const isLoadingRef = useRef<boolean>(false)
+  const wsExternalActiveRef = useRef<boolean>(false)
   // 注意：为了实现"生成一次展示一次"的节奏，我们不再把所有工具调用塞进同一条 assistant 消息里。
   // delta 会写入最近的纯文本 assistant 消息；tool_call 会创建独立的 step 消息；tool_result 只更新对应 step。
   
@@ -208,6 +214,14 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
     window.dispatchEvent(new PopStateEvent('popstate'))
   }
 
+  const goToSettings = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('canvasId')
+    url.searchParams.set('page', 'settings')
+    window.history.pushState({}, '', url.toString())
+    window.dispatchEvent(new PopStateEvent('popstate'))
+  }
+
   const getCanvasIdFromUrl = () => {
     try {
       const url = new URL(window.location.href)
@@ -236,7 +250,6 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
           
           // 检查是否有待发送的消息（从首页来的）
           const pendingKey = `pending_prompt:${canvasId}`
-          const pendingImagesKey = `pending_images:${canvasId}`
           const hasPending = sessionStorage.getItem(pendingKey)
           
           // 如果有待发送的消息，不设置后端消息，让 useEffect 处理
@@ -370,9 +383,116 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
     el.scrollTo({ top: el.scrollHeight, behavior })
   }
 
+  const resizeTextarea = () => {
+    const el = textareaRef.current
+    if (!el) return
+
+    el.style.height = '44px'
+    const nextHeight = Math.min(el.scrollHeight, 168)
+    el.style.height = `${Math.max(nextHeight, 44)}px`
+    el.style.overflowY = el.scrollHeight > 168 ? 'auto' : 'hidden'
+  }
+
+  useEffect(() => {
+    resizeTextarea()
+  }, [input, uploadedImages.length, uploadedAudios.length, uploadedVideos.length])
+
   useEffect(() => {
     scrollToBottom('auto')
   }, [messages])
+
+  useEffect(() => {
+    isLoadingRef.current = isLoading
+  }, [isLoading])
+
+  // WebSocket 连接：订阅当前画布的实时事件
+  useEffect(() => {
+    if (!currentCanvasId) return
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${protocol}//${window.location.hostname}:8000/ws/${currentCanvasId}`)
+
+    const appendExternalDelta = (deltaText: string) => {
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        if (last && last.role === 'assistant' && (!last.toolCalls || last.toolCalls.length === 0)) {
+          next[next.length - 1] = { ...last, content: (last.content || '') + deltaText }
+          return next
+        }
+        next.push({ role: 'assistant', content: deltaText })
+        return next
+      })
+    }
+
+    const appendExternalTool = (toolCall: ToolCall) => {
+      setMessages((prev) => [...prev, { role: 'assistant', content: '', toolCalls: [toolCall] }])
+    }
+
+    const updateExternalTool = (toolCallId: string, updater: (tc: ToolCall) => ToolCall) => {
+      setMessages((prev) => prev.map((m) => {
+        if (!m.toolCalls?.some((tc) => tc.id === toolCallId)) return m
+        return { ...m, toolCalls: m.toolCalls.map((tc) => (tc.id === toolCallId ? updater(tc) : tc)) }
+      }))
+    }
+
+    ws.onmessage = (event) => {
+      if (isLoadingRef.current && !wsExternalActiveRef.current) return
+
+      try {
+        const data = JSON.parse(event.data)
+        switch (data.type) {
+          case 'user_message':
+            wsExternalActiveRef.current = true
+            isLoadingRef.current = true
+            setIsLoading(true)
+            setMessages((prev) => [...prev, { role: 'user', content: data.content }])
+            break
+          case 'delta':
+            if (data.content) appendExternalDelta(data.content)
+            break
+          case 'skill_matched':
+            setMessages((prev) => [...prev, { role: 'assistant', content: '', skillMatched: data.skill_name }])
+            break
+          case 'tool_call':
+            appendExternalTool({
+              id: data.id,
+              name: data.name,
+              arguments: sanitizeArguments(data.arguments),
+              status: 'executing',
+            })
+            break
+          case 'tool_result':
+            updateExternalTool(data.tool_call_id, (tc) => ({
+              ...tc,
+              status: 'done' as const,
+              result: data.content,
+            }))
+            break
+          case 'done':
+            wsExternalActiveRef.current = false
+            isLoadingRef.current = false
+            setIsLoading(false)
+            scrollToBottom('smooth')
+            break
+          case 'error':
+            wsExternalActiveRef.current = false
+            isLoadingRef.current = false
+            setIsLoading(false)
+            setMessages((prev) => [...prev, { role: 'assistant', content: `错误: ${data.error}` }])
+            break
+        }
+      } catch (err) {
+        console.error('WebSocket 消息解析失败:', err)
+      }
+    }
+
+    ws.onerror = (event) => {
+      console.error('WebSocket 连接错误:', event)
+    }
+
+    return () => ws.close()
+  }, [currentCanvasId])
 
   const sendMessage = async (userMessage: string, skipAddUserMessage = false, userMessageObj?: Message) => {
     const trimmed = (userMessage || '').trim()
@@ -458,6 +578,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
         body: JSON.stringify({
           message: trimmed,
           messages: messageHistory.slice(0, -1),
+          canvas_id: currentCanvasId || undefined,
         }),
         signal: abortController.signal, // 添加 signal 支持取消
       })
@@ -466,7 +587,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
         throw new Error(`HTTP error! status: ${response.status}`)
       }
 
-      const reader = response.body?.getReader()
+      const reader = response.body?.getReader() || null
       readerRef.current = reader // 保存reader引用
       const decoder = new TextDecoder()
 
@@ -563,6 +684,17 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                             arguments: sanitizeArguments(event.arguments),
                     status: 'executing',
                   })
+                  break
+
+                case 'skill_matched':
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      role: 'assistant',
+                      content: '',
+                      skillMatched: event.skill_name,
+                    },
+                  ])
                   break
                 
                 case 'tool_call_chunk':
@@ -722,15 +854,19 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
     const file = e.target.files?.[0]
     if (!file) return
     
-    // 判断是图片还是音频
+    // 判断是图片、音频还是视频
     const isImage = file.type.startsWith('image/')
     const isAudio = file.type.startsWith('audio/') || 
                     ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.wma'].some(ext => 
                       file.name.toLowerCase().endsWith(ext)
                     )
+    const isVideo = file.type.startsWith('video/') ||
+                    ['.mp4', '.mov', '.avi', '.mkv', '.webm'].some(ext =>
+                      file.name.toLowerCase().endsWith(ext)
+                    )
     
-    if (!isImage && !isAudio) {
-      alert('只支持图片或音频文件')
+    if (!isImage && !isAudio && !isVideo) {
+      alert('只支持图片、音频或视频文件')
       return
     }
     
@@ -738,7 +874,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       const formData = new FormData()
       formData.append('file', file)
       
-      const endpoint = isImage ? '/api/upload-image' : '/api/upload-audio'
+      const endpoint = isImage ? '/api/upload-image' : isAudio ? '/api/upload-audio' : '/api/upload-video'
       const response = await fetch(endpoint, {
         method: 'POST',
         body: formData,
@@ -751,8 +887,10 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       const data = await response.json()
       if (isImage) {
         setUploadedImages(prev => [...prev, data.url])
-      } else {
+      } else if (isAudio) {
         setUploadedAudios(prev => [...prev, data.url])
+      } else {
+        setUploadedVideos(prev => [...prev, data.url])
       }
     } catch (error) {
       console.error('文件上传失败:', error)
@@ -773,6 +911,10 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
     setUploadedAudios(prev => prev.filter((_, i) => i !== index))
   }
 
+  const removeUploadedVideo = (index: number) => {
+    setUploadedVideos(prev => prev.filter((_, i) => i !== index))
+  }
+
   // 处理粘贴文件（图片或音频）
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     try {
@@ -783,7 +925,8 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
         const item = items[i]
         const isImage = item.type.indexOf('image') !== -1
         const isAudio = item.type.indexOf('audio') !== -1
-        if (isImage || isAudio) {
+        const isVideo = item.type.indexOf('video') !== -1
+        if (isImage || isAudio || isVideo) {
           e.preventDefault()
           const file = item.getAsFile()
           if (!file) continue
@@ -794,7 +937,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               const formData = new FormData()
               formData.append('file', file)
 
-              const endpoint = isImage ? '/api/upload-image' : '/api/upload-audio'
+              const endpoint = isImage ? '/api/upload-image' : isAudio ? '/api/upload-audio' : '/api/upload-video'
               const response = await fetch(endpoint, {
                 method: 'POST',
                 body: formData,
@@ -807,8 +950,10 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               const data = await response.json()
               if (isImage) {
                 setUploadedImages(prev => [...prev, data.url])
-              } else {
+              } else if (isAudio) {
                 setUploadedAudios(prev => [...prev, data.url])
+              } else {
+                setUploadedVideos(prev => [...prev, data.url])
               }
             } catch (error) {
               console.error('文件粘贴上传失败:', error)
@@ -867,7 +1012,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
   }
 
   const handleSend = async () => {
-    if ((!input.trim() && uploadedImages.length === 0 && uploadedAudios.length === 0) || isLoading) return
+    if ((!input.trim() && uploadedImages.length === 0 && uploadedAudios.length === 0 && uploadedVideos.length === 0) || isLoading) return
     
     // 如果之前是暂停状态，先重置
     if (isPaused) {
@@ -875,10 +1020,11 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       isPausedRef.current = false
     }
     
-    // 构建消息内容：文本 + 图片URL + 音频URL
+    // 构建消息内容：文本 + 图片URL + 音频URL + 视频URL
     let messageContent = input.trim()
     const imageUrls = [...uploadedImages] // 保存图片URL列表
     const audioUrls = [...uploadedAudios] // 保存音频URL列表
+    const videoUrls = [...uploadedVideos] // 保存视频URL列表
     
     if (uploadedImages.length > 0) {
       const imageTexts = uploadedImages.map(url => `[图片: ${url}]`).join('\n')
@@ -897,6 +1043,15 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
         messageContent = audioTexts
       }
     }
+
+    if (uploadedVideos.length > 0) {
+      const videoTexts = uploadedVideos.map(url => `[视频: ${url}]`).join('\n')
+      if (messageContent) {
+        messageContent = `${messageContent}\n\n${videoTexts}`
+      } else {
+        messageContent = videoTexts
+      }
+    }
     
     // 创建用户消息，包含图片/音频URL列表
     const userMessageObj: Message = {
@@ -904,6 +1059,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       content: messageContent,
       imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
       audioUrls: audioUrls.length > 0 ? audioUrls : undefined,
+      videoUrls: videoUrls.length > 0 ? videoUrls : undefined,
     }
     
     // 先添加到消息列表显示
@@ -912,6 +1068,8 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
     setInput('')
     setUploadedImages([]) // 清空上传的图片
     setUploadedAudios([]) // 清空上传的音频
+    setUploadedVideos([]) // 清空上传的视频
+    requestAnimationFrame(resizeTextarea)
     
     // 发送消息（skipAddUserMessage=true 因为已经添加了，并传递 userMessageObj 确保包含 audioUrls 和 imageUrls）
     await sendMessage(messageContent, true, userMessageObj)
@@ -925,9 +1083,11 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
     const key = `pending_prompt:${currentCanvasId}`
     const imagesKey = `pending_images:${currentCanvasId}`
     const audiosKey = `pending_audios:${currentCanvasId}`
+    const videosKey = `pending_videos:${currentCanvasId}`
     const pending = sessionStorage.getItem(key)
     const pendingImages = sessionStorage.getItem(imagesKey)
     const pendingAudios = sessionStorage.getItem(audiosKey)
+    const pendingVideos = sessionStorage.getItem(videosKey)
     
     if (!pending || !pending.trim()) return
     
@@ -951,18 +1111,29 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       }
     }
     
+    let videoUrls: string[] = []
+    if (pendingVideos) {
+      try {
+        videoUrls = JSON.parse(pendingVideos) as string[]
+      } catch (e) {
+        console.error('解析视频列表失败', e)
+      }
+    }
+    
     // 先显示为用户消息（显示在对话最前面）
     const userMessage: Message = {
       role: 'user',
       content: pending.trim(),
       imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
       audioUrls: audioUrls.length > 0 ? audioUrls : undefined,
+      videoUrls: videoUrls.length > 0 ? videoUrls : undefined,
     }
     
     // 清理 sessionStorage（在设置消息之前清理，避免重复处理）
     sessionStorage.removeItem(key)
     sessionStorage.removeItem(imagesKey)
     sessionStorage.removeItem(audiosKey)
+    sessionStorage.removeItem(videosKey)
     
     // 标记需要发送的消息
     pendingSendRef.current = pending.trim()
@@ -1280,7 +1451,6 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               setCurrent3DModel(null)
               // 清除选中状态，防止立即重新打开
               excalidrawRef.current?.clearSelection()
-              onModalClose?.()
             }}>
               <div className="modal-content" onClick={(e) => e.stopPropagation()}>
                 <button 
@@ -1291,7 +1461,6 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                     setCurrent3DModel(null)
                     // 清除选中状态，防止立即重新打开
                     excalidrawRef.current?.clearSelection()
-                    onModalClose?.()
                   }}
                   title="关闭"
                 >
@@ -1368,7 +1537,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
           )}
           
           {/* 调试信息（开发时可见） */}
-          {process.env.NODE_ENV === 'development' && (
+          {import.meta.env.DEV && (
             <div style={{ 
               position: 'fixed', 
               bottom: '10px', 
@@ -1402,6 +1571,13 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               <h1>FishStudio</h1>
               <p>使用AI生成图像</p>
             </div>
+            <button
+              className="control-btn"
+              onClick={goToSettings}
+              title="设置"
+            >
+              <Settings size={18} />
+            </button>
             <button 
               className="close-chat-btn"
               onClick={() => setChatPanelCollapsed(true)}
@@ -1434,6 +1610,13 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                       {message.content && (
                         <div className="message-text">
                           <ReactMarkdown>{cleanMessageContent(message.content)}</ReactMarkdown>
+                        </div>
+                      )}
+
+                      {message.skillMatched && (
+                        <div className="skill-matched-badge">
+                          <Sparkles size={13} className="skill-badge-icon" />
+                          <span>正在使用技能：{message.skillMatched}</span>
                         </div>
                       )}
 
@@ -1576,23 +1759,45 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                           ))}
                         </div>
                       )}
+                      {/* 用户消息中的视频 */}
+                      {message.videoUrls && message.videoUrls.length > 0 && (
+                        <div className="message-videos" style={{ marginTop: (message.imageUrls?.length || message.audioUrls?.length) ? '8px' : '0' }}>
+                          {message.videoUrls.map((url, videoIndex) => (
+                            <div key={`user-video-${index}-${videoIndex}`} className="message-video">
+                              <video
+                                src={url}
+                                controls
+                                style={{ maxWidth: '100%', borderRadius: '8px' }}
+                              >
+                                您的浏览器不支持视频播放
+                              </video>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {/* 用户消息文本 */}
                       {(() => {
-                        // 移除图片和音频URL标记，只显示文本内容
+                        // 移除图片、音频和视频URL标记，只显示文本内容
                         const textContent = message.content
                           .split('\n')
-                          .filter(line => !line.trim().startsWith('[图片:') && !line.trim().startsWith('[音频:'))
+                          .filter(line => {
+                            const trimmed = line.trim()
+                            return !trimmed.startsWith('[图片:') && !trimmed.startsWith('[音频:') && !trimmed.startsWith('[视频:')
+                          })
                           .join('\n')
                           .trim()
+                        const hasImages = !!message.imageUrls?.length
+                        const hasAudios = !!message.audioUrls?.length
+                        const hasVideos = !!message.videoUrls?.length
                         return textContent ? (
                           <div className="message-text">{textContent}</div>
-                        ) : (message.imageUrls && message.imageUrls.length > 0) || (message.audioUrls && message.audioUrls.length > 0) ? (
+                        ) : hasImages || hasAudios || hasVideos ? (
                           <div className="message-text" style={{ fontStyle: 'italic', color: '#9ca3af' }}>
-                            {message.imageUrls && message.imageUrls.length > 0 && message.audioUrls && message.audioUrls.length > 0 
-                              ? '（已发送图片和音频）'
-                              : message.imageUrls && message.imageUrls.length > 0 
-                                ? '（已发送图片）'
-                                : '（已发送音频）'}
+                            （已发送{[
+                              hasImages ? '图片' : '',
+                              hasAudios ? '音频' : '',
+                              hasVideos ? '视频' : '',
+                            ].filter(Boolean).join('、')}）
                           </div>
                         ) : null
                       })()}
@@ -1642,12 +1847,31 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                 ))}
               </div>
             )}
+            {/* 上传的视频预览 */}
+            {uploadedVideos.length > 0 && (
+              <div className="uploaded-images-preview">
+                {uploadedVideos.map((url, index) => (
+                  <div key={index} className="uploaded-image-item">
+                    <div style={{ fontSize: 12, color: '#e5e7eb', maxWidth: 220, wordBreak: 'break-all' }}>
+                      视频 {index + 1}: {url}
+                    </div>
+                    <button
+                      className="remove-image-btn"
+                      onClick={() => removeUploadedVideo(index)}
+                      title="移除视频"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             
             <div className="input-row">
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*,audio/*"
+                accept="image/*,audio/*,video/*"
                 onChange={handleFileUpload}
                 style={{ display: 'none' }}
               />
@@ -1655,14 +1879,18 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                 className="upload-image-button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isLoading}
-                title="上传图片或音频"
+                title="上传图片、音频或视频"
               >
                 <Paperclip size={18} />
               </button>
               <textarea
+                ref={textareaRef}
                 className="chat-input"
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setInput(e.target.value)
+                  requestAnimationFrame(resizeTextarea)
+                }}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 placeholder="输入提示词生成图像..."
@@ -1689,7 +1917,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                 <button
                   className="send-button"
                   onClick={handleSend}
-                  disabled={isLoading || (!input.trim() && uploadedImages.length === 0)}
+                  disabled={isLoading || (!input.trim() && uploadedImages.length === 0 && uploadedAudios.length === 0 && uploadedVideos.length === 0)}
                 >
                   <Send size={18} />
                 </button>

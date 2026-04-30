@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import './HomePage.css'
-import { ArrowRight, Clock, LayoutGrid, Search, Paperclip, X, Sun, Moon, Trash2 } from 'lucide-react'
+import { ArrowRight, Clock, LayoutGrid, Search, Paperclip, X, Sun, Moon, Trash2, Settings } from 'lucide-react'
 
 type ThemeMode = 'dark' | 'light'
 
@@ -39,6 +39,14 @@ function clearCanvasIdFromUrl() {
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
+function goToSettings() {
+  const url = new URL(window.location.href)
+  url.searchParams.delete('canvasId')
+  url.searchParams.set('page', 'settings')
+  window.history.pushState({}, '', url.toString())
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
 function pickThumbnails(canvas: CanvasSummary, max = 4): string[] {
   const files = canvas.data?.files || {}
   const urls = Object.values(files)
@@ -70,11 +78,11 @@ function extractTextPreview(canvas: CanvasSummary, maxLen = 84): string {
     // 清理掉图片标记/URL 列表，保留纯文本
     const lines = text
       .split('\n')
-      .map((l) => l.trim())
+      .map((l: string) => l.trim())
       .filter(Boolean)
-      .filter((l) => !l.startsWith('[图片:'))
-      .filter((l) => l !== 'Generated Image:')
-      .filter((l) => !(l.startsWith('- ') && (l.includes('/storage/') || l.includes('http://') || l.includes('https://'))))
+      .filter((l: string) => !l.startsWith('[图片:'))
+      .filter((l: string) => l !== 'Generated Image:')
+      .filter((l: string) => !(l.startsWith('- ') && (l.includes('/storage/') || l.includes('http://') || l.includes('https://'))))
 
     text = lines.join(' ').replace(/\s+/g, ' ').trim()
     if (!text) continue
@@ -271,6 +279,10 @@ export default function HomePage({
           </div>
         </div>
         <div className="home__actions">
+          <button className="home__btn home__btn--ghost" onClick={goToSettings} title="设置">
+            <Settings size={16} />
+            设置
+          </button>
           <button className="home__btn home__btn--ghost" onClick={onToggleTheme} title="切换主题">
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             {theme === 'dark' ? '亮色' : '暗色'}
@@ -514,5 +526,3 @@ export default function HomePage({
     </div>
   )
 }
-
-

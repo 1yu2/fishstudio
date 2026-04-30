@@ -1,7 +1,6 @@
 import React, { Suspense, useRef } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, useGLTF } from '@react-three/drei'
-import { useLoader } from '@react-three/fiber'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js'
 import { Object3D } from 'three'
@@ -79,7 +78,7 @@ function OBJModel({ url, mtlUrl, textureUrl }: { url: string; mtlUrl?: string; t
   }, [url, mtlUrl, textureUrl])
 
   // 自动旋转
-  useFrame((state, delta) => {
+  useFrame((_state, delta) => {
     if (meshRef.current) {
       meshRef.current.rotation.y += delta * 0.2
     }
@@ -114,7 +113,7 @@ function GLBModel({ url }: { url: string }) {
   const meshRef = useRef<Object3D>(null)
 
   // 自动旋转
-  useFrame((state, delta) => {
+  useFrame((_state, delta) => {
     if (meshRef.current) {
       meshRef.current.rotation.y += delta * 0.2
     }
@@ -175,4 +174,3 @@ export default function Model3DViewer({
     </div>
   )
 }
-

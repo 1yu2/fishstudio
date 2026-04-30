@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from app.services.agent_service import process_chat_stream
 from app.services.history_service import history_service
+from app.services.connection_manager import manager
 
 router = APIRouter()
 
@@ -20,6 +21,7 @@ class ChatRequest(BaseModel):
     message: str
     messages: Optional[List[Dict[str, Any]]] = []
     session_id: Optional[str] = None
+    canvas_id: Optional[str] = None
 
 
 @router.get("/canvases")
@@ -161,6 +163,53 @@ async def upload_audio(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
 
 
+@router.post("/upload-video")
+async def upload_video(file: UploadFile = File(...)):
+    """
+    上传视频到 storage/videos 目录
+    支持的格式：mp4, mov, avi, mkv, webm
+
+    Returns:
+        上传后的视频URL（相对路径，如 /storage/videos/xxx.mp4）
+    """
+    try:
+        BASE_DIR = Path(__file__).parent.parent.parent
+        VIDEOS_DIR = BASE_DIR / "storage" / "videos"
+        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+
+        content_type = file.content_type or ""
+        original_filename = file.filename or "video"
+        ext = os.path.splitext(original_filename)[1].lower()
+        allowed_extensions = [".mp4", ".mov", ".avi", ".mkv", ".webm"]
+
+        is_video = content_type.startswith("video/") or content_type == "application/octet-stream"
+        if not is_video and ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"只支持视频文件，支持的格式：{', '.join(allowed_extensions)}"
+            )
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        if not ext or ext not in allowed_extensions:
+            ext = ".mp4"
+
+        filename = f"upload_{timestamp}_{unique_id}{ext}"
+        file_path = VIDEOS_DIR / filename
+
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+
+        video_url = f"/storage/videos/{filename}"
+        return {"url": video_url, "filename": filename}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+
+
 @router.post("/chat")
 async def chat(request: ChatRequest):
     """
@@ -175,9 +224,29 @@ async def chat(request: ChatRequest):
             "content": request.message
         })
 
+        async def stream_and_broadcast():
+            if request.canvas_id:
+                await manager.broadcast(
+                    request.canvas_id,
+                    json.dumps({"type": "user_message", "content": request.message}, ensure_ascii=False),
+                )
+
+            async for chunk in process_chat_stream(messages, request.session_id):
+                yield chunk
+                if not request.canvas_id or not chunk.startswith("data: "):
+                    continue
+
+                data_str = chunk[len("data: "):].strip()
+                if not data_str:
+                    continue
+                if data_str == "[DONE]":
+                    await manager.broadcast(request.canvas_id, json.dumps({"type": "done"}, ensure_ascii=False))
+                else:
+                    await manager.broadcast(request.canvas_id, data_str)
+
         # 返回流式响应 - 确保立即发送，不缓冲
         return StreamingResponse(
-            process_chat_stream(messages, request.session_id),
+            stream_and_broadcast(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -188,4 +257,3 @@ async def chat(request: ChatRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-

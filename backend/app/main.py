@@ -2,14 +2,16 @@
 FishStudio后端主程序
 使用FastAPI + LangGraph实现
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-from app.routers import chat
+from app.routers import chat, settings
 import os
 from dotenv import load_dotenv
 from app.utils.logger import setup_logging
+from app.services import workspace_service
+from app.services.connection_manager import manager
 
 load_dotenv()
 
@@ -40,6 +42,9 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 AUDIOS_DIR.mkdir(parents=True, exist_ok=True)
 
+# 确保工作空间默认文件存在
+workspace_service.ensure_workspace_defaults()
+
 # 配置静态文件服务 - 用于访问保存的图片
 # 这样前端可以通过 /storage/images/文件名 访问图片
 if STORAGE_DIR.exists():
@@ -47,6 +52,18 @@ if STORAGE_DIR.exists():
 
 # 注册路由
 app.include_router(chat.router, prefix="/api", tags=["chat"])
+app.include_router(settings.router, prefix="/api", tags=["settings"])
+
+
+@app.websocket("/ws/{canvas_id}")
+async def websocket_endpoint(websocket: WebSocket, canvas_id: str):
+    """Subscribe a browser canvas to live chat stream events."""
+    await manager.connect(canvas_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(canvas_id, websocket)
 
 
 @app.get("/")
@@ -72,4 +89,3 @@ if __name__ == "__main__":
         reload_includes=["*.py"],
         log_level="info"
     )
-

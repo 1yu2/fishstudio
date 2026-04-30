@@ -32,11 +32,7 @@ export type ExcalidrawCanvasHandle = {
   sendImageToInput: (callback: (url: string) => void) => void
   add3DModelPreview: (args: { previewUrl: string; modelUrl: string; format: 'obj' | 'glb'; mtlUrl?: string; textureUrl?: string }) => Promise<void>
   addVideo: (args: { videoUrl: string }) => Promise<void>
-}
-
-type ExcalidrawCanvasProps = Props & {
-  on3DModelClick?: (modelUrl: string, format: 'obj' | 'glb', mtlUrl?: string, textureUrl?: string) => void
-  onVideoClick?: (videoUrl: string) => void
+  clearSelection: () => void
 }
 
 type Props = {
@@ -151,7 +147,7 @@ function computeNextPosition(elements: any[], maxNumPerRow = 4, spacing = 20) {
 }
 
 export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
-  ({ canvasId, theme, initialData, onDataChange, onImageToInput, onThemeChange, on3DModelClick, onVideoClick, onModalClose }, ref) => {
+  ({ canvasId, theme, initialData, onDataChange, onImageToInput, onThemeChange, on3DModelClick, onVideoClick }, ref) => {
     const [api, setApi] = useState<any>(null)
     const saveTimer = useRef<number | null>(null)
     const imageToInputCallbackRef = useRef<((url: string) => void) | null>(null)
@@ -161,7 +157,7 @@ export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
     const lastClickTimeRef = useRef<number>(0) // 记录上次点击时间（用于双击检测）
     const lastClickedElementRef = useRef<string | null>(null) // 记录上次点击的元素ID
     const modalJustClosedRef = useRef<boolean>(false) // 标记弹框是否刚关闭（防止立即重新打开）
-    const videoClickTimeoutRef = useRef<NodeJS.Timeout | null>(null) // 视频单击延迟定时器
+    const videoClickTimeoutRef = useRef<number | null>(null) // 视频单击延迟定时器
     const isInitialLoadRef = useRef<boolean>(true) // 标记是否是初始加载（防止页面加载时自动触发）
     const videoDoubleClickProcessedRef = useRef<string | null>(null) // 标记已经处理过的双击元素ID（防止重复触发）
     const lastSelectedElementIdRef = useRef<string | null>(null) // 记录上次选中的元素ID（用于检测选中状态变化）
@@ -1023,64 +1019,116 @@ export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
         addVideo: async ({ videoUrl }) => {
           if (!api) return
 
-          // 从视频中提取第一帧作为预览图
-          const previewImageUrl = await new Promise<string>((resolve, reject) => {
-            const video = document.createElement('video')
-            video.crossOrigin = 'anonymous'
-            video.preload = 'metadata'
-            
-            video.onloadedmetadata = () => {
-              // 设置视频到第一帧
-              video.currentTime = 0.1 // 稍微偏移，确保能获取到帧
-            }
-            
-            video.onseeked = () => {
-              // 创建canvas来捕获视频帧
-              const canvas = document.createElement('canvas')
-              canvas.width = video.videoWidth || 640
-              canvas.height = video.videoHeight || 360
-              const ctx = canvas.getContext('2d')
-              
-              if (!ctx) {
-                reject(new Error('无法创建 canvas context'))
-                return
+          const drawPlayIcon = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+            const centerX = width / 2
+            const centerY = height / 2
+            const iconSize = Math.min(width, height) * 0.14
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.78)'
+            ctx.beginPath()
+            ctx.arc(centerX, centerY, iconSize, 0, Math.PI * 2)
+            ctx.fill()
+
+            ctx.fillStyle = 'rgba(80, 80, 80, 0.95)'
+            ctx.beginPath()
+            const triangleSize = iconSize * 0.56
+            ctx.moveTo(centerX - triangleSize * 0.3, centerY - triangleSize * 0.55)
+            ctx.lineTo(centerX - triangleSize * 0.3, centerY + triangleSize * 0.55)
+            ctx.lineTo(centerX + triangleSize * 0.75, centerY)
+            ctx.closePath()
+            ctx.fill()
+          }
+
+          const createFallbackPreview = () => {
+            const canvas = document.createElement('canvas')
+            canvas.width = 640
+            canvas.height = 360
+            const ctx = canvas.getContext('2d')
+            if (!ctx) return ''
+
+            const gradient = ctx.createLinearGradient(0, 0, 640, 360)
+            gradient.addColorStop(0, '#111827')
+            gradient.addColorStop(1, '#1f2937')
+            ctx.fillStyle = gradient
+            ctx.fillRect(0, 0, 640, 360)
+
+            drawPlayIcon(ctx, 640, 360)
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.92)'
+            ctx.font = '600 28px system-ui, -apple-system, BlinkMacSystemFont, sans-serif'
+            ctx.textAlign = 'center'
+            ctx.fillText('视频已生成', 320, 255)
+
+            const filename = videoUrl.split('/').pop() || videoUrl
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.62)'
+            ctx.font = '18px system-ui, -apple-system, BlinkMacSystemFont, sans-serif'
+            ctx.fillText(filename.length > 42 ? `${filename.slice(0, 39)}...` : filename, 320, 286)
+
+            return canvas.toDataURL('image/jpeg', 0.9)
+          }
+
+          const captureVideoPreview = async () => {
+            return new Promise<string>((resolve, reject) => {
+              const video = document.createElement('video')
+              const timeout = window.setTimeout(() => {
+                reject(new Error('视频预览抽帧超时'))
+              }, 4000)
+
+              const cleanup = () => {
+                window.clearTimeout(timeout)
+                video.onloadedmetadata = null
+                video.onseeked = null
+                video.onerror = null
               }
-              
-              // 绘制视频帧到canvas
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-              
-              // 在预览图上绘制播放图标（小一些，透明灰白色风格）
-              const centerX = canvas.width / 2
-              const centerY = canvas.height / 2
-              const iconSize = Math.min(canvas.width, canvas.height) * 0.12 // 图标大小为画布的12%（更小）
-              
-              // 绘制半透明圆形背景（灰白色，透明）
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.7)' // 半透明白色
-              ctx.beginPath()
-              ctx.arc(centerX, centerY, iconSize, 0, Math.PI * 2)
-              ctx.fill()
-              
-              // 绘制播放三角形（灰白色，更透明）
-              ctx.fillStyle = 'rgba(100, 100, 100, 0.9)' // 灰白色
-              ctx.beginPath()
-              const triangleSize = iconSize * 0.5
-              ctx.moveTo(centerX - triangleSize * 0.3, centerY - triangleSize * 0.5)
-              ctx.lineTo(centerX - triangleSize * 0.3, centerY + triangleSize * 0.5)
-              ctx.lineTo(centerX + triangleSize * 0.7, centerY)
-              ctx.closePath()
-              ctx.fill()
-              
-              // 转换为data URL
-              const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
-              resolve(dataUrl)
-            }
-            
-            video.onerror = () => {
-              reject(new Error('加载视频失败'))
-            }
-            
-            video.src = videoUrl
-          })
+
+              video.crossOrigin = 'anonymous'
+              video.preload = 'metadata'
+
+              video.onloadedmetadata = () => {
+                video.currentTime = Math.min(0.1, Math.max(0, (video.duration || 1) / 10))
+              }
+
+              video.onseeked = () => {
+                const canvas = document.createElement('canvas')
+                canvas.width = video.videoWidth || 640
+                canvas.height = video.videoHeight || 360
+                const ctx = canvas.getContext('2d')
+
+                if (!ctx) {
+                  cleanup()
+                  reject(new Error('无法创建 canvas context'))
+                  return
+                }
+
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+                drawPlayIcon(ctx, canvas.width, canvas.height)
+
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
+                cleanup()
+                resolve(dataUrl)
+              }
+
+              video.onerror = () => {
+                cleanup()
+                reject(new Error('加载视频失败'))
+              }
+
+              video.src = videoUrl
+            })
+          }
+
+          let previewImageUrl = ''
+          try {
+            previewImageUrl = await captureVideoPreview()
+          } catch (error) {
+            console.warn('视频抽帧失败，使用占位预览图:', error)
+            previewImageUrl = createFallbackPreview()
+          }
+
+          if (!previewImageUrl) {
+            console.warn('无法创建视频预览图，跳过插入画布:', videoUrl)
+            return
+          }
 
           // 使用预览图作为图片添加到画布（类似3D模型预览）
           const img = new Image()
@@ -1209,12 +1257,13 @@ export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
 
     // 添加原生双击事件监听器，用于检测视频和3D模型的双击
     useEffect(() => {
-      const handleDblClick = (e: MouseEvent) => {
+      const handleDblClick = (e: Event) => {
+        const mouseEvent = e as MouseEvent
         console.log('🖱️ [双击事件] 检测到双击', {
           hasApi: !!api,
           isInitialLoad: isInitialLoadRef.current,
           modalJustClosed: modalJustClosedRef.current,
-          target: e.target
+          target: mouseEvent.target
         })
         
         if (!api || isInitialLoadRef.current || modalJustClosedRef.current) {
@@ -1286,15 +1335,15 @@ export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
         // 处理视频双击
         if (linkData && linkData.type === 'video' && linkData.videoUrl && onVideoClick) {
           console.log('✅ [双击事件] 触发视频播放')
-          e.stopPropagation()
-          e.preventDefault()
+          mouseEvent.stopPropagation()
+          mouseEvent.preventDefault()
           onVideoClick(linkData.videoUrl)
         }
         // 处理3D模型双击
         else if (linkData && linkData.type === '3d_model' && linkData.modelUrl && linkData.format && on3DModelClick) {
           console.log('✅ [双击事件] 触发3D模型打开')
-          e.stopPropagation()
-          e.preventDefault()
+          mouseEvent.stopPropagation()
+          mouseEvent.preventDefault()
           on3DModelClick(linkData.modelUrl, linkData.format, linkData.mtlUrl, linkData.textureUrl)
         } else {
           console.log('⏸️ [双击事件] 忽略 - 不是视频或3D模型元素')
@@ -1398,5 +1447,3 @@ export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
 ExcalidrawCanvas.displayName = 'ExcalidrawCanvas'
 
 export default ExcalidrawCanvas
-
-

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import ChatInterface from './components/ChatInterface'
 import HomePage from './components/HomePage'
+import SettingsPage from './components/SettingsPage'
 import './App.css'
 
 type ThemeMode = 'dark' | 'light'
@@ -9,6 +10,15 @@ function getCanvasIdFromUrl() {
   try {
     const url = new URL(window.location.href)
     return url.searchParams.get('canvasId') || ''
+  } catch {
+    return ''
+  }
+}
+
+function getPageFromUrl() {
+  try {
+    const url = new URL(window.location.href)
+    return url.searchParams.get('page') || ''
   } catch {
     return ''
   }
@@ -26,10 +36,14 @@ function readInitialTheme(): ThemeMode {
 
 function App() {
   const [canvasId, setCanvasId] = useState<string>(() => getCanvasIdFromUrl())
+  const [page, setPage] = useState<string>(() => getPageFromUrl())
   const [theme, setTheme] = useState<ThemeMode>(() => readInitialTheme())
 
   useEffect(() => {
-    const onPop = () => setCanvasId(getCanvasIdFromUrl())
+    const onPop = () => {
+      setCanvasId(getCanvasIdFromUrl())
+      setPage(getPageFromUrl())
+    }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
@@ -47,7 +61,9 @@ function App() {
 
   return (
     <div className="app">
-      {canvasId ? (
+      {page === 'settings' ? (
+        <SettingsPage theme={theme} onToggleTheme={toggleTheme} />
+      ) : canvasId ? (
         <ChatInterface
           initialCanvasId={canvasId}
           theme={theme}
@@ -62,7 +78,6 @@ function App() {
 }
 
 export default App
-
 
 
 

@@ -29,8 +29,57 @@ class StreamProcessor:
         self.tool_call_args: Dict[str, Dict[str, Any]] = {}  # 用于累积工具调用参数
         self.tool_call_names: Dict[str, str] = {}  # 用于存储工具调用名称（key: tool_call_id, value: tool_name）
         self.tool_call_args_buffer: Dict[str, str] = {}  # 用于累积参数JSON字符串（key: tool_call_id, value: 累积的JSON字符串）
+        self.skill_matched_emitted: set = set()  # 已发送过 skill_matched 事件的 tool_call_id 集合
         # LangGraph 默认 recursion_limit=25，生成多张图会很容易超过这个步数导致报错
         self.recursion_limit = int(os.getenv("RECURSION_LIMIT", "200"))
+
+    def _extract_skill_name(self, path: str) -> str:
+        """从 skill 文件路径中提取 skill 目录名（ID）"""
+        parts = path.replace("\\", "/").split("/")
+        for i, part in enumerate(parts):
+            if part in ("custom", "public", "builtin") and i + 1 < len(parts):
+                return parts[i + 1]
+        for i, part in enumerate(parts):
+            if part.endswith(".md") and i > 0:
+                return parts[i - 1]
+        return parts[-2] if len(parts) >= 2 else ""
+
+    def _extract_skill_display_name(self, skill_id: str) -> str:
+        """通过 skill_id 查找可读的显示名称（来自 SKILL.md frontmatter name 字段）"""
+        try:
+            from app.services import skill_service
+
+            for skill in skill_service.get_skills_with_state():
+                if skill.id == skill_id:
+                    return skill.name
+        except Exception:
+            pass
+        return skill_id
+
+    async def _maybe_emit_skill_matched(
+        self,
+        tool_name: str,
+        tool_call_id: str,
+        tool_args: dict,
+    ) -> AsyncGenerator[str, None]:
+        """如果是 read_skill_file 且尚未发送过，则发送 skill_matched 事件"""
+        if tool_name != "read_skill_file" or tool_call_id in self.skill_matched_emitted:
+            return
+
+        skill_path = tool_args.get("path", "")
+        skill_id = self._extract_skill_name(skill_path)
+        if not skill_id:
+            return
+
+        skill_display_name = self._extract_skill_display_name(skill_id)
+        logger.info(f"🎯 命中 skill: {skill_id} ({skill_display_name})")
+        skill_event = {
+            "type": "skill_matched",
+            "skill_name": skill_display_name,
+            "tool_call_id": tool_call_id,
+        }
+        self.skill_matched_emitted.add(tool_call_id)
+        yield f"data: {json.dumps(skill_event, ensure_ascii=False)}\n\n"
 
     async def process_stream(
         self,
@@ -303,7 +352,10 @@ class StreamProcessor:
                         if final_args:
                             logger.info(f"🛠️  工具调用: name={tool_name}, id={tool_call_id}")
                             logger.info(f"   参数: {final_args}")
-                            
+
+                            async for ev in self._maybe_emit_skill_matched(tool_name, tool_call_id, final_args):
+                                yield ev
+
                             event = {
                                 "type": "tool_call",
                                 "id": tool_call_id,
@@ -367,7 +419,10 @@ class StreamProcessor:
                                         if tool_name:
                                             logger.info(f"🛠️  工具调用（参数更新）: name={tool_name}, id={tc_id}")
                                             logger.info(f"   参数: {self.tool_call_args[tc_id]}")
-                                            
+
+                                            async for ev in self._maybe_emit_skill_matched(tool_name, tc_id, self.tool_call_args[tc_id]):
+                                                yield ev
+
                                             # 发送更新后的工具调用事件（包含完整参数）
                                             event = {
                                                 "type": "tool_call",
@@ -391,7 +446,10 @@ class StreamProcessor:
                                 if tool_name:
                                     logger.info(f"🛠️  工具调用（参数更新）: name={tool_name}, id={tc_id}")
                                     logger.info(f"   参数: {self.tool_call_args[tc_id]}")
-                                    
+
+                                    async for ev in self._maybe_emit_skill_matched(tool_name, tc_id, self.tool_call_args[tc_id]):
+                                        yield ev
+
                                     event = {
                                         "type": "tool_call",
                                         "id": tc_id,

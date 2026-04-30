@@ -8,6 +8,7 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 from langgraph.prebuilt import create_react_agent
 from app.services.stream_processor import StreamProcessor
 from app.services.prompt import get_full_prompt
+from app.services import skill_service
 from app.tools.volcano_image_generation import generate_volcano_image_tool, edit_volcano_image_tool
 from app.tools.model_3d_generation import generate_3d_model_tool
 from app.tools.volcano_video_generation import generate_volcano_video_tool
@@ -15,7 +16,17 @@ from app.tools.video_concatenation import concatenate_videos_tool
 from app.tools.virtual_anchor_generation import detect_face_tool, generate_virtual_anchor_tool
 from app.tools.qwen_tts import qwen_voice_design_tool, qwen_voice_cloning_tool
 from app.tools.audio_mixing import concatenate_audio_tool, select_bgm_tool, mix_audio_with_bgm_tool
+from app.tools.qwen_omni_understanding import qwen_omni_understand_tool
+from app.tools.skill_tools import (
+    read_skill_file_tool,
+    list_skill_dir_tool,
+    init_skill_tool,
+    write_skill_file_tool,
+    delete_skill_file_tool,
+)
+from app.tools.workspace_tools import write_memory
 from app.llm.factory import create_llm
+from app.services import workspace_service
 
 # 使用统一的日志配置
 logger = logging.getLogger(__name__)
@@ -44,6 +55,17 @@ def create_agent():
         concatenate_audio_tool,
         select_bgm_tool,
         mix_audio_with_bgm_tool,
+        # Qwen3-Omni 多模态理解工具
+        qwen_omni_understand_tool,
+        # Skill 文件读取工具（Progressive Loading）
+        read_skill_file_tool,
+        list_skill_dir_tool,
+        # Skill 创建工具（skill-creator 工作流支持）
+        init_skill_tool,
+        write_skill_file_tool,
+        delete_skill_file_tool,
+        # 工作空间长期记忆工具
+        write_memory,
     ]
     logger.info(f"🛠️  注册工具: {[tool.name for tool in tools]}")
 
@@ -54,7 +76,13 @@ def create_agent():
     tools_list_text = "\n".join(tool_descriptions)
 
     # 使用prompt模块生成完整提示词
-    full_prompt = get_full_prompt(tools_list_text)
+    skills_context = skill_service.get_skills_context()
+    workspace_context = workspace_service.get_workspace_context()
+    full_prompt = get_full_prompt(
+        tools_list_text=tools_list_text,
+        skills_context=skills_context,
+        workspace_context=workspace_context,
+    )
 
     # 创建Agent
     agent = create_react_agent(
@@ -124,4 +152,3 @@ async def process_chat_stream(
         except:
             # 如果发送失败（客户端已断开），忽略
             pass
-
