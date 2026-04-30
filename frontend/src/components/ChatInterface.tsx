@@ -7,6 +7,7 @@ import ExcalidrawCanvas, {
   ExcalidrawCanvasHandle,
 } from './ExcalidrawCanvas'
 import Model3DViewer from './Model3DViewer'
+import { parseStoryboard, Storyboard } from './storyboard'
 
 type ChatInterfaceProps = {
   initialCanvasId?: string
@@ -58,6 +59,41 @@ interface Canvas {
   data?: ExcalidrawCanvasData
   messages: Message[]
 }
+
+const StoryboardPanel = ({ storyboard }: { storyboard: Storyboard }) => (
+  <div className="storyboard-panel">
+    <div className="storyboard-panel__header">
+      <div>
+        <div className="storyboard-panel__eyebrow">分镜流程</div>
+        <div className="storyboard-panel__title">{storyboard.title || '视频分镜'}</div>
+      </div>
+      <span className="storyboard-panel__count">{storyboard.shots.length} 镜头</span>
+    </div>
+
+    <div className="storyboard-timeline">
+      {storyboard.shots.map((shot) => (
+        <div key={`${shot.index}-${shot.description}`} className="storyboard-shot">
+          <div className="storyboard-shot__marker">{shot.index}</div>
+          <div className="storyboard-shot__body">
+            <div className="storyboard-shot__meta">
+              <span>镜头 {shot.index}</span>
+              {shot.duration && <span>{shot.duration}</span>}
+              {shot.tag && <span>{shot.tag}</span>}
+            </div>
+            <div className="storyboard-shot__description">{shot.description}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    {(storyboard.style || storyboard.tone) && (
+      <div className="storyboard-panel__footer">
+        {storyboard.style && <span>风格：{storyboard.style}</span>}
+        {storyboard.tone && <span>色调：{storyboard.tone}</span>}
+      </div>
+    )}
+  </div>
+)
 
 const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: ChatInterfaceProps) => {
   const [messages, setMessages] = useState<Message[]>([])
@@ -1606,6 +1642,11 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                 <div className="message-content">
                   {message.role === 'assistant' ? (
                     <>
+                      {message.content && (() => {
+                        const storyboard = parseStoryboard(message.content)
+                        return storyboard ? <StoryboardPanel storyboard={storyboard} /> : null
+                      })()}
+
                       {/* 前置文本 */}
                       {message.content && (
                         <div className="message-text">
