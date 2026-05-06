@@ -1,20 +1,24 @@
 """
 聊天路由 - 处理对话请求
 """
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Dict, Any, Optional
 import json
 import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from app.auth.dependencies import get_current_user
+from app.db.database import get_session
+from app.db.models import User
 from app.services.agent_service import process_chat_stream
 from app.services.history_service import history_service
 from app.services.connection_manager import manager
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 class ChatRequest(BaseModel):
@@ -25,13 +29,17 @@ class ChatRequest(BaseModel):
 
 
 @router.get("/canvases")
-async def get_canvases():
+async def get_canvases(session: AsyncSession = Depends(get_session)):
     """获取所有画布历史"""
-    return history_service.get_canvases()
+    return await history_service.get_canvases(session)
 
 
 @router.post("/canvases")
-async def save_canvas(request: Request):
+async def save_canvas(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     """保存或更新画布（项目）
 
     注意：前端会携带 Excalidraw 的 data(elements/appState/files)，
@@ -39,13 +47,13 @@ async def save_canvas(request: Request):
     这里直接存原始 JSON，避免 data 被过滤导致刷新后画布空白。
     """
     payload = await request.json()
-    return history_service.save_canvas(payload)
+    return await history_service.save_canvas(session, payload, owner_id=user.id)
 
 
 @router.delete("/canvases/{canvas_id}")
-async def delete_canvas(canvas_id: str):
+async def delete_canvas(canvas_id: str, session: AsyncSession = Depends(get_session)):
     """删除画布"""
-    history_service.delete_canvas(canvas_id)
+    await history_service.delete_canvas(session, canvas_id)
     return {"success": True}
 
 

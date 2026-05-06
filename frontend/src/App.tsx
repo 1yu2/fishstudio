@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import ChatInterface from './components/ChatInterface'
 import HomePage from './components/HomePage'
 import SettingsPage from './components/SettingsPage'
+import LoginPage from './components/LoginPage'
+import { getToken } from './api'
 import './App.css'
 
 type ThemeMode = 'dark' | 'light'
@@ -38,14 +40,20 @@ function App() {
   const [canvasId, setCanvasId] = useState<string>(() => getCanvasIdFromUrl())
   const [page, setPage] = useState<string>(() => getPageFromUrl())
   const [theme, setTheme] = useState<ThemeMode>(() => readInitialTheme())
+  const [authed, setAuthed] = useState<boolean>(() => Boolean(getToken()))
 
   useEffect(() => {
     const onPop = () => {
       setCanvasId(getCanvasIdFromUrl())
       setPage(getPageFromUrl())
     }
+    const onUnauthorized = () => setAuthed(false)
     window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
+    window.addEventListener('fishstudio:unauthorized', onUnauthorized)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      window.removeEventListener('fishstudio:unauthorized', onUnauthorized)
+    }
   }, [])
 
   useEffect(() => {
@@ -58,6 +66,14 @@ function App() {
   }, [theme])
 
   const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
+
+  if (!authed) {
+    return (
+      <div className="app">
+        <LoginPage onLoggedIn={() => setAuthed(true)} />
+      </div>
+    )
+  }
 
   return (
     <div className="app">
@@ -78,9 +94,3 @@ function App() {
 }
 
 export default App
-
-
-
-
-
-

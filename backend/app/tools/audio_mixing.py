@@ -84,7 +84,7 @@ def configure_pydub_ffmpeg() -> str:
 configure_pydub_ffmpeg()
 
 
-def load_audio_segment(file_path: Path) -> AudioSegment:
+def load_audio_segment(file_path: Path) -> "AudioSegment":
     """Load an audio file through ffmpeg without requiring ffprobe."""
     suffix = file_path.suffix.lower().lstrip(".")
     codec_by_format = {

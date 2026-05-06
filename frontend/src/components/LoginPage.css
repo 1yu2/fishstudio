@@ -1,0 +1,175 @@
+/* 登录页：跟 HomePage / SettingsPage 走同一套 token */
+
+.login {
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(37, 99, 235, 0.18), transparent 55%),
+    radial-gradient(circle at 80% 100%, rgba(168, 85, 247, 0.18), transparent 55%),
+    var(--app-bg);
+  color: var(--app-fg);
+  box-sizing: border-box;
+}
+
+.login__card {
+  width: 100%;
+  max-width: 400px;
+  padding: 32px;
+  border-radius: 16px;
+  background: var(--login-card-bg);
+  border: 1px solid var(--login-card-border);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+  box-sizing: border-box;
+}
+
+.login__title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--app-fg);
+}
+
+.login__subtitle {
+  margin: 0 0 24px;
+  font-size: 13px;
+  color: var(--login-muted);
+}
+
+.login__field {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.login__label {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: var(--login-muted);
+}
+
+.login__input-wrap {
+  position: relative;
+}
+
+.login__input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--login-input-border);
+  background: var(--login-input-bg);
+  color: var(--app-fg);
+  font-size: 14px;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.login__input--with-toggle {
+  padding-right: 40px;
+}
+
+.login__input:focus {
+  border-color: rgba(37, 99, 235, 0.55);
+  background: var(--login-input-bg-focus);
+}
+
+.login__input::placeholder {
+  color: var(--login-muted);
+}
+
+.login__toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--app-fg);
+  opacity: 0.65;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.login__toggle:hover {
+  opacity: 1;
+  background: var(--login-toggle-hover);
+}
+
+.login__error {
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  border-radius: 8px;
+  background: var(--login-error-bg);
+  color: var(--login-error-fg);
+  border: 1px solid var(--login-error-border);
+  font-size: 13px;
+}
+
+.login__submit {
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.95), rgba(168, 85, 247, 0.85));
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.15s ease;
+  margin-top: 4px;
+}
+
+.login__submit:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+.login__submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login__hint {
+  margin: 16px 0 0;
+  font-size: 12px;
+  color: var(--login-muted);
+  line-height: 1.5;
+}
+
+/* 暗色（默认） */
+[data-theme="dark"] {
+  --login-card-bg: rgba(255, 255, 255, 0.04);
+  --login-card-border: rgba(255, 255, 255, 0.08);
+  --login-muted: rgba(229, 231, 235, 0.6);
+  --login-input-bg: rgba(255, 255, 255, 0.04);
+  --login-input-bg-focus: rgba(255, 255, 255, 0.06);
+  --login-input-border: rgba(255, 255, 255, 0.14);
+  --login-toggle-hover: rgba(255, 255, 255, 0.08);
+  --login-error-bg: rgba(220, 60, 60, 0.12);
+  --login-error-border: rgba(220, 60, 60, 0.28);
+  --login-error-fg: #ff9090;
+}
+
+/* 亮色 */
+[data-theme="light"] {
+  --login-card-bg: rgba(255, 255, 255, 0.92);
+  --login-card-border: rgba(15, 23, 42, 0.08);
+  --login-muted: rgba(15, 23, 42, 0.6);
+  --login-input-bg: #ffffff;
+  --login-input-bg-focus: #ffffff;
+  --login-input-border: rgba(15, 23, 42, 0.14);
+  --login-toggle-hover: rgba(15, 23, 42, 0.06);
+  --login-error-bg: rgba(220, 60, 60, 0.08);
+  --login-error-border: rgba(220, 60, 60, 0.22);
+  --login-error-fg: #b91c1c;
+}

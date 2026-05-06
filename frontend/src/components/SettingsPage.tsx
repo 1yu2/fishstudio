@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { apiFetch, logout } from '../api'
 import {
   ArrowLeft,
   Sun,
@@ -17,6 +18,7 @@ import {
   Zap,
   Package,
   Brain,
+  LogOut,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import './SettingsPage.css'
@@ -278,7 +280,7 @@ function ToolsPanel() {
 
   useEffect(() => {
     setLoading(true)
-    fetch('/api/settings/skills')
+    apiFetch('/api/settings/skills')
       .then((r) => r.json())
       .then((d) => setTools(d.skills || []))
       .catch(() => setToast({ type: 'error', msg: '加载失败' }))
@@ -294,7 +296,7 @@ function ToolsPanel() {
     setSaving(true)
     setToast(null)
     try {
-      const res = await fetch('/api/settings/skills', {
+      const res = await apiFetch('/api/settings/skills', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ skills: tools }),
@@ -399,7 +401,7 @@ function SkillFilePreview({ skill }: { skill: InstalledSkill }) {
   useEffect(() => {
     setLoading(true)
     setError(false)
-    fetch(`/api/settings/skills/installed/${skill.id}/content`)
+    apiFetch(`/api/settings/skills/installed/${skill.id}/content`)
       .then((r) => {
         if (!r.ok) throw new Error()
         return r.json()
@@ -473,7 +475,7 @@ function WorkspacePanel() {
 
   useEffect(() => {
     setLoading(true)
-    fetch('/api/settings/workspace')
+    apiFetch('/api/settings/workspace')
       .then((r) => r.json())
       .then((data: WorkspaceFile[]) => {
         setFiles(Array.isArray(data) ? data : [])
@@ -498,7 +500,7 @@ function WorkspacePanel() {
     setSaving(true)
     setToast(null)
     try {
-      const res = await fetch(`/api/settings/workspace/${selectedId}`, {
+      const res = await apiFetch(`/api/settings/workspace/${selectedId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editContent }),
@@ -624,7 +626,7 @@ function SkillsPanel() {
 
   useEffect(() => {
     setLoading(true)
-    fetch('/api/settings/skills/installed')
+    apiFetch('/api/settings/skills/installed')
       .then((r) => r.json())
       .then((data) => setSkills(Array.isArray(data) ? data : []))
       .catch(() => setToast({ type: 'error', msg: '加载失败' }))
@@ -638,7 +640,7 @@ function SkillsPanel() {
     setSkills((prev) => prev.map((s) => s.id === skill.id ? { ...s, enabled: newEnabled } : s))
     setTogglingId(skill.id)
     try {
-      const res = await fetch(`/api/settings/skills/installed/${skill.id}`, {
+      const res = await apiFetch(`/api/settings/skills/installed/${skill.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: newEnabled }),
@@ -791,7 +793,7 @@ function MCPPanel() {
 
   useEffect(() => {
     setLoading(true)
-    fetch('/api/settings/mcp')
+    apiFetch('/api/settings/mcp')
       .then((r) => r.json())
       .then((d) => {
         const servers = d.mcpServers || {}
@@ -847,7 +849,7 @@ function MCPPanel() {
       catch { setToast({ type: 'error', msg: 'JSON 格式错误，无法保存' }); setSaving(false); return }
     } else { payload = { mcpServers: fromFormList(forms) } }
     try {
-      const res = await fetch('/api/settings/mcp', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const res = await apiFetch('/api/settings/mcp', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       if (!res.ok) throw new Error()
       setToast({ type: 'success', msg: '已保存' })
       setTimeout(() => setToast(null), 2500)
@@ -937,7 +939,7 @@ function EnvPanel() {
 
   useEffect(() => {
     setLoading(true)
-    fetch('/api/settings/env')
+    apiFetch('/api/settings/env')
       .then((r) => r.json())
       .then((d) => {
         const grps: EnvGroup[] = d.groups || []
@@ -956,7 +958,7 @@ function EnvPanel() {
   const save = async () => {
     setSaving(true); setToast(null)
     try {
-      const res = await fetch('/api/settings/env', {
+      const res = await apiFetch('/api/settings/env', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates: Object.entries(values).map(([key, value]) => ({ key, value })) }),
       })
@@ -1061,6 +1063,16 @@ export default function SettingsPage({ theme, onToggleTheme }: SettingsPageProps
           <button className="settings-page__theme-btn" onClick={onToggleTheme}>
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             {theme === 'dark' ? '亮色' : '暗色'}
+          </button>
+          <button
+            className="settings-page__theme-btn"
+            onClick={() => {
+              if (window.confirm('确定要退出登录吗？')) logout()
+            }}
+            title="退出登录"
+          >
+            <LogOut size={16} />
+            退出
           </button>
         </div>
       </header>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import './HomePage.css'
-import { ArrowRight, Clock, LayoutGrid, Search, Paperclip, X, Sun, Moon, Trash2, Settings } from 'lucide-react'
+import { ArrowRight, Clock, LayoutGrid, Search, Paperclip, X, Sun, Moon, Trash2, Settings, LogOut } from 'lucide-react'
+import { apiFetch, logout } from '../api'
 
 type ThemeMode = 'dark' | 'light'
 
@@ -120,7 +121,7 @@ export default function HomePage({
     const load = async () => {
       try {
         setLoading(true)
-        const res = await fetch('/api/canvases')
+        const res = await apiFetch('/api/canvases')
         if (!res.ok) throw new Error('Failed to load projects')
         const data = (await res.json()) as CanvasSummary[]
         setProjects(Array.isArray(data) ? data : [])
@@ -161,7 +162,7 @@ export default function HomePage({
       formData.append('file', file)
       
       const endpoint = isImage ? '/api/upload-image' : '/api/upload-audio'
-      const response = await fetch(endpoint, {
+      const response = await apiFetch(endpoint, {
         method: 'POST',
         body: formData,
       })
@@ -200,7 +201,7 @@ export default function HomePage({
     if (!confirm('确定要删除这个项目吗？')) return
     
     try {
-      await fetch(`/api/canvases/${projectId}`, { method: 'DELETE' })
+      await apiFetch(`/api/canvases/${projectId}`, { method: 'DELETE' })
       setProjects(prev => prev.filter(p => p.id !== projectId))
     } catch (e) {
       console.error('删除项目失败', e)
@@ -222,7 +223,7 @@ export default function HomePage({
         data: { elements: [], files: {}, },
         messages: [],
       }
-      await fetch('/api/canvases', {
+      await apiFetch('/api/canvases', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -286,6 +287,16 @@ export default function HomePage({
           <button className="home__btn home__btn--ghost" onClick={onToggleTheme} title="切换主题">
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             {theme === 'dark' ? '亮色' : '暗色'}
+          </button>
+          <button
+            className="home__btn home__btn--ghost"
+            onClick={() => {
+              if (window.confirm('确定要退出登录吗？')) logout()
+            }}
+            title="退出登录"
+          >
+            <LogOut size={16} />
+            退出
           </button>
         </div>
       </header>
@@ -386,7 +397,7 @@ export default function HomePage({
                             formData.append('file', file)
 
                             const endpoint = isImage ? '/api/upload-image' : '/api/upload-audio'
-                            const response = await fetch(endpoint, {
+                            const response = await apiFetch(endpoint, {
                               method: 'POST',
                               body: formData,
                             })

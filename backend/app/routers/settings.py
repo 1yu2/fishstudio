@@ -2,24 +2,27 @@
 FishStudio 设置 API 路由
 支持 Skills 配置、MCP 服务器配置、环境变量配置
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Any
-import json
 import re
 import logging
+
+from app.auth.dependencies import get_current_user, require_admin
+from app.db.database import get_session
+from app.db.models import AuditLog, Setting, User
 from app.services import skill_service
 from app.services import workspace_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
-# 存储路径
+# .env 文件路径（环境变量配置仍然写到 .env 文件，需重启生效）
 BASE_DIR = Path(__file__).parent.parent.parent
-STORAGE_DIR = BASE_DIR / "storage"
-SETTINGS_FILE = STORAGE_DIR / "settings.json"
 ENV_FILE = BASE_DIR / ".env"
 
 # 默认 skills 配置
@@ -83,22 +86,22 @@ DEFAULT_SKILLS = [
 ]
 
 
-def _load_settings() -> dict:
-    """读取 settings.json，若不存在则返回默认值"""
-    try:
-        if SETTINGS_FILE.exists():
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.warning(f"Failed to load settings.json: {e}")
-    return {}
+# ─────────────────────────────────────────
+# DB-backed settings KV helpers
+# ─────────────────────────────────────────
+
+async def _get_setting(session: AsyncSession, key: str, default: Any = None) -> Any:
+    row = await session.get(Setting, key)
+    return row.value if row is not None else default
 
 
-def _save_settings(data: dict) -> None:
-    """保存到 settings.json"""
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+async def _set_setting(session: AsyncSession, key: str, value: Any) -> None:
+    row = await session.get(Setting, key)
+    if row is None:
+        session.add(Setting(key=key, value=value))
+    else:
+        row.value = value
+    await session.commit()
 
 
 # ─────────────────────────────────────────
@@ -118,9 +121,9 @@ class SkillsPayload(BaseModel):
 
 
 @router.get("/settings/skills")
-async def get_skills():
+async def get_skills(session: AsyncSession = Depends(get_session)):
     """返回 skills 配置列表，已保存的启用状态会覆盖默认值"""
-    stored = _load_settings().get("skills", {})
+    stored = await _get_setting(session, "skills", {}) or {}
     skills = []
     for s in DEFAULT_SKILLS:
         item = dict(s)
@@ -131,11 +134,9 @@ async def get_skills():
 
 
 @router.put("/settings/skills")
-async def put_skills(payload: SkillsPayload):
+async def put_skills(payload: SkillsPayload, session: AsyncSession = Depends(get_session)):
     """保存 skills 启用状态"""
-    data = _load_settings()
-    data["skills"] = {s.id: s.enabled for s in payload.skills}
-    _save_settings(data)
+    await _set_setting(session, "skills", {s.id: s.enabled for s in payload.skills})
     return {"ok": True}
 
 
@@ -209,23 +210,20 @@ async def get_installed_skill_content(skill_id: str):
 # ─────────────────────────────────────────
 
 @router.get("/settings/mcp")
-async def get_mcp():
+async def get_mcp(session: AsyncSession = Depends(get_session)):
     """返回 MCP servers 配置"""
-    data = _load_settings()
-    return {"mcpServers": data.get("mcpServers", {})}
+    return {"mcpServers": await _get_setting(session, "mcpServers", {}) or {}}
 
 
 @router.put("/settings/mcp")
-async def put_mcp(payload: dict[str, Any]):
+async def put_mcp(payload: dict[str, Any], session: AsyncSession = Depends(get_session)):
     """保存 MCP servers 配置"""
-    data = _load_settings()
-    data["mcpServers"] = payload.get("mcpServers", {})
-    _save_settings(data)
+    await _set_setting(session, "mcpServers", payload.get("mcpServers", {}))
     return {"ok": True}
 
 
 # ─────────────────────────────────────────
-# 环境变量配置
+# 环境变量配置（敏感操作：仅 admin + 写审计）
 # ─────────────────────────────────────────
 
 # 需要脱敏显示的字段前缀
@@ -296,6 +294,19 @@ ENV_GROUPS = [
 ]
 
 
+def _mask(value: str) -> str:
+    """敏感值脱敏：保留前 3 + 后 3 字符。"""
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "***"
+    return f"{value[:3]}***{value[-3:]}"
+
+
+def _is_sensitive_key(key: str) -> bool:
+    return any(p in key.upper() for p in SENSITIVE_PATTERNS)
+
+
 def _parse_env_file() -> dict[str, str]:
     """解析 .env 文件，返回 {key: value} 字典"""
     result: dict[str, str] = {}
@@ -329,7 +340,6 @@ def _write_env_key(key: str, value: str) -> None:
         else:
             new_lines.append(line)
     if not found:
-        # 追加到末尾
         if new_lines and not new_lines[-1].endswith("\n"):
             new_lines.append("\n")
         new_lines.append(f"{key}={value}\n")
@@ -337,8 +347,8 @@ def _write_env_key(key: str, value: str) -> None:
 
 
 @router.get("/settings/env")
-async def get_env():
-    """返回环境变量配置（敏感字段脱敏）"""
+async def get_env(_admin: User = Depends(require_admin)):
+    """返回环境变量配置（仅 admin；GET 不脱敏，因 admin 本来就有 .env 写权限）"""
     env_values = _parse_env_file()
     groups = []
     for group_def in ENV_GROUPS:
@@ -367,15 +377,34 @@ class EnvUpdatePayload(BaseModel):
 
 
 @router.put("/settings/env")
-async def put_env(payload: EnvUpdatePayload):
-    """更新 .env 文件中的指定键值对"""
-    # 仅允许更新已知 key
+async def put_env(
+    payload: EnvUpdatePayload,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """更新 .env 文件中的指定键值对（仅 admin；写审计日志）"""
     known_keys = {kdef["key"] for g in ENV_GROUPS for kdef in g["keys"]}
+    current = _parse_env_file()
     for item in payload.updates:
         if item.key not in known_keys:
             raise HTTPException(status_code=400, detail=f"Unknown key: {item.key}")
+        before_raw = current.get(item.key, "")
+        sensitive = _is_sensitive_key(item.key)
+        before_val = _mask(before_raw) if sensitive else before_raw
+        after_val = _mask(item.value) if sensitive else item.value
         _write_env_key(item.key, item.value)
-    return {"ok": True}
+        session.add(
+            AuditLog(
+                user_id=admin.id,
+                username=admin.username,
+                action="settings.env.update",
+                target=item.key,
+                before={"value": before_val},
+                after={"value": after_val},
+            )
+        )
+    await session.commit()
+    return {"ok": True, "requires_restart": True}
 
 
 # ─────────────────────────────────────────

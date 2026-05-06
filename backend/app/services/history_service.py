@@ -1,114 +1,77 @@
-import json
-import os
+"""画布历史持久化（Postgres 后端）。
+
+外部接口由原同步函数改为 async；调用方（routers/chat.py）需 await。
+"""
 import logging
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from typing import Any
+
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Canvas
 
 logger = logging.getLogger(__name__)
 
-HISTORY_FILE = "storage/chat_history.json"
 
-class Canvas(BaseModel):
-    id: str
-    name: str
-    createdAt: float
-    # Legacy: old DOM-drag canvas images
-    images: Optional[List[Dict[str, Any]]] = []
-    # New: Excalidraw canvas data (elements/appState/files)
-    data: Optional[Dict[str, Any]] = None
-    messages: List[Dict[str, Any]]
+def _row_to_dict(row: Canvas) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "createdAt": row.created_at_ts,
+        "images": row.images or [],
+        "data": row.data,
+        "messages": row.messages or [],
+    }
+
 
 class HistoryService:
-    def __init__(self):
-        self.file_path = HISTORY_FILE
-        self._ensure_storage_dir()
+    async def get_canvases(self, session: AsyncSession) -> list[dict[str, Any]]:
+        # 按更新时间倒序，与原"新的在前"一致
+        result = await session.execute(select(Canvas).order_by(desc(Canvas.updated_at)))
+        return [_row_to_dict(row) for row in result.scalars().all()]
 
-    def _ensure_storage_dir(self):
-        os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
-        if not os.path.exists(self.file_path):
-            self._save_data([])
+    async def save_canvas(
+        self, session: AsyncSession, canvas_data: dict[str, Any], owner_id: int | None = None
+    ) -> dict[str, Any]:
+        cid = canvas_data.get("id")
+        if not cid:
+            raise ValueError("canvas id is required")
+        existing = await session.get(Canvas, cid)
+        if existing is None:
+            row = Canvas(
+                id=str(cid),
+                name=str(canvas_data.get("name", "")),
+                created_at_ts=float(canvas_data.get("createdAt") or 0.0),
+                images=canvas_data.get("images") or [],
+                data=canvas_data.get("data"),
+                messages=canvas_data.get("messages") or [],
+                owner_id=owner_id,
+            )
+            session.add(row)
         else:
-            # 检查文件是否为空或格式错误，如果是则重置
-            try:
-                with open(self.file_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if not content:
-                        logger.warning("历史记录文件为空，重置为空列表")
-                        self._save_data([])
-                    else:
-                        # 尝试解析，如果失败会在 _load_data 中处理
-                        json.loads(content)
-            except (json.JSONDecodeError, Exception) as e:
-                logger.warning(f"初始化时发现历史记录文件格式错误: {e}，重置为空列表")
-                self._save_data([])
+            existing.name = str(canvas_data.get("name", existing.name))
+            if "createdAt" in canvas_data:
+                existing.created_at_ts = float(canvas_data.get("createdAt") or 0.0)
+            if "images" in canvas_data:
+                existing.images = canvas_data.get("images") or []
+            if "data" in canvas_data:
+                existing.data = canvas_data.get("data")
+            if "messages" in canvas_data:
+                existing.messages = canvas_data.get("messages") or []
+            if owner_id is not None and existing.owner_id is None:
+                existing.owner_id = owner_id
+            row = existing
+        await session.commit()
+        await session.refresh(row)
+        return _row_to_dict(row)
 
-    def _load_data(self) -> List[Dict[str, Any]]:
-        try:
-            if not os.path.exists(self.file_path):
-                return []
-            with open(self.file_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                # 处理空文件或格式错误
-                if not content:
-                    logger.warning(f"历史记录文件为空，返回空列表")
-                    return []
-                return json.loads(content)
-        except json.JSONDecodeError as e:
-            logger.error(f"历史记录文件格式错误: {e}，尝试修复...")
-            # 如果文件损坏，备份并重置
-            try:
-                backup_path = self.file_path + '.backup'
-                if os.path.exists(self.file_path):
-                    import shutil
-                    shutil.copy2(self.file_path, backup_path)
-                    logger.info(f"已备份损坏文件到: {backup_path}")
-                # 重置为空列表
-                self._save_data([])
-                return []
-            except Exception as backup_error:
-                logger.error(f"备份文件失败: {backup_error}")
-                return []
-        except Exception as e:
-            logger.error(f"加载历史记录失败: {e}")
-            return []
-
-    def _save_data(self, data: List[Dict[str, Any]]):
-        try:
-            with open(self.file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"保存历史记录失败: {e}")
-
-    def get_canvases(self) -> List[Dict[str, Any]]:
-        return self._load_data()
-
-    def save_canvas(self, canvas_data: Dict[str, Any]):
-        canvases = self._load_data()
-        # 查找是否存在
-        index = -1
-        for i, c in enumerate(canvases):
-            if c.get('id') == canvas_data.get('id'):
-                index = i
-                break
-        
-        if index >= 0:
-            canvases[index] = canvas_data
-        else:
-            canvases.insert(0, canvas_data) # 新的在前面
-            
-        self._save_data(canvases)
-        return canvas_data
-
-    def delete_canvas(self, canvas_id: str):
-        canvases = self._load_data()
-        canvases = [c for c in canvases if c.get('id') != canvas_id]
-        self._save_data(canvases)
+    async def delete_canvas(self, session: AsyncSession, canvas_id: str) -> bool:
+        row = await session.get(Canvas, canvas_id)
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
         return True
 
+
 history_service = HistoryService()
-
-
-
-
-
-

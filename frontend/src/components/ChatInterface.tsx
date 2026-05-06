@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { Send, Paperclip, Image as ImageIcon, Sparkles, X, ChevronDown, ChevronRight, Link as LinkIcon, ArrowLeft, Sun, Moon, Download, Pause, Play, Settings } from 'lucide-react'
+import { Send, Paperclip, Image as ImageIcon, Sparkles, X, ChevronDown, ChevronRight, Link as LinkIcon, ArrowLeft, Sun, Moon, Download, Pause, Play, Settings, LogOut } from 'lucide-react'
+import { apiFetch, logout } from '../api'
 import ReactMarkdown from 'react-markdown'
 import './ChatInterface.css'
 import ExcalidrawCanvas, {
@@ -269,7 +270,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
 
   const fetchCanvases = async () => {
     try {
-      const res = await fetch('/api/canvases')
+      const res = await apiFetch('/api/canvases')
       if (res.ok) {
         const data = await res.json()
         if (Array.isArray(data) && data.length > 0) {
@@ -309,7 +310,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
 
   const saveCanvasToBackend = async (canvas: Canvas) => {
     try {
-      await fetch('/api/canvases', {
+      await apiFetch('/api/canvases', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(canvas)
@@ -605,7 +606,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       const abortController = new AbortController()
       abortControllerRef.current = abortController
 
-      const response = await fetch('/api/chat', {
+      const response = await apiFetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -911,15 +912,15 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       formData.append('file', file)
       
       const endpoint = isImage ? '/api/upload-image' : isAudio ? '/api/upload-audio' : '/api/upload-video'
-      const response = await fetch(endpoint, {
+      const response = await apiFetch(endpoint, {
         method: 'POST',
         body: formData,
       })
-      
+
       if (!response.ok) {
         throw new Error('上传失败')
       }
-      
+
       const data = await response.json()
       if (isImage) {
         setUploadedImages(prev => [...prev, data.url])
@@ -974,7 +975,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               formData.append('file', file)
 
               const endpoint = isImage ? '/api/upload-image' : isAudio ? '/api/upload-audio' : '/api/upload-video'
-              const response = await fetch(endpoint, {
+              const response = await apiFetch(endpoint, {
                 method: 'POST',
                 body: formData,
               })
@@ -1346,6 +1347,16 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
               <span>{theme === 'dark' ? '亮色' : '暗色'}</span>
             </button>
+            <button
+              className="control-btn"
+              onClick={() => {
+                if (window.confirm('确定要退出登录吗？')) logout()
+              }}
+              title="退出登录"
+            >
+              <LogOut size={18} />
+              <span>退出</span>
+            </button>
 
             <button
               className="control-btn"
@@ -1398,7 +1409,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                       const formData = new FormData()
                       formData.append('file', blob, 'image.png')
                       
-                      const uploadResponse = await fetch('/api/upload-image', {
+                      const uploadResponse = await apiFetch('/api/upload-image', {
                         method: 'POST',
                         body: formData,
                       })
@@ -1422,7 +1433,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                           const formData = new FormData()
                           formData.append('file', blob, 'image.png')
                           
-                          const uploadResponse = await fetch('/api/upload-image', {
+                          const uploadResponse = await apiFetch('/api/upload-image', {
                             method: 'POST',
                             body: formData,
                           })
