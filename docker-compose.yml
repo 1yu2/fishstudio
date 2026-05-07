@@ -1,0 +1,93 @@
+# 本地开发 Stack：postgres + backend + frontend
+#
+# 启动：    docker compose up -d
+# 停止：    docker compose down
+# 看日志：  docker compose logs -f backend
+# 重新构建：docker compose up -d --build
+#
+# 生产部署：docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fishstudio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-fishstudio}
+      # 中文环境
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # 仅暴露给本机，方便用 psql 连接调试
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-fishstudio}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - fishstudio
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: fishstudio-backend:latest
+    container_name: fishstudio-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # 1) env_file 加载 LLM 厂商 key 等敏感配置
+    # 2) environment 覆盖 DATABASE_URL / 认证 / CORS（compose 里 environment 优先级高于 env_file）
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-fishstudio}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-in-prod-min-16-chars}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-10080}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BASE_URL: ${BASE_URL:-http://localhost:8007}
+    volumes:
+      # 用户上传 + 生成产物 + 旧迁移备份
+      - backend_storage:/app/storage
+      # 工作空间记忆 markdown 文件（用户可能手工编辑）
+      - ./backend/workspace:/app/workspace
+      # 日志（方便宿主机查看）
+      - ./backend/logs:/app/logs
+    ports:
+      - "${BACKEND_PORT:-8007}:8000"
+    networks:
+      - fishstudio
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: fishstudio-frontend:latest
+    container_name: fishstudio-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - fishstudio
+
+volumes:
+  postgres_data:
+    name: fishstudio_postgres_data
+  backend_storage:
+    name: fishstudio_backend_storage
+
+networks:
+  fishstudio:
+    name: fishstudio_net
+    driver: bridge

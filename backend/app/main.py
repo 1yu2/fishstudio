@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 load_dotenv()  # 在导入 settings 之前加载 .env
 
 from app.config import get_settings
-from app.db.init_db import init_db
+
+from app.db.init_db import db_healthcheck, init_db
 from app.routers import auth as auth_router
 from app.routers import chat, settings as settings_router
 from app.services import workspace_service
@@ -24,14 +25,24 @@ _settings = get_settings()
 
 # 初始化日志系统
 setup_logging(log_level=_settings.log_level)
+logger = __import__("logging").getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # startup
-    await init_db()
+    try:
+        await init_db()
+    except RuntimeError as e:
+        # init_db 已把人话错误写进 message
+        logger.error(str(e))
+        raise SystemExit(1) from None
+    logger.info("🚀 FishStudio API ready")
     yield
-    # shutdown: nothing for now
+    # shutdown
+    from app.db.database import engine as _engine
+    await _engine.dispose()
+    logger.info("👋 engine disposed, shutdown complete")
 
 
 app = FastAPI(title="FishStudio API", version="1.0.0", lifespan=lifespan)
@@ -88,7 +99,18 @@ async def root():
 
 @app.get("/health")
 async def health():
+    """活探针：进程在 = 200。不查 DB，避免 PG 抖动让 K8s 杀进程。"""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    """就绪探针：DB 也通才返 200。挂 DB 时 503。"""
+    db = await db_healthcheck()
+    if not db["ok"]:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content={"status": "degraded", "db": db})
+    return {"status": "ok", "db": db}
 
 
 if __name__ == "__main__":

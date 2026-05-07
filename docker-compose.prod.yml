@@ -1,0 +1,43 @@
+# 生产 Override：部署到 192.168.10.60 这种已经有 PG 的机器
+#
+# 用法：
+#   在服务器 192.168.10.60 上：
+#     git pull
+#     cp .env.example .env && vim .env       # 填生产值
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# 关键差异：
+#   - 不启动 postgres 容器（用宿主机已有的 PG）
+#   - backend 通过 host.docker.internal 连宿主机 PG
+#   - frontend 暴露 80 端口
+#   - DATABASE_URL 走宿主机凭据（来自服务器 .env）
+
+services:
+  postgres:
+    # 不启动这个服务（用宿主机已有 PG）
+    profiles: ["__never__"]
+
+  backend:
+    depends_on: []   # 清掉 postgres 依赖
+    extra_hosts:
+      # Linux 上让容器内能用 host.docker.internal 解析到宿主机
+      - "host.docker.internal:host-gateway"
+    environment:
+      # 覆盖 DATABASE_URL 指向宿主机 PG（凭据从服务器 .env 读）
+      DATABASE_URL: postgresql+asyncpg://${HOST_PG_USER:?set HOST_PG_USER in .env}:${HOST_PG_PASSWORD:?set HOST_PG_PASSWORD in .env}@host.docker.internal:${HOST_PG_PORT:-5432}/${HOST_PG_DB:-fishstudio}
+      # 生产环境必须把这几个改了
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BASE_URL: ${BASE_URL:?set BASE_URL in .env}
+    # 生产用更多 worker
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    ports:
+      # 生产建议不暴露 backend 端口到公网（前端 nginx 反代）；如需调试改成 127.0.0.1:
+      - "127.0.0.1:${BACKEND_PORT:-8007}:8000"
+
+  frontend:
+    ports:
+      # 生产前端走 80
+      - "${FRONTEND_PORT:-80}:80"
