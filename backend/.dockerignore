@@ -11,8 +11,8 @@ env/
 .mypy_cache/
 .ruff_cache/
 
-# 环境敏感文件 - 不要进镜像，运行时通过 env_file/environment 注入
-.env
+# .env 打包进镜像作为默认配置，运行时环境变量优先级更高
+# 其他 .env.* 变体仍不进镜像
 .env.*
 !.env.example
 

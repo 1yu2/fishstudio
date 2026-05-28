@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.6
 # ─── Stage 1: builder ────────────────────────────────────────────────
 FROM python:3.11-slim-bookworm AS builder
 
@@ -39,6 +38,11 @@ COPY --from=builder --chown=app:app /root/.local /home/app/.local
 WORKDIR /app
 COPY --chown=app:app app/ ./app/
 COPY --chown=app:app skills/ ./skills/
+COPY --chown=app:app alembic.ini ./
+COPY --chown=app:app alembic/ ./alembic/
+# 默认配置（含 API 密钥），容器内 pydantic-settings 自动读取；
+# docker-compose environment / env_file 可在运行时覆盖
+COPY --chown=app:app .env ./
 
 # 运行时挂卷：storage（产物 + 旧迁移备份）+ workspace（用户记忆 md）+ logs
 RUN mkdir -p /app/storage /app/workspace /app/logs && chown -R app:app /app
