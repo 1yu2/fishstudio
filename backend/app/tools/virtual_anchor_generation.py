@@ -568,6 +568,10 @@ COMFYUI_SERVER_ADDRESS = os.getenv("COMFYUI_SERVER_ADDRESS", "").strip()
 COMFYUI_WORKFLOW_PATH = os.getenv("COMFYUI_WORKFLOW_PATH", "").strip()
 COMFYUI_CLOUDBERRY_MODE = os.getenv("COMFYUI_CLOUDBERRY_MODE", "true").lower() == "true"
 
+# BizyAir 配置
+BIZYAIR_API_KEY = os.getenv("BIZYAIR_API_KEY", "").strip()
+BIZYAIR_API_URL = os.getenv("BIZYAIR_API_URL", "https://api.bizyair.cn").strip()
+
 # Mock 模式配置
 MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
 # Mock 视频路径（启用 MOCK_MODE 时必须配置）
@@ -1039,6 +1043,122 @@ class ComfyUIClient:
         return result.get("name", upload_name)
 
 
+class BizyairUploader:
+    """通过 BizyAir API 上传文件到阿里云 OSS"""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.api_url = BIZYAIR_API_URL
+
+    def upload_file(self, file_path: Path) -> str:
+        """上传文件到 OSS，返回文件 URL"""
+        if not self.api_key:
+            raise ValueError("BIZYAIR_API_KEY 未设置")
+
+        file_name = file_path.name
+
+        # 1. 获取上传凭证
+        token_data = self._get_upload_token(file_name)
+        file_info = token_data.get("file", {})
+        storage_info = token_data.get("storage", {})
+
+        # 2. 上传到 OSS
+        self._upload_to_oss(
+            file_path=file_path,
+            endpoint=storage_info.get("endpoint", ""),
+            bucket=storage_info.get("bucket", ""),
+            object_key=file_info.get("object_key", ""),
+            access_key_id=file_info.get("access_key_id", ""),
+            access_key_secret=file_info.get("access_key_secret", ""),
+            security_token=file_info.get("security_token", ""),
+        )
+
+        # 3. 提交确认，获得可访问 URL
+        result = self._commit_file(file_name, file_info.get("object_key", ""))
+        return result.get("url", "")
+
+    def _get_upload_token(self, file_name: str, file_type: str = "inputs") -> dict:
+        url = f"{self.api_url}/x/v1/upload/token"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        params = {"file_name": file_name, "file_type": file_type}
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("status"):
+            raise ConnectionError(f"获取上传凭证失败: {data.get('message', '未知错误')}")
+        return data["data"]
+
+    def _upload_to_oss(
+        self,
+        file_path: Path,
+        endpoint: str,
+        bucket: str,
+        object_key: str,
+        access_key_id: str,
+        access_key_secret: str,
+        security_token: str,
+    ) -> None:
+        if not file_path.exists():
+            raise FileNotFoundError(f"文件不存在: {file_path}")
+
+        import base64
+        import hashlib
+        import hmac
+
+        url = f"https://{bucket}.{endpoint}/{object_key}"
+        with open(file_path, "rb") as f:
+            content = f.read()
+
+        content_type = self._content_type(file_path.suffix)
+        date = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+        canon_headers = f"x-oss-security-token:{security_token}\n"
+        canon_resource = f"/{bucket}/{object_key}"
+        sign_str = f"PUT\n\n{content_type}\n{date}\n{canon_headers}{canon_resource}"
+        signature = base64.b64encode(
+            hmac.new(
+                access_key_secret.encode(), sign_str.encode(), hashlib.sha1
+            ).digest()
+        ).decode()
+
+        headers = {
+            "Content-Length": str(len(content)),
+            "Content-Type": content_type,
+            "Date": date,
+            "x-oss-security-token": security_token,
+            "Authorization": f"OSS {access_key_id}:{signature}",
+        }
+        resp = requests.put(url, data=content, headers=headers, timeout=120)
+        resp.raise_for_status()
+
+    def _commit_file(self, file_name: str, object_key: str) -> dict:
+        url = f"{self.api_url}/x/v1/input_resource/commit"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        resp = requests.post(
+            url, json={"name": file_name, "object_key": object_key}, headers=headers, timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("status"):
+            raise ConnectionError(f"提交失败: {data.get('message', '未知错误')}")
+        return data["data"]
+
+    @staticmethod
+    def _content_type(ext: str) -> str:
+        return {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+            ".mp4": "video/mp4",
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+        }.get(ext.lower(), "application/octet-stream")
+
+
 def prepare_audio_path(audio_url: str) -> Path:
     """
     准备音频路径，支持本地文件
@@ -1195,6 +1315,21 @@ def generate_virtual_anchor_tool(
         logger.info("📤 上传音频...")
         uploaded_audio = client.upload_audio(audio_path)
         logger.info(f"✅ 音频已上传: {uploaded_audio}")
+
+        # 步骤3b：上传到 BizyAir OSS（云端执行需要）
+        if BIZYAIR_API_KEY and COMFYUI_CLOUDBERRY_MODE:
+            try:
+                uploader = BizyairUploader(BIZYAIR_API_KEY)
+                logger.info("☁️ 上传图片到 BizyAir OSS...")
+                image_oss_url = uploader.upload_file(image_path)
+                logger.info(f"✅ 图片已上传到 OSS: {image_oss_url}")
+                logger.info("☁️ 上传音频到 BizyAir OSS...")
+                audio_oss_url = uploader.upload_file(audio_path)
+                logger.info(f"✅ 音频已上传到 OSS: {audio_oss_url}")
+            except Exception as e:
+                logger.warning(f"⚠️ BizyAir OSS 上传失败（CloudBerry 可能自动同步）: {e}")
+        elif COMFYUI_CLOUDBERRY_MODE and not BIZYAIR_API_KEY:
+            logger.warning("⚠️ BIZYAIR_API_KEY 未配置，云端执行可能找不到媒体文件")
 
         # 步骤4：加载工作流
         logger.info(f"📋 加载工作流: {workflow_path_obj}")
