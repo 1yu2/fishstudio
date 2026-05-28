@@ -2,29 +2,36 @@
 FishStudio后端主程序
 使用FastAPI + LangGraph实现
 """
-from contextlib import asynccontextmanager
 
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-from dotenv import load_dotenv
 
 load_dotenv()  # 在导入 settings 之前加载 .env
 
 from app.config import get_settings
-
 from app.db.init_db import db_healthcheck, init_db
+from app.observability import (
+    RequestIdMiddleware,
+    init_sentry,
+    install_exception_handlers,
+)
 from app.routers import auth as auth_router
-from app.routers import chat, settings as settings_router
+from app.routers import chat
+from app.routers import settings as settings_router
 from app.services import workspace_service
 from app.services.connection_manager import manager
 from app.utils.logger import setup_logging
 
 _settings = get_settings()
 
-# 初始化日志系统
-setup_logging(log_level=_settings.log_level)
+# 初始化日志系统（含 structlog JSON 模式，由 LOG_FORMAT 控制）+ Sentry
+setup_logging(log_level=_settings.log_level, log_format=_settings.log_format)
+init_sentry()
 logger = __import__("logging").getLogger(__name__)
 
 
@@ -41,20 +48,27 @@ async def lifespan(app: FastAPI):
     yield
     # shutdown
     from app.db.database import engine as _engine
+
     await _engine.dispose()
     logger.info("👋 engine disposed, shutdown complete")
 
 
 app = FastAPI(title="FishStudio API", version="1.0.0", lifespan=lifespan)
 
-# 配置 CORS：环境变量驱动的白名单
+# 注意：中间件按"添加倒序"执行；最后 add 的最先执行
+# request_id 必须最先（这样后续日志/异常都能拿到 rid），CORS 最后处理浏览器预检
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
+app.add_middleware(RequestIdMiddleware)
+
+# 安装统一异常处理（{error: {code, message, request_id}}）
+install_exception_handlers(app)
 
 # 确保存储目录存在
 BASE_DIR = Path(__file__).parent.parent
@@ -109,17 +123,14 @@ async def ready():
     db = await db_healthcheck()
     if not db["ok"]:
         from fastapi.responses import JSONResponse
+
         return JSONResponse(status_code=503, content={"status": "degraded", "db": db})
     return {"status": "ok", "db": db}
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        reload_includes=["*.py"],
-        log_level="info"
+        "app.main:app", host="0.0.0.0", port=8000, reload=True, reload_includes=["*.py"], log_level="info"
     )

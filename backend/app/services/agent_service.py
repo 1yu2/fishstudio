@@ -1,32 +1,34 @@
 """
 Agent服务 - 处理LangGraph Agent的流式输出
 """
+
 import json
-import os
 import logging
-from typing import List, Dict, Any, AsyncGenerator, Optional
+import os
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
 from langgraph.prebuilt import create_react_agent
-from app.services.stream_processor import StreamProcessor
+
+from app.llm.factory import create_llm
+from app.services import skill_service, workspace_service
 from app.services.prompt import get_full_prompt
-from app.services import skill_service
-from app.tools.volcano_image_generation import generate_volcano_image_tool, edit_volcano_image_tool
+from app.services.stream_processor import StreamProcessor
+from app.tools.audio_mixing import concatenate_audio_tool, mix_audio_with_bgm_tool, select_bgm_tool
 from app.tools.model_3d_generation import generate_3d_model_tool
-from app.tools.volcano_video_generation import generate_volcano_video_tool
+from app.tools.qwen_omni_understanding import qwen_omni_understand_tool
+from app.tools.qwen_tts import qwen_voice_cloning_tool, qwen_voice_design_tool
+from app.tools.skill_tools import (
+    delete_skill_file_tool,
+    init_skill_tool,
+    list_skill_dir_tool,
+    read_skill_file_tool,
+    write_skill_file_tool,
+)
 from app.tools.video_concatenation import concatenate_videos_tool
 from app.tools.virtual_anchor_generation import detect_face_tool, generate_virtual_anchor_tool
-from app.tools.qwen_tts import qwen_voice_design_tool, qwen_voice_cloning_tool
-from app.tools.audio_mixing import concatenate_audio_tool, select_bgm_tool, mix_audio_with_bgm_tool
-from app.tools.qwen_omni_understanding import qwen_omni_understand_tool
-from app.tools.skill_tools import (
-    read_skill_file_tool,
-    list_skill_dir_tool,
-    init_skill_tool,
-    write_skill_file_tool,
-    delete_skill_file_tool,
-)
+from app.tools.volcano_image_generation import edit_volcano_image_tool, generate_volcano_image_tool
+from app.tools.volcano_video_generation import generate_volcano_video_tool
 from app.tools.workspace_tools import write_memory
-from app.llm.factory import create_llm
-from app.services import workspace_service
 
 # 使用统一的日志配置
 logger = logging.getLogger(__name__)
@@ -86,33 +88,29 @@ def create_agent():
 
     # 创建Agent
     agent = create_react_agent(
-        name="fishstudio_multimodal_agent",
-        model=model,
-        tools=tools,
-        prompt=full_prompt
+        name="fishstudio_multimodal_agent", model=model, tools=tools, prompt=full_prompt
     )
-    
+
     logger.info("✅ Agent创建成功")
     return agent
 
 
 async def process_chat_stream(
-    messages: List[Dict[str, Any]],
-    session_id: Optional[str] = None
+    messages: List[Dict[str, Any]], session_id: Optional[str] = None
 ) -> AsyncGenerator[str, None]:
     """
     处理聊天流式响应
-    
+
     Args:
         messages: 消息历史
         session_id: 会话ID
-    
+
     Yields:
         SSE格式的事件流
     """
     try:
         logger.info(f"💬 收到聊天请求: session_id={session_id}, messages_count={len(messages)}")
-        
+
         # 创建Agent（在 langgraph 1.0.0 中，create_react_agent 返回的对象已经是编译后的）
         agent = create_agent()
 
@@ -139,14 +137,12 @@ async def process_chat_stream(
         return
     except Exception as e:
         import traceback
+
         logger.error(f"❌ 处理聊天流时出错: {str(e)}")
         logger.error(traceback.format_exc())
         try:
             # 尝试发送错误事件（如果客户端还在）
-            error_event = {
-                "type": "error",
-                "error": str(e)
-            }
+            error_event = {"type": "error", "error": str(e)}
             yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         except:

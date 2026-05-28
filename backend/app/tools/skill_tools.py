@@ -8,6 +8,7 @@ Skill 文件工具
 - 读取：路径必须在 skills/ 目录内
 - 写入：路径必须在 skills/custom/ 目录内，防止篡改 public/
 """
+
 import logging
 import re
 import sys
@@ -45,6 +46,7 @@ def _safe_resolve(path_str: str) -> Path | None:
 
 # ─── read_file ────────────────────────────────────────────────────────
 
+
 class ReadFileInput(BaseModel):
     path: str = Field(description="要读取的文件路径（绝对路径或相对于 skills/ 的路径）")
     start_line: Optional[int] = Field(default=None, description="起始行号（1-based，可选）")
@@ -79,6 +81,7 @@ def read_skill_file_tool(path: str, start_line: Optional[int] = None, end_line: 
 
 
 # ─── ls ──────────────────────────────────────────────────────────────
+
 
 class LsInput(BaseModel):
     path: str = Field(description="要列出的目录路径（绝对路径或相对于 skills/ 的路径）")
@@ -115,6 +118,7 @@ def list_skill_dir_tool(path: str) -> str:
 
 # ─── 写入工具（仅限 custom/） ─────────────────────────────────────────
 
+
 def _safe_resolve_custom(path_str: str) -> Path | None:
     """
     将路径解析为绝对路径，并验证必须在 skills/custom/ 内。
@@ -131,7 +135,7 @@ def _safe_resolve_custom(path_str: str) -> Path | None:
         return None
 
 
-_SKILL_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$')
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")
 
 
 class InitSkillInput(BaseModel):
@@ -151,14 +155,14 @@ def init_skill_tool(skill_name: str) -> str:
         return f"Error: skill_name '{skill_name}' 格式无效，必须是 hyphen-case（小写字母、数字、连字符）"
 
     scripts_dir = (
-        Path(__file__).parent.parent.parent
-        / "skills" / "public" / "skill-creator" / "scripts"
+        Path(__file__).parent.parent.parent / "skills" / "public" / "skill-creator" / "scripts"
     ).resolve()
 
     if not scripts_dir.exists():
         return "Error: 找不到 skill-creator/scripts/ 目录，请确认 skill-creator 已安装"
 
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(scripts_dir / "init_skill.py"), skill_name, "--path", str(_CUSTOM_ROOT)],
         capture_output=True,
@@ -206,9 +210,7 @@ def write_skill_file_tool(path: str, content: str) -> str:
 
 
 class DeleteSkillFileInput(BaseModel):
-    path: str = Field(
-        description="要删除的文件路径（绝对路径，或相对于 skills/custom/ 的路径）"
-    )
+    path: str = Field(description="要删除的文件路径（绝对路径，或相对于 skills/custom/ 的路径）")
 
 
 @tool("delete_skill_file", args_schema=DeleteSkillFileInput)

@@ -1,4 +1,5 @@
 """FastAPI 依赖：从 Authorization 头解析当前用户。"""
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select

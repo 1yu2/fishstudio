@@ -57,9 +57,11 @@ def main() -> int:
                 try:
                     src_profile = ImageCms.ImageCmsProfile(BytesIO(icc))
                     dst_profile = ImageCms.createProfile("sRGB")
-                    output_mode = "RGBA" if (
-                        im.mode in ("RGBA", "LA") or ("transparency" in getattr(im, "info", {}))
-                    ) else "RGB"
+                    output_mode = (
+                        "RGBA"
+                        if (im.mode in ("RGBA", "LA") or ("transparency" in getattr(im, "info", {})))
+                        else "RGB"
+                    )
                     im = ImageCms.profileToProfile(im, src_profile, dst_profile, outputMode=output_mode)
                 except Exception:
                     # 转换失败也继续走后续流程
@@ -124,6 +126,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-

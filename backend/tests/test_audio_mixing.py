@@ -1,7 +1,6 @@
 import sys
 import types
 import unittest
-
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -20,9 +19,9 @@ if "langchain_core.tools" not in sys.modules:
     sys.modules["langchain_core.tools"] = tools_module
 
 from app.tools.audio_mixing import (
-    AudioSegment,
     BASE_DIR,
     BGM_DIR,
+    AudioSegment,
     configure_pydub_ffmpeg,
     load_audio_segment,
 )

@@ -2,20 +2,21 @@
 FishStudio 设置 API 路由
 支持 Skills 配置、MCP 服务器配置、环境变量配置
 """
+
+import logging
+import re
+from pathlib import Path
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Any
-import re
-import logging
 
 from app.auth.dependencies import get_current_user, require_admin
 from app.db.database import get_session
 from app.db.models import AuditLog, Setting, User
-from app.services import skill_service
-from app.services import workspace_service
+from app.services import skill_service, workspace_service
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ DEFAULT_SKILLS = [
 # DB-backed settings KV helpers
 # ─────────────────────────────────────────
 
+
 async def _get_setting(session: AsyncSession, key: str, default: Any = None) -> Any:
     row = await session.get(Setting, key)
     return row.value if row is not None else default
@@ -107,6 +109,7 @@ async def _set_setting(session: AsyncSession, key: str, value: Any) -> None:
 # ─────────────────────────────────────────
 # Skills 配置
 # ─────────────────────────────────────────
+
 
 class SkillItem(BaseModel):
     id: str
@@ -144,11 +147,12 @@ async def put_skills(payload: SkillsPayload, session: AsyncSession = Depends(get
 # Installed Skills（基于 SKILL.md 文件的 skills）
 # ─────────────────────────────────────────
 
+
 class InstalledSkillResponse(BaseModel):
     id: str
     name: str
     description: str
-    source: str   # "public" | "custom"
+    source: str  # "public" | "custom"
     enabled: bool
 
 
@@ -209,6 +213,7 @@ async def get_installed_skill_content(skill_id: str):
 # MCP 服务器配置
 # ─────────────────────────────────────────
 
+
 @router.get("/settings/mcp")
 async def get_mcp(session: AsyncSession = Depends(get_session)):
     """返回 MCP servers 配置"""
@@ -234,7 +239,11 @@ ENV_GROUPS = [
     {
         "group": "LLM 配置",
         "keys": [
-            {"key": "OPENAI_API_KEY", "desc": "OpenAI 兼容接口 API Key（SiliconFlow / 火山引擎等）", "sensitive": True},
+            {
+                "key": "OPENAI_API_KEY",
+                "desc": "OpenAI 兼容接口 API Key（SiliconFlow / 火山引擎等）",
+                "sensitive": True,
+            },
             {"key": "OPENAI_BASE_URL", "desc": "OpenAI 兼容接口 Base URL", "sensitive": False},
             {"key": "MODEL_NAME", "desc": "主模型名称", "sensitive": False},
             {"key": "RECURSION_LIMIT", "desc": "LangGraph 多步推理递归上限", "sensitive": False},
@@ -357,12 +366,14 @@ async def get_env(_admin: User = Depends(require_admin)):
             key = kdef["key"]
             raw_value = env_values.get(key, "")
             sensitive = kdef["sensitive"]
-            items.append({
-                "key": key,
-                "value": raw_value,
-                "desc": kdef["desc"],
-                "sensitive": sensitive,
-            })
+            items.append(
+                {
+                    "key": key,
+                    "value": raw_value,
+                    "desc": kdef["desc"],
+                    "sensitive": sensitive,
+                }
+            )
         groups.append({"group": group_def["group"], "items": items})
     return {"groups": groups}
 
@@ -411,11 +422,12 @@ async def put_env(
 # Workspace 配置（USER.md / SOUL.md / MEMORY.md）
 # ─────────────────────────────────────────
 
+
 class WorkspaceFileResponse(BaseModel):
-    id: str        # 文件名，如 "USER.md"
-    name: str      # 显示名称
-    desc: str      # 描述
-    content: str   # 文件内容
+    id: str  # 文件名，如 "USER.md"
+    name: str  # 显示名称
+    desc: str  # 描述
+    content: str  # 文件内容
 
 
 class WorkspaceFileUpdatePayload(BaseModel):

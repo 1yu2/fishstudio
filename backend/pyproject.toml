@@ -1,0 +1,44 @@
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = [
+    ".venv",
+    "alembic/versions",  # 自动生成的 migration 不强求格式
+    "logs",
+    "storage",
+    "skills",            # 第三方/用户 skill 仓库不参与 lint
+]
+
+[tool.ruff.lint]
+# CI 起步先盯"会真的造成 bug"的规则。样式/现代化（W/B/UP）等代码 cleanup PR 再开。
+select = [
+    "E",  # pycodestyle errors（语法/逻辑层面）
+    "F",  # pyflakes（未定义变量、未使用 import 等）
+    "I",  # isort（import 排序）
+]
+ignore = [
+    "E501",  # line too long
+    "E402",  # module-import-not-at-top（CLI 延迟 import 是合理的）
+    "F401",  # unused-import（部分 re-export 故意保留）
+    "F811",  # redefined-unused（test fixture 命名冲突先放过）
+    "F841",  # unused-variable（先不动）
+    "F821",  # undefined-name（动态导入场景较多，先观察；后续单独修）
+    "E722",  # bare-except（少量历史代码，后续清）
+    "E712",  # 比较 == True / == False
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "F401", "F811"]
+"app/cli.py" = ["E402"]   # CLI 模块允许延迟 import
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning:passlib.*",
+    "ignore::PendingDeprecationWarning:starlette.*",
+]

@@ -1,4 +1,5 @@
 """密码哈希与 JWT 编解码。"""
+
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 

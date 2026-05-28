@@ -1,0 +1,137 @@
+name: Deploy
+
+# 触发：①Release 完成自动跑 ②手动触发可指定 tag
+on:
+  workflow_run:
+    workflows: ["Release（推送镜像到 GHCR）"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag (default: 用最近一次 release 的 sha-xxx)"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false   # 部署不能并发，老的跑完再新的
+
+jobs:
+  deploy:
+    name: Deploy to Oracle Cloud
+    runs-on: ubuntu-latest
+    # 只有 release 成功才部署；手动触发不受此约束
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout（同步 compose / Caddyfile）
+        uses: actions/checkout@v4
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [[ -n "${{ inputs.image_tag }}" ]]; then
+            TAG="${{ inputs.image_tag }}"
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # release.yml 使用 type=sha,format=long 生成的 tag 是 sha-<full sha>
+            TAG="sha-${{ github.event.workflow_run.head_sha }}"
+          else
+            TAG="sha-${{ github.sha }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "🚢 Deploying image tag: $TAG"
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+
+      - name: Trust server host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ secrets.SERVER_SSH_PORT || '22' }} -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync deployment files to server
+        run: |
+          rsync -az --delete \
+            -e "ssh -p ${{ secrets.SERVER_SSH_PORT || '22' }}" \
+            docker-compose.yml \
+            docker-compose.cloud.yml \
+            Caddyfile \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.SERVER_DEPLOY_DIR || '/opt/fishstudio' }}/
+
+      - name: Pull image + rolling update + healthcheck
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GHCR_REPO: ${{ github.repository }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_DIR: ${{ secrets.SERVER_DEPLOY_DIR || '/opt/fishstudio' }}
+        run: |
+          ssh -p ${{ secrets.SERVER_SSH_PORT || '22' }} \
+              ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
+              IMAGE_TAG="$TAG" \
+              GHCR_REPO="$GHCR_REPO" \
+              GHCR_USER="$GHCR_USER" \
+              GHCR_TOKEN="$GHCR_TOKEN" \
+              DEPLOY_DIR="$DEPLOY_DIR" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+
+          echo "🔐 docker login ghcr.io"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+          # 把 IMAGE_TAG / GHCR_REPO 持久化到 .env，便于服务器手工 docker compose 命令
+          grep -v '^IMAGE_TAG=\|^GHCR_REPO=' .env > .env.tmp 2>/dev/null || true
+          {
+            cat .env.tmp 2>/dev/null || true
+            echo "IMAGE_TAG=$IMAGE_TAG"
+            echo "GHCR_REPO=$GHCR_REPO"
+          } > .env
+          rm -f .env.tmp
+
+          echo "📦 docker compose pull"
+          docker compose -f docker-compose.yml -f docker-compose.cloud.yml pull
+
+          echo "🚀 docker compose up -d"
+          docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --remove-orphans
+
+          echo "⏳ wait for healthy (max 180s)..."
+          deadline=$((SECONDS + 180))
+          while [[ $SECONDS -lt $deadline ]]; do
+            be=$(docker inspect -f '{{.State.Health.Status}}' fishstudio-backend 2>/dev/null || echo x)
+            fe=$(docker inspect -f '{{.State.Health.Status}}' fishstudio-frontend 2>/dev/null || echo x)
+            cd_=$(docker inspect -f '{{.State.Health.Status}}' fishstudio-caddy 2>/dev/null || echo x)
+            if [[ "$be" == "healthy" && "$fe" == "healthy" && "$cd_" == "healthy" ]]; then
+              echo "✅ all healthy: backend=$be frontend=$fe caddy=$cd_"
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "❌ deploy failed: backend=$be frontend=$fe caddy=$cd_"
+          docker compose -f docker-compose.yml -f docker-compose.cloud.yml ps
+          docker compose -f docker-compose.yml -f docker-compose.cloud.yml logs --tail=80
+          exit 1
+          REMOTE
+
+      - name: External smoke test
+        env:
+          DOMAIN: ${{ secrets.SERVER_DOMAIN || secrets.SERVER_HOST }}
+        run: |
+          # 优先 https，失败 fallback http
+          for scheme in https http; do
+            url="${scheme}://${DOMAIN}/health"
+            for i in {1..15}; do
+              if curl -fsS --max-time 5 "$url" 2>/dev/null; then
+                echo "✅ external $scheme health OK"
+                exit 0
+              fi
+              sleep 2
+            done
+          done
+          echo "⚠️  external health 探针未通过（容器内 healthy 已确认；可能仅 DNS/防火墙问题）"
+          # 不 fail；容器内已通过算成功

@@ -54,10 +54,14 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-console}
+      ENVIRONMENT: ${ENVIRONMENT:-dev}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
       BASE_URL: ${BASE_URL:-http://localhost:8007}
     volumes:
-      # 用户上传 + 生成产物 + 旧迁移备份
-      - backend_storage:/app/storage
+      # 用户上传 + 生成产物 + 旧迁移备份 —— bind 到宿主机已有目录，复用本地数据
+      - ./backend/storage:/app/storage
       # 工作空间记忆 markdown 文件（用户可能手工编辑）
       - ./backend/workspace:/app/workspace
       # 日志（方便宿主机查看）
@@ -84,8 +88,6 @@ services:
 volumes:
   postgres_data:
     name: fishstudio_postgres_data
-  backend_storage:
-    name: fishstudio_backend_storage
 
 networks:
   fishstudio:

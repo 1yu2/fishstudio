@@ -2,6 +2,7 @@
 Workspace Service - 管理工作空间身份记忆文件
 AGENTS.md / TOOLS.md / IDENTITY.md / USER.md / SOUL.md / MEMORY.md
 """
+
 import logging
 from pathlib import Path
 from typing import Dict, Tuple
@@ -10,12 +11,12 @@ logger = logging.getLogger(__name__)
 
 # 文件名 -> (显示名称, 描述)  ← 顺序即注入顺序（优先级由高到低）
 WORKSPACE_FILES: Dict[str, Tuple[str, str]] = {
-    "AGENTS.md":   ("行为规则",   "Agent 的工作流规则、禁止操作清单和快捷指令"),
-    "TOOLS.md":    ("工具配置",   "本地环境特有的工具参数（模型路径、服务地址等）"),
+    "AGENTS.md": ("行为规则", "Agent 的工作流规则、禁止操作清单和快捷指令"),
+    "TOOLS.md": ("工具配置", "本地环境特有的工具参数（模型路径、服务地址等）"),
     "IDENTITY.md": ("Agent身份", "Agent 的名字、存在形式和视觉标识"),
-    "USER.md":     ("用户画像",   "描述用户的风格偏好和常用角色"),
-    "SOUL.md":     ("Agent人格", "定制 Agent 的沟通风格和创作偏好"),
-    "MEMORY.md":   ("创作记忆",   "跨对话的长期记忆，Agent 自动维护"),
+    "USER.md": ("用户画像", "描述用户的风格偏好和常用角色"),
+    "SOUL.md": ("Agent人格", "定制 Agent 的沟通风格和创作偏好"),
+    "MEMORY.md": ("创作记忆", "跨对话的长期记忆，Agent 自动维护"),
 }
 
 # 单文件注入字符上限

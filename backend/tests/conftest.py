@@ -1,4 +1,5 @@
 """Pytest fixtures：在导入 app 之前注入测试用 env，并 override 认证依赖。"""
+
 import os
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ import pytest
 
 def _install_app_overrides(monkeypatch):
     """加载 app.main 并 override 认证 + DB 依赖。返回 app（或 None 表示加载失败）。"""
+
     async def _noop_init_db():
         return None
 

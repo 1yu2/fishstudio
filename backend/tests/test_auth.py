@@ -1,4 +1,5 @@
 """认证基础测试：未登录 401、密码哈希正确性、token 编解码。"""
+
 import os
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ def test_token_roundtrip():
 @pytest.mark.no_bypass_auth
 def test_protected_endpoints_require_auth(monkeypatch):
     """不 override 依赖时，受保护接口应返回 401。"""
+
     async def _noop_init_db():
         return None
 

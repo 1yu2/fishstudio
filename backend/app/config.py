@@ -3,6 +3,7 @@
 所有环境变量通过 Settings 类型化加载，启动时校验缺失项。
 新代码统一使用 get_settings()；现有 os.getenv 调用先保持，逐步迁移。
 """
+
 from functools import lru_cache
 from typing import List
 
@@ -34,9 +35,7 @@ class Settings(BaseSettings):
     admin_password: str = Field(..., min_length=8, description="Admin 初始密码（>=8 字符）")
 
     # CORS：原始逗号串；通过 cors_origins 属性拆成 list（避开 pydantic-settings 的 JSON 解析）
-    cors_origins_raw: str = Field(
-        default="http://localhost:3000", alias="cors_origins"
-    )
+    cors_origins_raw: str = Field(default="http://localhost:3000", alias="cors_origins")
 
     @computed_field  # type: ignore[misc]
     @property
@@ -45,6 +44,15 @@ class Settings(BaseSettings):
 
     # 日志
     log_level: str = "INFO"
+    # 日志格式：console（开发友好彩色） / json（生产，被 ELK/Loki 采集）
+    log_format: str = "console"
+
+    # 运行环境标识（dev / staging / prod），影响 Sentry tag 与日志输出策略
+    environment: str = "dev"
+
+    # Sentry：留空则关闭。前后端各一个（前端通过 /api/config 暴露 public DSN 也行）
+    sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.0  # 0.0 关闭性能追踪；生产可设 0.1
 
 
 @lru_cache(maxsize=1)

@@ -27,13 +27,19 @@ def test_agent_registers_write_memory_tool():
         return object()
 
     fake_tools = {
-        "generate_volcano_image_tool": SimpleNamespace(name="generate_volcano_image", description="generate image"),
+        "generate_volcano_image_tool": SimpleNamespace(
+            name="generate_volcano_image", description="generate image"
+        ),
         "edit_volcano_image_tool": SimpleNamespace(name="edit_volcano_image", description="edit image"),
         "generate_3d_model_tool": SimpleNamespace(name="generate_3d_model", description="generate model"),
-        "generate_volcano_video_tool": SimpleNamespace(name="generate_volcano_video", description="generate video"),
+        "generate_volcano_video_tool": SimpleNamespace(
+            name="generate_volcano_video", description="generate video"
+        ),
         "concatenate_videos_tool": SimpleNamespace(name="concatenate_videos", description="concat videos"),
         "detect_face_tool": SimpleNamespace(name="detect_face", description="detect face"),
-        "generate_virtual_anchor_tool": SimpleNamespace(name="generate_virtual_anchor", description="virtual anchor"),
+        "generate_virtual_anchor_tool": SimpleNamespace(
+            name="generate_virtual_anchor", description="virtual anchor"
+        ),
         "qwen_voice_design_tool": SimpleNamespace(name="qwen_voice_design", description="voice design"),
         "qwen_voice_cloning_tool": SimpleNamespace(name="qwen_voice_cloning", description="voice clone"),
         "concatenate_audio_tool": SimpleNamespace(name="concatenate_audio", description="concat audio"),
@@ -43,11 +49,15 @@ def test_agent_registers_write_memory_tool():
     }
 
     patches = [patch.object(agent_service, attr, tool) for attr, tool in fake_tools.items()]
-    with patch.object(agent_service, "create_llm", return_value=object()), patch.object(
-        agent_service.workspace_service,
-        "get_workspace_context",
-        return_value="<工作空间>\n## USER.md（用户画像）\n喜欢写实风格\n</工作空间>",
-    ), patch.object(agent_service, "create_react_agent", side_effect=fake_create_react_agent):
+    with (
+        patch.object(agent_service, "create_llm", return_value=object()),
+        patch.object(
+            agent_service.workspace_service,
+            "get_workspace_context",
+            return_value="<工作空间>\n## USER.md（用户画像）\n喜欢写实风格\n</工作空间>",
+        ),
+        patch.object(agent_service, "create_react_agent", side_effect=fake_create_react_agent),
+    ):
         for p in patches:
             p.start()
         try:

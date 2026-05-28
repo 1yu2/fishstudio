@@ -1,0 +1,73 @@
+# 云服务器部署 Override：Oracle Cloud / 任何独立云主机
+#
+# 与 prod.yml 区别：
+#   - 自带 postgres 容器（不依赖宿主 PG）
+#   - backend/frontend 拉 GHCR 镜像（不在服务器构建，省 ARM 编译时间）
+#   - 前面挂 Caddy 容器自动签 Let's Encrypt 证书 → 公网仅暴露 80/443
+#
+# 用法（在服务器上）：
+#   IMAGE_TAG=sha-abc123 docker compose -f docker-compose.yml -f docker-compose.cloud.yml pull
+#   IMAGE_TAG=sha-abc123 docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d
+#
+# IMAGE_TAG 由 CI 在推送镜像时确定（git tag 或 commit sha）。
+# DOMAIN  在 .env 里设；nip.io / 自有域名都行；不设的话只用 IP+HTTP。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+
+  backend:
+    image: ghcr.io/${GHCR_REPO:?set GHCR_REPO=owner/repo in .env}/fishstudio-backend:${IMAGE_TAG:-latest}
+    build: !reset null
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-fishstudio}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      ENVIRONMENT: ${ENVIRONMENT:-prod}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+      BASE_URL: ${BASE_URL:?set BASE_URL}
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    # 不再对外发布；只在 docker 网络内暴露给 frontend/Caddy
+    ports: !reset []
+
+  frontend:
+    image: ghcr.io/${GHCR_REPO}/fishstudio-frontend:${IMAGE_TAG:-latest}
+    build: !reset null
+    # 不再对外发布；只通过 Caddy 反代
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: fishstudio-caddy
+    restart: unless-stopped
+    depends_on:
+      frontend:
+        condition: service_started
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env, e.g. 132-226-10-20.nip.io 或 fish.example.com}
+      LE_EMAIL: ${LE_EMAIL:-admin@example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    networks:
+      - fishstudio
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  caddy_data:
+    name: fishstudio_caddy_data
+  caddy_config:
+    name: fishstudio_caddy_config

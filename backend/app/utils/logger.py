@@ -1,99 +1,116 @@
+"""日志配置：stdlib logging + structlog 双模式。
+
+- LOG_FORMAT=console（默认，dev 友好）：彩色 + 时间戳 + 模块名
+- LOG_FORMAT=json（生产）：每行一个 JSON 事件，可被 ELK/Loki/Datadog 采集
+
+文件输出仍按日期 + 大小轮转保留（沿用原行为）。
 """
-日志配置模块
-统一配置应用的日志输出，支持同时输出到控制台和文件
-"""
+
 import logging
 import logging.handlers
-import os
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
+import structlog
 
 
-def setup_logging(log_level: str = "INFO", log_dir: str = None):
+def setup_logging(log_level: str = "INFO", log_dir: str | None = None, log_format: str = "console") -> None:
+    """配置 stdlib logging + structlog。
+
+    所有库（langchain / sqlalchemy / fastapi 等）的日志最终也会经过 structlog 渲染。
     """
-    配置应用的日志系统
-    
-    Args:
-        log_level: 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_dir: 日志文件目录，如果为 None 则使用 backend/logs
-    """
-    # 确定日志目录
     if log_dir is None:
         BASE_DIR = Path(__file__).parent.parent.parent
         log_dir = BASE_DIR / "logs"
     else:
         log_dir = Path(log_dir)
-    
-    # 确保日志目录存在
     log_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 日志文件名：使用日期作为文件名
-    log_file = log_dir / f"fishstudio_{datetime.now().strftime('%Y%m%d')}.log"
-    
-    # 配置根日志记录器
-    root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
-    
-    # 清除已有的处理器（避免重复配置）
-    root_logger.handlers.clear()
-    
-    # 日志格式
-    detailed_format = '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
-    simple_format = '%(asctime)s - %(levelname)s - %(message)s'
-    
-    # 1. 控制台处理器 - 使用简单格式
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(getattr(logging, log_level.upper(), logging.INFO))
-    console_formatter = logging.Formatter(simple_format, datefmt='%Y-%m-%d %H:%M:%S')
-    console_handler.setFormatter(console_formatter)
-    root_logger.addHandler(console_handler)
-    
-    # 2. 文件处理器 - 使用详细格式，支持按大小轮转
-    # 每个文件最大 10MB，保留 5 个备份文件
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file,
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5,
-        encoding='utf-8'
+
+    today = datetime.now().strftime("%Y%m%d")
+    log_file = log_dir / f"fishstudio_{today}.log"
+    error_log_file = log_dir / f"fishstudio_error_{today}.log"
+
+    level = getattr(logging, log_level.upper(), logging.INFO)
+
+    # ─── structlog 处理链 ───────────────────────────────────────────
+    shared_processors: list = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso", utc=False),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+    ]
+
+    structlog.configure(
+        processors=[
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
     )
-    file_handler.setLevel(logging.DEBUG)  # 文件记录更详细的日志
-    file_formatter = logging.Formatter(detailed_format, datefmt='%Y-%m-%d %H:%M:%S')
-    file_handler.setFormatter(file_formatter)
-    root_logger.addHandler(file_handler)
-    
-    # 3. 错误日志单独记录到文件
-    error_log_file = log_dir / f"fishstudio_error_{datetime.now().strftime('%Y%m%d')}.log"
-    error_handler = logging.handlers.RotatingFileHandler(
-        error_log_file,
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5,
-        encoding='utf-8'
+
+    # 控制台 / 文件渲染器
+    if log_format == "json":
+        renderer = structlog.processors.JSONRenderer(ensure_ascii=False)
+    else:
+        renderer = structlog.dev.ConsoleRenderer(
+            colors=True, exception_formatter=structlog.dev.plain_traceback
+        )
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=shared_processors,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            renderer,
+        ],
     )
-    error_handler.setLevel(logging.ERROR)  # 只记录 ERROR 及以上级别
-    error_handler.setFormatter(file_formatter)
-    root_logger.addHandler(error_handler)
-    
-    # 配置第三方库的日志级别（避免过多噪音）
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    
-    # 记录日志配置完成
+
+    # 文件总是用 JSON（方便后续采集），不论 LOG_FORMAT 设啥
+    file_formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=shared_processors,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.JSONRenderer(ensure_ascii=False),
+        ],
+    )
+
+    # ─── 处理器 ─────────────────────────────────────────────────────
+    root = logging.getLogger()
+    root.setLevel(level)
+    root.handlers.clear()
+
+    console_h = logging.StreamHandler()
+    console_h.setLevel(level)
+    console_h.setFormatter(formatter)
+    root.addHandler(console_h)
+
+    file_h = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    file_h.setLevel(logging.DEBUG)
+    file_h.setFormatter(file_formatter)
+    root.addHandler(file_h)
+
+    error_h = logging.handlers.RotatingFileHandler(
+        error_log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    error_h.setLevel(logging.ERROR)
+    error_h.setFormatter(file_formatter)
+    root.addHandler(error_h)
+
+    # 第三方库降噪
+    for noisy in ("httpx", "httpcore", "urllib3", "watchfiles"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     logger = logging.getLogger(__name__)
-    logger.info(f"✅ 日志系统已配置: 级别={log_level}, 日志目录={log_dir}")
-    logger.info(f"   控制台输出: 启用")
-    logger.info(f"   日志文件: {log_file}")
-    logger.info(f"   错误日志: {error_log_file}")
+    logger.info(
+        "logging configured",
+        extra={"level": log_level, "format": log_format, "log_dir": str(log_dir)},
+    )
 
 
 def get_logger(name: str) -> logging.Logger:
-    """
-    获取指定名称的日志记录器
-    
-    Args:
-        name: 日志记录器名称，通常使用 __name__
-    
-    Returns:
-        logging.Logger 实例
-    """
     return logging.getLogger(name)

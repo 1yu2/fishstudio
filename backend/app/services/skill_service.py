@@ -2,6 +2,7 @@
 FishStudio Skill Service
 扫描 skills/ 目录，解析 SKILL.md frontmatter，管理启用状态，向 agent 提供 skills context。
 """
+
 import json
 import logging
 import os
@@ -25,10 +26,10 @@ SETTINGS_FILE = STORAGE_DIR / "settings.json"
 # ─── 数据结构 ──────────────────────────────────────────────────────────
 @dataclass
 class SkillMeta:
-    id: str           # 目录名，如 "xiaohongshu-copywriter"
-    name: str         # frontmatter name 字段
+    id: str  # 目录名，如 "xiaohongshu-copywriter"
+    name: str  # frontmatter name 字段
     description: str  # frontmatter description 字段
-    source: str       # "public" | "custom"
+    source: str  # "public" | "custom"
     skill_dir: Path
     md_path: Path
 
@@ -85,14 +86,16 @@ def scan_available_skills() -> list[SkillMeta]:
             fm, _ = parsed
             name = fm.get("name", skill_dir.name)
             description = fm.get("description", "")
-            skills.append(SkillMeta(
-                id=skill_dir.name,
-                name=name,
-                description=description,
-                source=source,
-                skill_dir=skill_dir,
-                md_path=md_path,
-            ))
+            skills.append(
+                SkillMeta(
+                    id=skill_dir.name,
+                    name=name,
+                    description=description,
+                    source=source,
+                    skill_dir=skill_dir,
+                    md_path=md_path,
+                )
+            )
 
     return skills
 
@@ -143,15 +146,17 @@ def get_skills_with_state() -> list[SkillWithState]:
             enabled = True
         else:
             enabled = installed.get(meta.id, False)
-        result.append(SkillWithState(
-            id=meta.id,
-            name=meta.name,
-            description=meta.description,
-            source=meta.source,
-            skill_dir=meta.skill_dir,
-            md_path=meta.md_path,
-            enabled=enabled,
-        ))
+        result.append(
+            SkillWithState(
+                id=meta.id,
+                name=meta.name,
+                description=meta.description,
+                source=meta.source,
+                skill_dir=meta.skill_dir,
+                md_path=meta.md_path,
+                enabled=enabled,
+            )
+        )
     return result
 
 

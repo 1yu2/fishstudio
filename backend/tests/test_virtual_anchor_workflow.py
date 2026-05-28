@@ -1,7 +1,7 @@
-import unittest
-from pathlib import Path
 import sys
 import types
+import unittest
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -19,14 +19,14 @@ if "langchain_core.tools" not in sys.modules:
     sys.modules["langchain_core.tools"] = tools_module
 
 from app.tools.virtual_anchor_generation import (
-    build_drop_first_frame_command,
     build_comfyui_extra_data,
-    configure_infinitetalk_workflow,
+    build_drop_first_frame_command,
     comfyui_video_download_candidates,
+    configure_infinitetalk_workflow,
     extract_comfyui_execution_error,
+    normalize_comfyui_workflow,
     resolve_comfyui_workflow_path,
     safe_comfyui_upload_filename,
-    normalize_comfyui_workflow,
 )
 
 

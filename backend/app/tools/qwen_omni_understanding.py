@@ -3,6 +3,7 @@ Qwen3-Omni 多模态理解工具 - 阿里云百炼 Qwen3-Omni-Flash
 支持对图片、音频、视频进行理解分析，并以文字 + 语音双模态返回结果。
 https://help.aliyun.com/zh/model-studio/qwen-omni
 """
+
 import base64
 import json
 import logging
@@ -27,9 +28,7 @@ if ENV_PATH.exists():
 
 # 从环境变量获取配置
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
-DASHSCOPE_BASE_URL = os.getenv(
-    "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com"
-).strip()
+DASHSCOPE_BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com").strip()
 
 # Qwen3-Omni 模型（非思考模式）
 QWEN_OMNI_MODEL = "qwen3-omni-flash"
@@ -67,6 +66,7 @@ VIDEO_MIME = {
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
 
+
 def _resolve_local_path(media_path: str) -> Path:
     """将 /storage/... 路径解析为绝对路径，并校验文件存在。"""
     if media_path.startswith("/storage/"):
@@ -95,8 +95,7 @@ def _detect_media_type(file_path: Path) -> str:
     if ext in VIDEO_MIME:
         return "video"
     raise ValueError(
-        f"无法识别的媒体格式 '{ext}'，支持: "
-        f"{list(IMAGE_MIME)} / {list(AUDIO_MIME)} / {list(VIDEO_MIME)}"
+        f"无法识别的媒体格式 '{ext}'，支持: {list(IMAGE_MIME)} / {list(AUDIO_MIME)} / {list(VIDEO_MIME)}"
     )
 
 
@@ -189,6 +188,7 @@ def _call_qwen_omni(
 
 # ── Tool Schema & 实现 ────────────────────────────────────────────────────────
 
+
 class QwenOmniUnderstandInput(BaseModel):
     """Qwen3-Omni 多模态理解输入参数"""
 
@@ -205,10 +205,7 @@ class QwenOmniUnderstandInput(BaseModel):
     )
     media_type: Optional[str] = Field(
         default=None,
-        description=(
-            "媒体类型：'image'、'audio'、'video'。"
-            "留空则根据文件扩展名自动判断。"
-        ),
+        description=("媒体类型：'image'、'audio'、'video'。留空则根据文件扩展名自动判断。"),
     )
     output_audio: bool = Field(
         default=True,
@@ -265,8 +262,7 @@ def qwen_omni_understand_tool(
         # 2. 检测媒体类型
         detected_type = media_type or _detect_media_type(file_path)
         logger.info(
-            f"🔍 Qwen3-Omni 分析: type={detected_type}, file={file_path.name}, "
-            f"question={question[:60]}..."
+            f"🔍 Qwen3-Omni 分析: type={detected_type}, file={file_path.name}, question={question[:60]}..."
         )
 
         # 3. 编码文件
@@ -340,6 +336,7 @@ def qwen_omni_understand_tool(
     except Exception as e:
         logger.error(f"❌ Qwen3-Omni 理解失败: {e}")
         import traceback
+
         logger.error(traceback.format_exc())
         return f"Error: {e}"
 
@@ -360,20 +357,24 @@ if __name__ == "__main__":
 
     # --- 图片理解 ---
     print("\n=== 测试图片理解 ===")
-    result = qwen_omni_understand_tool.invoke({
-        "media_path": "/storage/images/20251203_161650_d8a0d590_Oriental_Pearl_Tower_in_Shangh.png",
-        "question": "图中描绘的是什么景象？",
-        "output_audio": True,
-    })
+    result = qwen_omni_understand_tool.invoke(
+        {
+            "media_path": "/storage/images/20251203_161650_d8a0d590_Oriental_Pearl_Tower_in_Shangh.png",
+            "question": "图中描绘的是什么景象？",
+            "output_audio": True,
+        }
+    )
     print(result)
 
     # --- 音频理解 ---
     print("\n=== 测试音频理解 ===")
-    result = qwen_omni_understand_tool.invoke({
-        "media_path": "/storage/audios/your_audio.mp3",
-        "question": "这段音频在说什么？",
-        "output_audio": True,
-    })
+    result = qwen_omni_understand_tool.invoke(
+        {
+            "media_path": "/storage/audios/your_audio.mp3",
+            "question": "这段音频在说什么？",
+            "output_audio": True,
+        }
+    )
     print(result)
 
     # --- 视频理解 ---

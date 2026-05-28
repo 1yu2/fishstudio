@@ -8,7 +8,7 @@ from app.main import app
 def test_websocket_receives_external_chat_events(monkeypatch):
     async def fake_process_chat_stream(messages, session_id=None):
         yield 'data: {"type":"delta","content":"你好"}\n\n'
-        yield 'data: [DONE]\n\n'
+        yield "data: [DONE]\n\n"
 
     monkeypatch.setattr("app.routers.chat.process_chat_stream", fake_process_chat_stream)
 

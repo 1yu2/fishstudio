@@ -236,7 +236,7 @@ DIGITAL_PROMPT = """
 - **友好提示**：如果人脸检测失败，用友好的语言向用户说明原因和建议
 - **完整工作流**：对于虚拟人生成任务，应完整执行所有步骤，不要跳过任何环节
 </虚拟人生成工作流>
-"""     
+"""
 
 # 音频内容生成工作流提示词
 AUDIO_PROMPT = """
@@ -363,24 +363,24 @@ def get_full_prompt(
 ) -> str:
     """
     组合完整的Agent提示词
-    
+
     Args:
         tools_list_text: 工具列表描述文本
         skills_context: 已启用 skills 的上下文（可选）
         workspace_context: 工作空间身份记忆上下文（可选）
-    
+
     Returns:
         完整的提示词
     """
     # 组合所有工作流
     workflows = f"{UNDERSTANDING_PROMPT}\n\n{VIDEO_PROMPT}\n\n{DIGITAL_PROMPT}\n\n{AUDIO_PROMPT}"
-    
+
     # 使用占位符填充完整提示词
     full_prompt = SYSTEM_PROMPT.format(
         tools_list_text=tools_list_text,
         workflows=workflows,
         skills_context=f"\n{skills_context}" if skills_context.strip() else "",
-        workspace_context=f"\n{workspace_context}" if workspace_context.strip() else ""
+        workspace_context=f"\n{workspace_context}" if workspace_context.strip() else "",
     )
-    
+
     return full_prompt

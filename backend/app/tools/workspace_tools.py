@@ -1,8 +1,11 @@
 """
 Workspace Tools - Agent 主动写入工作空间记忆的工具
 """
+
 import logging
+
 from langchain_core.tools import tool
+
 from app.services import workspace_service
 
 logger = logging.getLogger(__name__)

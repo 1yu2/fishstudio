@@ -1,4 +1,5 @@
 """认证相关的 Pydantic schemas。"""
+
 from pydantic import BaseModel, Field
 
 

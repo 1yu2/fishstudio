@@ -2,9 +2,11 @@
 WebSocket 连接管理器
 管理每个 canvas_id 的 WebSocket 订阅列表，支持广播事件给所有订阅者
 """
-from fastapi import WebSocket
-from typing import Dict, List
+
 import logging
+from typing import Dict, List
+
+from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,9 @@ class ConnectionManager:
         if canvas_id not in self.active_connections:
             self.active_connections[canvas_id] = []
         self.active_connections[canvas_id].append(websocket)
-        logger.info(f"WebSocket connected for canvas_id={canvas_id}, total={len(self.active_connections[canvas_id])}")
+        logger.info(
+            f"WebSocket connected for canvas_id={canvas_id}, total={len(self.active_connections[canvas_id])}"
+        )
 
     def disconnect(self, canvas_id: str, websocket: WebSocket):
         """移除 WebSocket 连接"""

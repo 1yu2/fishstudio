@@ -2,6 +2,7 @@
 
 针对常见失败做友好诊断；任何子步骤失败都向上抛 RuntimeError，上层启动钩子捕获后退出。
 """
+
 import json
 import logging
 from pathlib import Path
@@ -12,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
-from app.db.database import Base, SessionLocal, engine
+from app.db.database import SessionLocal, engine
+from app.db.migrations import bootstrap_and_upgrade
 from app.db.models import Canvas, Setting, User
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ LEGACY_SETTINGS = BACKEND_DIR / "storage" / "settings.json"
 # 阶段 1：保证数据库存在（连 postgres 默认库 → CREATE DATABASE）
 # ─────────────────────────────────────────
 
+
 def _parse_pg_url(url: str) -> dict:
     """从 SQLAlchemy 风格 URL 拆出 asyncpg 直连所需参数。
 
@@ -33,9 +36,7 @@ def _parse_pg_url(url: str) -> dict:
     """
     parsed = urlparse(url.replace("postgresql+asyncpg", "postgresql"))
     if parsed.scheme not in ("postgresql", "postgres"):
-        raise RuntimeError(
-            f"DATABASE_URL 协议必须是 postgresql+asyncpg://，当前为 {parsed.scheme}"
-        )
+        raise RuntimeError(f"DATABASE_URL 协议必须是 postgresql+asyncpg://，当前为 {parsed.scheme}")
     return {
         "user": parsed.username or "postgres",
         "password": parsed.password or "",
@@ -61,18 +62,13 @@ async def _ensure_database_exists() -> None:
         ) from None
     except (OSError, asyncpg.CannotConnectNowError) as e:
         raise RuntimeError(
-            f"❌ 无法连接 Postgres {cfg['host']}:{cfg['port']}：{e}。"
-            f" 检查网络 / 防火墙 / pg_hba.conf。"
+            f"❌ 无法连接 Postgres {cfg['host']}:{cfg['port']}：{e}。 检查网络 / 防火墙 / pg_hba.conf。"
         ) from None
     except Exception as e:
-        raise RuntimeError(
-            f"❌ Postgres 连接异常 ({type(e).__name__}): {e}"
-        ) from None
+        raise RuntimeError(f"❌ Postgres 连接异常 ({type(e).__name__}): {e}") from None
 
     try:
-        exists = await conn.fetchval(
-            "SELECT 1 FROM pg_database WHERE datname=$1", target
-        )
+        exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname=$1", target)
         if not exists:
             logger.info(f"📦 数据库 {target} 不存在，正在创建...")
             # asyncpg 不允许在事务内执行 CREATE DATABASE，普通 execute 即可
@@ -88,28 +84,27 @@ async def _ensure_database_exists() -> None:
 # 阶段 2：建表 + upsert admin + 数据迁移
 # ─────────────────────────────────────────
 
+
 async def init_db() -> None:
     settings = get_settings()
 
     # 0) 保证库存在
     await _ensure_database_exists()
 
-    # 1) 建表
+    # 1) 通过 alembic 管理 schema（兼容老库自动 stamp）
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("✅ DB schema ensured")
+        await bootstrap_and_upgrade()
     except SQLAlchemyError as e:
-        raise RuntimeError(f"❌ 建表失败: {e}") from None
+        raise RuntimeError(f"❌ alembic 建表/迁移失败: {e}") from None
+    except Exception as e:
+        raise RuntimeError(f"❌ alembic 异常 ({type(e).__name__}): {e}") from None
 
     # 延迟导入避免循环
     from app.auth.security import hash_password
 
     async with SessionLocal() as session:
         # 2) upsert admin
-        result = await session.execute(
-            select(User).where(User.username == settings.admin_username)
-        )
+        result = await session.execute(select(User).where(User.username == settings.admin_username))
         admin = result.scalar_one_or_none()
         if admin is None:
             admin = User(
@@ -190,9 +185,11 @@ def _migrate_settings(session) -> None:
 # 阶段 3：健康检查（供 /health 调用）
 # ─────────────────────────────────────────
 
+
 async def db_healthcheck() -> dict:
     """真实查询 DB，返回 ok/error 与延迟。"""
     import time
+
     from sqlalchemy import text
 
     t0 = time.perf_counter()

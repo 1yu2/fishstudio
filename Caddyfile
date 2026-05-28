@@ -1,0 +1,44 @@
+# Caddy 反代配置
+#
+# - DOMAIN 是真实域名（含 nip.io 子域）→ 自动 Let's Encrypt 签证 + HTTP/2/3
+# - DOMAIN 是 IP / "localhost" → Caddy 不签证，HTTP only
+#
+# 反代下游：frontend:80（其内部已经把 /api、/storage、/ws 反代到 backend:8000）
+
+{
+    email {$LE_EMAIL}
+    # 内置自动 HTTPS；signed by Let's Encrypt for 公网域名
+
+    # 大小限制全局放宽（视频/3D 上传）
+    servers {
+        max_header_size 16KB
+    }
+}
+
+{$DOMAIN} {
+    encode gzip zstd
+
+    # 安全头（Caddy 已默认 HSTS 当 https）
+    header {
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-Frame-Options "SAMEORIGIN"
+        # 移除暴露版本的头
+        -Server
+    }
+
+    # 大体积上传（前端 nginx 也设了 100M）
+    request_body {
+        max_size 200MB
+    }
+
+    # SSE 长连接 + WebSocket：Caddy 默认透传 ws/wss、不缓冲；保险起见显式关 buffer
+    reverse_proxy frontend:80 {
+        flush_interval -1
+        transport http {
+            keepalive 1m
+            keepalive_idle_conns 32
+            response_header_timeout 1h
+        }
+    }
+}

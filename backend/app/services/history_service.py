@@ -2,6 +2,7 @@
 
 外部接口由原同步函数改为 async；调用方（routers/chat.py）需 await。
 """
+
 import logging
 from typing import Any
 
