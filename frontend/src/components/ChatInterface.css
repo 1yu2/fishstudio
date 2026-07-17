@@ -1437,6 +1437,18 @@
   color: var(--text-primary);
 }
 
+/* 收起聊天后的悬浮按钮 */
+.floating-chat-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  box-shadow: var(--shadow-md);
+}
+
+.floating-chat-btn:hover {
+  background: var(--surface-2);
+}
+
 /* 消息气泡 */
 .message .message-content {
   border-radius: var(--radius-md);

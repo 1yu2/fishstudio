@@ -118,6 +118,18 @@ function groupByTime(projects: CanvasSummary[]): Array<{ label: string; items: C
   return groups.filter((g) => g.items.length > 0)
 }
 
+/** 项目状态：最近一条含工具调用的消息中仍有 executing 调用则视为"进行中" */
+function projectStatus(canvas: CanvasSummary): 'running' | 'done' {
+  const msgs = Array.isArray(canvas.messages) ? canvas.messages : []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const toolCalls = (msgs[i] as any)?.toolCalls
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+      return toolCalls.some((tc: any) => tc?.status === 'executing') ? 'running' : 'done'
+    }
+  }
+  return 'done'
+}
+
 export default function HomePage({
   theme,
   onToggleTheme,
@@ -546,6 +558,7 @@ export default function HomePage({
                       const n = countImages(p)
                       const preview = extractTextPreview(p)
                       const fav = prefs.favorites.includes(p.id)
+                      const status = projectStatus(p)
                       return (
                         <div key={p.id} className="home__card-wrapper">
                           <button className="home__card" onClick={() => setCanvasIdToUrl(p.id)} title={p.id}>
@@ -578,6 +591,9 @@ export default function HomePage({
                                   {created || p.id}
                                 </span>
                                 <span className="home__chip">{n} 张</span>
+                                <span className={`home__chip home__chip--status-${status}`}>
+                                  {status === 'running' ? '进行中' : '已完成'}
+                                </span>
                               </div>
                             </div>
                           </button>

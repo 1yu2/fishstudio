@@ -58,6 +58,9 @@ export default function PersonalizationPanel() {
             maxLength={12}
             placeholder="给自己起个名字"
             onChange={(e) => setPrefs({ nickname: e.target.value })}
+            onBlur={(e) => {
+              if (!e.target.value.trim()) setPrefs({ nickname: '小鱼' })
+            }}
           />
         </div>
         <div className="personal__row">

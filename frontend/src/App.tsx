@@ -4,7 +4,7 @@ import HomePage from './components/HomePage'
 import SettingsPage from './components/SettingsPage'
 import LoginPage from './components/LoginPage'
 import { getToken } from './api'
-import { applyPrefs, migrateLegacyKeys } from './utils/preferences'
+import { applyPrefs } from './utils/preferences'
 import { Toaster } from './components/ui/Toast'
 import { ConfirmHost } from './components/ui/ConfirmDialog'
 import './App.css'
@@ -46,7 +46,6 @@ function App() {
   const [authed, setAuthed] = useState<boolean>(() => Boolean(getToken()))
 
   useEffect(() => {
-    migrateLegacyKeys()
     applyPrefs()
   }, [])
 

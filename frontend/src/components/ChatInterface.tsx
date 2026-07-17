@@ -389,6 +389,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
     const link = getCanvasLink(currentCanvasId)
     try {
       await navigator.clipboard.writeText(link)
+      toast('链接已复制', 'success')
     } catch (e) {
       // fallback for some browsers / permissions
       window.prompt('复制这个链接：', link)
@@ -1384,7 +1385,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
           <div 
             className="canvas-content excalidraw-host-container"
           >
-            {!hasAnyImages ? (
+            {!hasAnyImages && messages.length > 0 ? (
               <div className="canvas-empty">
                 <ImageIcon size={64} strokeWidth={1.5} className="empty-icon" />
                 <p className="empty-title">AI 画板</p>

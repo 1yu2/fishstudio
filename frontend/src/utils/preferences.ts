@@ -80,6 +80,9 @@ export function migrateLegacyKeys(): void {
   }
 }
 
+// 模块加载即迁移，保证任何组件首次渲染时读到的都是新 key
+migrateLegacyKeys()
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener)
   return () => {

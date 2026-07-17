@@ -460,6 +460,14 @@
   border-radius: 999px;
 }
 
+.home__chip--status-done {
+  color: var(--success);
+}
+
+.home__chip--status-running {
+  color: var(--warning);
+}
+
 /* ---- 收藏 / 删除（悬停显示，收藏后常显） ---- */
 .home__fav-btn,
 .home__delete-chip {

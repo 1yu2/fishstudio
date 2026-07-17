@@ -29,6 +29,12 @@
   pointer-events: none;
 }
 
+/* 浅色主题下柔化光晕，保持"白昼工作室"干净感 */
+[data-theme='light'] .settings-page__bg {
+  opacity: 0.6;
+  filter: blur(18px);
+}
+
 /* ─── 主体布局 ─── */
 .settings-page__body {
   position: relative;
