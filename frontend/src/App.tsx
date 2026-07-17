@@ -4,6 +4,7 @@ import HomePage from './components/HomePage'
 import SettingsPage from './components/SettingsPage'
 import LoginPage from './components/LoginPage'
 import { getToken } from './api'
+import { applyPrefs, migrateLegacyKeys } from './utils/preferences'
 import './App.css'
 
 type ThemeMode = 'dark' | 'light'
@@ -41,6 +42,11 @@ function App() {
   const [page, setPage] = useState<string>(() => getPageFromUrl())
   const [theme, setTheme] = useState<ThemeMode>(() => readInitialTheme())
   const [authed, setAuthed] = useState<boolean>(() => Boolean(getToken()))
+
+  useEffect(() => {
+    migrateLegacyKeys()
+    applyPrefs()
+  }, [])
 
   useEffect(() => {
     const onPop = () => {

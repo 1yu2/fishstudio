@@ -5,6 +5,15 @@
     <link rel="icon" type="image/png" href="/logo.png" />
     <link rel="apple-touch-icon" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      try {
+        var t = localStorage.getItem('fishstudio:theme')
+        document.documentElement.dataset.theme = t === 'dark' || t === 'light' ? t : 'light'
+        var p = JSON.parse(localStorage.getItem('fishstudio:prefs') || '{}')
+        document.documentElement.dataset.accent = typeof p.accent === 'string' ? p.accent : 'blue'
+        document.documentElement.dataset.bg = typeof p.bg === 'string' ? p.bg : 'plain'
+      } catch (e) { /* localStorage 不可用时静默 */ }
+    </script>
     <title>FishStudio</title>
   </head>
   <body>
