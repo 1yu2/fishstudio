@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import './HomePage.css'
-import { ArrowRight, Clock, LayoutGrid, Search, Paperclip, X, Sun, Moon, Trash2, Settings, LogOut } from 'lucide-react'
-import { apiFetch, logout } from '../api'
+import { ArrowRight, Clock, LayoutGrid, List, Search, Paperclip, X, Star, Trash2 } from 'lucide-react'
+import { apiFetch } from '../api'
+import { usePreferences, toggleFavorite } from '../utils/preferences'
+import { PageHeader } from './ui/PageHeader'
+import { Greeting } from './ui/Greeting'
+import { toast } from './ui/Toast'
+import { confirmDialog } from './ui/ConfirmDialog'
 
 type ThemeMode = 'dark' | 'light'
 
@@ -36,14 +41,6 @@ function setCanvasIdToUrl(canvasId: string) {
 function clearCanvasIdFromUrl() {
   const url = new URL(window.location.href)
   url.searchParams.delete('canvasId')
-  window.history.pushState({}, '', url.toString())
-  window.dispatchEvent(new PopStateEvent('popstate'))
-}
-
-function goToSettings() {
-  const url = new URL(window.location.href)
-  url.searchParams.delete('canvasId')
-  url.searchParams.set('page', 'settings')
   window.history.pushState({}, '', url.toString())
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
@@ -94,6 +91,33 @@ function extractTextPreview(canvas: CanvasSummary, maxLen = 84): string {
   return ''
 }
 
+const CAPABILITY_CHIPS = [
+  { label: '🖼 文生图', prompt: '帮我生成一张图片：' },
+  { label: '🎬 视频', prompt: '帮我生成一段视频：' },
+  { label: '🧊 3D 模型', prompt: '帮我生成一个 3D 模型：' },
+  { label: '🧑‍🎤 虚拟人', prompt: '用我上传的图片和音频生成虚拟人口型同步视频' },
+  { label: '🎙 TTS', prompt: '把这段文字转成语音：' },
+  { label: '📝 文案', prompt: '帮我写一篇小红书文案：' },
+]
+
+function groupByTime(projects: CanvasSummary[]): Array<{ label: string; items: CanvasSummary[] }> {
+  const now = new Date()
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const startOfWeek = startOfDay - ((now.getDay() + 6) % 7) * 86400000 // 周一为一周起点
+  const groups = [
+    { label: '今天', items: [] as CanvasSummary[] },
+    { label: '本周', items: [] as CanvasSummary[] },
+    { label: '更早', items: [] as CanvasSummary[] },
+  ]
+  for (const p of projects) {
+    const t = p.createdAt ?? 0
+    if (t >= startOfDay) groups[0].items.push(p)
+    else if (t >= startOfWeek) groups[1].items.push(p)
+    else groups[2].items.push(p)
+  }
+  return groups.filter((g) => g.items.length > 0)
+}
+
 export default function HomePage({
   theme,
   onToggleTheme,
@@ -108,6 +132,9 @@ export default function HomePage({
   const [uploadedImages, setUploadedImages] = useState<string[]>([]) // 上传的图片URL列表
   const [uploadedAudios, setUploadedAudios] = useState<string[]>([]) // 上传的音频URL列表
   const [creating, setCreating] = useState(false)
+  const [prefs, setPrefs] = usePreferences()
+  const [filter, setFilter] = useState<'all' | 'fav'>('all')
+  const promptRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -127,6 +154,7 @@ export default function HomePage({
         setProjects(Array.isArray(data) ? data : [])
       } catch (e) {
         console.error(e)
+        toast('项目加载失败，请稍后重试', 'error')
         setProjects([])
       } finally {
         setLoading(false)
@@ -141,36 +169,65 @@ export default function HomePage({
     return projects.filter((p) => (p.name || '').toLowerCase().includes(q) || p.id.toLowerCase().includes(q))
   }, [projects, query])
 
+  const sorted = useMemo(() => {
+    const arr = [...filtered]
+    arr.sort((a, b) =>
+      prefs.homeSort === 'newest' ? (b.createdAt ?? 0) - (a.createdAt ?? 0) : (a.createdAt ?? 0) - (b.createdAt ?? 0),
+    )
+    return arr
+  }, [filtered, prefs.homeSort])
+
+  const visible = useMemo(
+    () => (filter === 'fav' ? sorted.filter((p) => prefs.favorites.includes(p.id)) : sorted),
+    [sorted, filter, prefs.favorites],
+  )
+
+  const groups = useMemo(() => groupByTime(visible), [visible])
+
+  const monthCount = useMemo(() => {
+    const now = new Date()
+    return projects.filter((p) => {
+      if (!p.createdAt) return false
+      const d = new Date(p.createdAt)
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
+    }).length
+  }, [projects])
+
+  const onToggleFav = (e: React.MouseEvent, projectId: string) => {
+    e.stopPropagation()
+    toggleFavorite(projectId)
+  }
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    
+
     // 判断是图片还是音频
     const isImage = file.type.startsWith('image/')
-    const isAudio = file.type.startsWith('audio/') || 
-                    ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.wma'].some(ext => 
+    const isAudio = file.type.startsWith('audio/') ||
+                    ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.wma'].some(ext =>
                       file.name.toLowerCase().endsWith(ext)
                     )
-    
+
     if (!isImage && !isAudio) {
-      alert('只支持图片或音频文件')
+      toast('只支持图片或音频文件', 'error')
       return
     }
-    
+
     try {
       const formData = new FormData()
       formData.append('file', file)
-      
+
       const endpoint = isImage ? '/api/upload-image' : '/api/upload-audio'
       const response = await apiFetch(endpoint, {
         method: 'POST',
         body: formData,
       })
-      
+
       if (!response.ok) {
         throw new Error('上传失败')
       }
-      
+
       const data = await response.json()
       if (isImage) {
         setUploadedImages(prev => [...prev, data.url])
@@ -179,7 +236,7 @@ export default function HomePage({
       }
     } catch (error) {
       console.error('文件上传失败:', error)
-      alert('文件上传失败，请重试')
+      toast('文件上传失败，请重试', 'error')
     } finally {
       // 清空文件选择，允许重复选择同一文件
       if (fileInputRef.current) {
@@ -198,14 +255,20 @@ export default function HomePage({
 
   const deleteProject = async (e: React.MouseEvent, projectId: string) => {
     e.stopPropagation() // 阻止点击卡片跳转
-    if (!confirm('确定要删除这个项目吗？')) return
-    
+    const ok = await confirmDialog({
+      title: '删除该项目？',
+      description: '删除后无法恢复，画布内容将一并清除。',
+      confirmText: '删除',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await apiFetch(`/api/canvases/${projectId}`, { method: 'DELETE' })
-      setProjects(prev => prev.filter(p => p.id !== projectId))
-    } catch (e) {
-      console.error('删除项目失败', e)
-      alert('删除失败，请重试')
+      setProjects((prev) => prev.filter((p) => p.id !== projectId))
+      toast('已删除项目', 'success')
+    } catch (err) {
+      console.error('删除项目失败', err)
+      toast('删除失败，请重试', 'error')
     }
   }
 
@@ -268,192 +331,200 @@ export default function HomePage({
 
   return (
     <div className="home">
-      <div className="home__bg" />
-      <header className="home__header">
-        <div className="home__brand">
-          <div className="home__logo">
-            <img src="/logo.png" alt="FishStudio" className="home__logo-img" />
-          </div>
-          <div>
-            <div className="home__title">FishStudio</div>
-            <div className="home__subtitle">创意不止于画布</div>
-          </div>
-        </div>
-        <div className="home__actions">
-          <button className="home__btn home__btn--ghost" onClick={goToSettings} title="设置">
-            <Settings size={16} />
-            设置
-          </button>
-          <button className="home__btn home__btn--ghost" onClick={onToggleTheme} title="切换主题">
-            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-            {theme === 'dark' ? '亮色' : '暗色'}
-          </button>
-          <button
-            className="home__btn home__btn--ghost"
-            onClick={() => {
-              if (window.confirm('确定要退出登录吗？')) logout()
-            }}
-            title="退出登录"
-          >
-            <LogOut size={16} />
-            退出
-          </button>
-        </div>
-      </header>
+      <PageHeader title="FishStudio" subtitle="创意不止于画布" theme={theme} onToggleTheme={onToggleTheme} variant="home" />
 
       <main className="home__main">
-        <section className="home__hero">
-          <h1 className="home__heroTitle">从问题开始，进入画板创作</h1>
-          <p className="home__heroDesc">
-            输入你的想法，我们会为你创建一个项目并自动进入画板。生成的图片会按顺序落到画布里。
-          </p>
-
-          <div className="home__promptCard">
-            {/* 上传的图片预览 */}
-            {uploadedImages.length > 0 && (
-              <div className="home__uploaded-images">
-                {uploadedImages.map((url, index) => (
-                  <div key={index} className="home__uploaded-image-item">
-                    <img src={url} alt={`上传的图片 ${index + 1}`} />
-                    <button
-                      className="home__remove-image-btn"
-                      onClick={() => removeUploadedImage(index)}
-                      title="移除图片"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* 上传的音频预览 */}
-            {uploadedAudios.length > 0 && (
-              <div className="home__uploaded-images">
-                {uploadedAudios.map((url, index) => (
-                  <div key={index} className="home__uploaded-image-item">
-                    <div style={{ fontSize: 12, color: '#e5e7eb', maxWidth: 200, wordBreak: 'break-all' }}>
-                      音频 {index + 1}: {url.split('/').pop()}
-                    </div>
-                    <button
-                      className="home__remove-image-btn"
-                      onClick={() => removeUploadedAudio(index)}
-                      title="移除音频"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            
-            <div className="home__input-row">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*,audio/*"
-                onChange={handleFileUpload}
-                style={{ display: 'none' }}
-              />
-              <button
-                className="home__upload-btn"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={creating}
-                title="上传图片或音频"
-              >
-                <Paperclip size={18} />
-              </button>
-              <textarea
-                className="home__promptInput"
-                placeholder="例如：生成一套 12 生肖毛绒吉祥物，每个生肖一张图，统一风格…"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    // 回车键（非 Shift+Enter）触发创建项目
-                    e.preventDefault()
-                    if (!creating && (prompt.trim() || uploadedImages.length > 0 || uploadedAudios.length > 0)) {
-                      createProjectAndEnter(prompt, uploadedImages, uploadedAudios)
-                    }
-                  }
-                }}
-                onPaste={(e) => {
-                  try {
-                    const items = e.clipboardData?.items
-                    if (!items) return
-
-                    for (let i = 0; i < items.length; i++) {
-                      const item = items[i]
-                      const isImage = item.type.indexOf('image') !== -1
-                      const isAudio = item.type.indexOf('audio') !== -1
-                      if (isImage || isAudio) {
-                        e.preventDefault()
-                        const file = item.getAsFile()
-                        if (!file) continue
-
-                        // 异步上传，但不阻塞
-                        (async () => {
-                          try {
-                            const formData = new FormData()
-                            formData.append('file', file)
-
-                            const endpoint = isImage ? '/api/upload-image' : '/api/upload-audio'
-                            const response = await apiFetch(endpoint, {
-                              method: 'POST',
-                              body: formData,
-                            })
-
-                            if (!response.ok) {
-                              throw new Error('上传失败')
-                            }
-
-                            const data = await response.json()
-                            if (isImage) {
-                              setUploadedImages(prev => [...prev, data.url])
-                            } else {
-                              setUploadedAudios(prev => [...prev, data.url])
-                            }
-                          } catch (error) {
-                            console.error('文件粘贴上传失败:', error)
-                            alert('文件粘贴上传失败，请重试')
-                          }
-                        })()
-                        break // 只处理第一个文件
-                      }
-                    }
-                  } catch (error) {
-                    console.error('粘贴处理错误:', error)
-                  }
-                }}
-                rows={3}
-              />
+        <section className="home__top">
+          <Greeting nickname={prefs.nickname} />
+          <div className="home__stats">
+            <div className="home__stat">
+              <b>{projects.length}</b>
+              <span>项目</span>
             </div>
-            <div className="home__promptFooter">
-              <div className="home__hint">按回车键或点击右侧按钮创建项目并进入画板</div>
-              <button
-                className="home__btn home__btn--primary"
-                onClick={() => createProjectAndEnter(prompt, uploadedImages, uploadedAudios)}
-                disabled={creating || (!prompt.trim() && uploadedImages.length === 0 && uploadedAudios.length === 0)}
-              >
-                开始
-                <ArrowRight size={16} />
-              </button>
+            <div className="home__stat">
+              <b>{monthCount}</b>
+              <span>本月新建</span>
+            </div>
+            <div className="home__stat">
+              <b>{prefs.favorites.length}</b>
+              <span>收藏</span>
             </div>
           </div>
         </section>
 
-        <section className="home__list">
-          <div className="home__listHeader">
-            <div className="home__listTitle">
-              <LayoutGrid size={18} />
-              历史项目
+        <section className="home__promptCard">
+          {uploadedImages.length > 0 && (
+            <div className="home__uploaded-images">
+              {uploadedImages.map((url, index) => (
+                <div key={index} className="home__uploaded-image-item">
+                  <img src={url} alt={`上传的图片 ${index + 1}`} />
+                  <button className="home__remove-image-btn" onClick={() => removeUploadedImage(index)} title="移除图片">
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
             </div>
-            <div className="home__search">
-              <Search size={16} />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜索项目名 / ID"
-              />
+          )}
+          {uploadedAudios.length > 0 && (
+            <div className="home__uploaded-images">
+              {uploadedAudios.map((url, index) => (
+                <div key={index} className="home__uploaded-image-item">
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', maxWidth: 200, wordBreak: 'break-all' }}>
+                    音频 {index + 1}: {url.split('/').pop()}
+                  </div>
+                  <button className="home__remove-image-btn" onClick={() => removeUploadedAudio(index)} title="移除音频">
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="home__input-row">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,audio/*"
+              onChange={handleFileUpload}
+              style={{ display: 'none' }}
+            />
+            <button className="home__upload-btn" onClick={() => fileInputRef.current?.click()} disabled={creating} title="上传图片或音频">
+              <Paperclip size={18} />
+            </button>
+            <textarea
+              ref={promptRef}
+              className="home__promptInput"
+              placeholder="例如：生成一套 12 生肖毛绒吉祥物，每个生肖一张图，统一风格…"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  // 回车键（非 Shift+Enter）触发创建项目
+                  e.preventDefault()
+                  if (!creating && (prompt.trim() || uploadedImages.length > 0 || uploadedAudios.length > 0)) {
+                    createProjectAndEnter(prompt, uploadedImages, uploadedAudios)
+                  }
+                }
+              }}
+              onPaste={(e) => {
+                try {
+                  const items = e.clipboardData?.items
+                  if (!items) return
+
+                  for (let i = 0; i < items.length; i++) {
+                    const item = items[i]
+                    const isImage = item.type.indexOf('image') !== -1
+                    const isAudio = item.type.indexOf('audio') !== -1
+                    if (isImage || isAudio) {
+                      e.preventDefault()
+                      const file = item.getAsFile()
+                      if (!file) continue
+
+                      // 异步上传，但不阻塞
+                      ;(async () => {
+                        try {
+                          const formData = new FormData()
+                          formData.append('file', file)
+
+                          const endpoint = isImage ? '/api/upload-image' : '/api/upload-audio'
+                          const response = await apiFetch(endpoint, {
+                            method: 'POST',
+                            body: formData,
+                          })
+
+                          if (!response.ok) {
+                            throw new Error('上传失败')
+                          }
+
+                          const data = await response.json()
+                          if (isImage) {
+                            setUploadedImages(prev => [...prev, data.url])
+                          } else {
+                            setUploadedAudios(prev => [...prev, data.url])
+                          }
+                        } catch (error) {
+                          console.error('文件粘贴上传失败:', error)
+                          toast('文件粘贴上传失败，请重试', 'error')
+                        }
+                      })()
+                      break // 只处理第一个文件
+                    }
+                  }
+                } catch (error) {
+                  console.error('粘贴处理错误:', error)
+                }
+              }}
+              rows={3}
+            />
+          </div>
+          <div className="home__promptFooter">
+            <div className="home__hint">按回车键或点击右侧按钮创建项目并进入画板</div>
+            <button
+              className="home__btn home__btn--primary"
+              onClick={() => createProjectAndEnter(prompt, uploadedImages, uploadedAudios)}
+              disabled={creating || (!prompt.trim() && uploadedImages.length === 0 && uploadedAudios.length === 0)}
+            >
+              开始
+              <ArrowRight size={16} />
+            </button>
+          </div>
+        </section>
+
+        <div className="home__chips">
+          {CAPABILITY_CHIPS.map((c) => (
+            <button
+              key={c.label}
+              className="home__chip-btn"
+              onClick={() => {
+                setPrompt(c.prompt)
+                promptRef.current?.focus()
+              }}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        <section className="home__list">
+          <div className="home__toolbar">
+            <div className="home__tabs">
+              <button className={`home__tab${filter === 'all' ? ' home__tab--active' : ''}`} onClick={() => setFilter('all')}>
+                全部
+              </button>
+              <button className={`home__tab${filter === 'fav' ? ' home__tab--active' : ''}`} onClick={() => setFilter('fav')}>
+                ⭐ 收藏
+              </button>
+            </div>
+            <div className="home__toolbar-right">
+              <div className="home__search">
+                <Search size={16} />
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索项目名 / ID" />
+              </div>
+              <select
+                className="home__select"
+                value={prefs.homeSort}
+                onChange={(e) => setPrefs({ homeSort: e.target.value as 'newest' | 'oldest' })}
+                title="排序"
+              >
+                <option value="newest">最新优先</option>
+                <option value="oldest">最早优先</option>
+              </select>
+              <select
+                className="home__select"
+                value={prefs.homeDensity}
+                onChange={(e) => setPrefs({ homeDensity: e.target.value as 'comfortable' | 'compact' })}
+                title="卡片密度"
+              >
+                <option value="comfortable">舒适</option>
+                <option value="compact">紧凑</option>
+              </select>
+              <button
+                className="home__view-btn"
+                title={prefs.homeView === 'grid' ? '切换为列表视图' : '切换为网格视图'}
+                onClick={() => setPrefs({ homeView: prefs.homeView === 'grid' ? 'list' : 'grid' })}
+              >
+                {prefs.homeView === 'grid' ? <LayoutGrid size={16} /> : <List size={16} />}
+              </button>
             </div>
           </div>
 
@@ -464,73 +535,75 @@ export default function HomePage({
               ))}
             </div>
           ) : (
-            <div className="home__grid">
-              {filtered.map((p) => {
-                const thumbs = pickThumbnails(p)
-                const created = p.createdAt ? new Date(p.createdAt).toLocaleString() : ''
-                const n = countImages(p)
-                const preview = extractTextPreview(p)
-                return (
-                  <div
-                    key={p.id}
-                    className="home__card-wrapper"
-                  >
-                    <button
-                      className="home__card"
-                      onClick={() => setCanvasIdToUrl(p.id)}
-                      title={p.id}
-                    >
-                      <div className="home__thumb">
-                        {thumbs.length > 0 ? (
-                          <div
-                            className={`home__thumbGrid home__thumbGrid--${Math.min(thumbs.length, 4)}`}
-                            aria-hidden="true"
-                          >
-                            {thumbs.slice(0, 4).map((src, idx) => (
-                              <img key={`${p.id}:${idx}`} className="home__thumbImg" src={src} alt="" />
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="home__thumbEmpty">
-                            {preview ? (
-                              <>
-                                <div className="home__thumbLabel">文本预览</div>
-                                <div className="home__thumbText">{preview}</div>
-                              </>
-                            ) : (
-                              'No Preview'
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      <div className="home__meta">
-                        <div className="home__name">{p.name || '未命名项目'}</div>
-                        {preview && <div className="home__preview">{preview}</div>}
-                        <div className="home__sub">
-                          <span className="home__chip">
-                            <Clock size={14} />
-                            {created || p.id}
-                          </span>
-                          <span className="home__chip">{n} 张</span>
+            <>
+              {groups.map((g) => (
+                <section key={g.label}>
+                  <div className="home__groupLabel">{g.label}</div>
+                  <div className={`home__grid home__grid--${prefs.homeDensity} home__grid--${prefs.homeView}`}>
+                    {g.items.map((p) => {
+                      const thumbs = pickThumbnails(p)
+                      const created = p.createdAt ? new Date(p.createdAt).toLocaleString() : ''
+                      const n = countImages(p)
+                      const preview = extractTextPreview(p)
+                      const fav = prefs.favorites.includes(p.id)
+                      return (
+                        <div key={p.id} className="home__card-wrapper">
+                          <button className="home__card" onClick={() => setCanvasIdToUrl(p.id)} title={p.id}>
+                            <div className="home__thumb">
+                              {thumbs.length > 0 ? (
+                                <div className={`home__thumbGrid home__thumbGrid--${Math.min(thumbs.length, 4)}`} aria-hidden="true">
+                                  {thumbs.slice(0, 4).map((src, idx) => (
+                                    <img key={`${p.id}:${idx}`} className="home__thumbImg" src={src} alt="" />
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="home__thumbEmpty">
+                                  {preview ? (
+                                    <>
+                                      <div className="home__thumbLabel">文本预览</div>
+                                      <div className="home__thumbText">{preview}</div>
+                                    </>
+                                  ) : (
+                                    'No Preview'
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div className="home__meta">
+                              <div className="home__name">{p.name || '未命名项目'}</div>
+                              {preview && <div className="home__preview">{preview}</div>}
+                              <div className="home__sub">
+                                <span className="home__chip">
+                                  <Clock size={14} />
+                                  {created || p.id}
+                                </span>
+                                <span className="home__chip">{n} 张</span>
+                              </div>
+                            </div>
+                          </button>
                           <button
-                            className="home__delete-chip"
-                            onClick={(e) => deleteProject(e, p.id)}
-                            title="删除项目"
+                            className={`home__fav-btn${fav ? ' home__fav-btn--active' : ''}`}
+                            onClick={(e) => onToggleFav(e, p.id)}
+                            title={fav ? '取消收藏' : '收藏'}
                           >
+                            <Star size={15} fill={fav ? 'currentColor' : 'none'} />
+                          </button>
+                          <button className="home__delete-chip" onClick={(e) => deleteProject(e, p.id)} title="删除项目">
                             <Trash2 size={14} />
                           </button>
                         </div>
-                      </div>
-                    </button>
+                      )
+                    })}
                   </div>
-                )
-              })}
-              {filtered.length === 0 && (
+                </section>
+              ))}
+              {visible.length === 0 && (
                 <div className="home__empty">
-                  没有匹配的项目。试试换个关键词，或者新建一个项目开始创作。
+                  <div className="home__empty-icon">🎨</div>
+                  {query || filter === 'fav' ? '没有匹配的项目，换个条件试试。' : '还没有项目，从上方输入框开始你的第一个创作吧。'}
                 </div>
               )}
-            </div>
+            </>
           )}
         </section>
       </main>
