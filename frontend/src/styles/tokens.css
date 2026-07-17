@@ -1,0 +1,89 @@
+/* FishStudio 设计令牌 —— B · 白昼工作室
+   浅色为默认主题；[data-theme="dark"] 为同语言的深色推导版。
+   [data-accent] 主题色预设；[data-bg] 背景质感预设（body 背景在 index.css 接线）。
+   底部的旧变量别名让存量 CSS（ChatInterface/LoginPage）无需改动即可接入新主题。 */
+
+:root {
+  /* 语义色（浅色，默认） */
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --surface-2: #f5f4f2;
+  --border: #e7e5e4;
+  --text-primary: #18181b;
+  --text-secondary: #78716c;
+  --text-tertiary: #a8a29e;
+
+  /* 点缀色（默认电光蓝；[data-accent] 覆写这三个变量） */
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff6ff;
+
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.05);
+  --shadow-md: 0 2px 8px rgba(24, 24, 27, 0.08);
+  --shadow-lg: 0 8px 30px rgba(24, 24, 27, 0.12);
+
+  /* ---- 旧变量别名（存量 CSS 桥接，页面迁移完成后可逐个删除） ---- */
+  --primary-color: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --bg-color: var(--bg);
+  --panel-bg: var(--surface);
+  --border-color: var(--border);
+}
+
+[data-theme='dark'] {
+  --bg: #131316;
+  --surface: #1c1d21;
+  --surface-2: #26272c;
+  --border: #2a2b30;
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* 主题色预设（浅色） */
+:root[data-accent='violet'] { --accent: #7c3aed; --accent-hover: #6d28d9; --accent-soft: #f5f3ff; }
+:root[data-accent='green']  { --accent: #059669; --accent-hover: #047857; --accent-soft: #ecfdf5; }
+:root[data-accent='orange'] { --accent: #ea580c; --accent-hover: #c2410c; --accent-soft: #fff7ed; }
+:root[data-accent='pink']   { --accent: #db2777; --accent-hover: #be185d; --accent-soft: #fdf2f8; }
+:root[data-accent='cyan']   { --accent: #0891b2; --accent-hover: #0e7490; --accent-soft: #ecfeff; }
+
+/* 主题色预设（深色：同色相提亮 + soft 改透明。必须放在浅色预设之后，同优先级靠后定义生效） */
+[data-theme='dark'][data-accent='violet'] { --accent: #a78bfa; --accent-hover: #8b5cf6; --accent-soft: rgba(167, 139, 250, 0.16); }
+[data-theme='dark'][data-accent='green']  { --accent: #34d399; --accent-hover: #10b981; --accent-soft: rgba(52, 211, 153, 0.16); }
+[data-theme='dark'][data-accent='orange'] { --accent: #fb923c; --accent-hover: #f97316; --accent-soft: rgba(251, 146, 60, 0.16); }
+[data-theme='dark'][data-accent='pink']   { --accent: #f472b6; --accent-hover: #ec4899; --accent-soft: rgba(244, 114, 182, 0.16); }
+[data-theme='dark'][data-accent='cyan']   { --accent: #22d3ee; --accent-hover: #06b6d4; --accent-soft: rgba(34, 211, 238, 0.16); }
+/* blue 的深色取值已在 [data-theme='dark'] 主块中定义 */
+
+/* 背景质感预设（plain 为默认无图案，无需定义） */
+:root[data-bg='grid'] {
+  --page-bg-image: linear-gradient(var(--border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  --page-bg-size: 24px 24px;
+}
+:root[data-bg='aurora'] {
+  --page-bg-image: radial-gradient(ellipse 70% 60% at 20% 0%, rgba(37, 99, 235, 0.08), transparent),
+    radial-gradient(ellipse 60% 50% at 90% 10%, rgba(219, 39, 119, 0.06), transparent);
+}
+:root[data-bg='dots'] {
+  --page-bg-image: radial-gradient(var(--border) 1px, transparent 1px);
+  --page-bg-size: 16px 16px;
+}

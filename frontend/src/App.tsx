@@ -33,7 +33,7 @@ function readInitialTheme(): ThemeMode {
   } catch {
     // ignore
   }
-  return 'dark'
+  return 'light' // 默认浅色（B · 白昼工作室），已存偏好不受影响
 }
 
 function App() {

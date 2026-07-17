@@ -4,32 +4,20 @@
   box-sizing: border-box;
 }
 
+/* 兼容别名：App.css 等存量代码仍引用这两个变量 */
 :root {
-  /* 通用 */
-  --app-bg: #070a12;
-  --app-fg: #e5e7eb;
-}
-
-/* 默认深色 */
-[data-theme="dark"] {
-  --app-bg: #070a12;
-  --app-fg: #e5e7eb;
-}
-
-/* 亮色 */
-[data-theme="light"] {
-  --app-bg: #f8fafc;
-  --app-fg: #0f172a;
+  --app-bg: var(--bg);
+  --app-fg: var(--text-primary);
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background-color: var(--app-bg);
-  color: var(--app-fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background-color: var(--bg);
+  background-image: var(--page-bg-image, none);
+  background-size: var(--page-bg-size, auto);
+  background-attachment: fixed;
+  color: var(--text-primary);
   height: 100vh;
   overflow: hidden;
 }
@@ -41,7 +29,5 @@ body {
 }
 
 code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
 }
-
