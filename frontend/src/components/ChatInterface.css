@@ -611,33 +611,6 @@
   opacity: 0.55;
 }
 
-[data-theme="light"] .chat-header {
-  background: rgba(15, 23, 42, 0.03);
-  border-bottom-color: rgba(15, 23, 42, 0.10);
-}
-
-[data-theme="light"] .chat-input-container {
-  background: rgba(255, 255, 255, 0.72);
-  border-top-color: rgba(15, 23, 42, 0.10);
-}
-
-[data-theme="light"] .assistant-message .message-content {
-  background: rgba(255, 255, 255, 0.78);
-  border-color: rgba(15, 23, 42, 0.10);
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
-}
-
-[data-theme="light"] .tool-call-header {
-  background-color: rgba(15, 23, 42, 0.04);
-  border-color: rgba(15, 23, 42, 0.10);
-}
-
-[data-theme="light"] .tool-details {
-  background-color: rgba(255, 255, 255, 0.78);
-  border-color: rgba(15, 23, 42, 0.12);
-  color: rgba(15, 23, 42, 0.88);
-}
-
 /* 防止 scrollIntoView/浏览器滚动算法把 chat-panel 当滚动容器滚动，造成“底部留空、内容上移” */
 @supports (overflow: clip) {
   .chat-panel {
@@ -810,14 +783,6 @@
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25);
 }
 
-/* Light: 用户气泡不要紫色渐变，改为浅色底 + 深色字 */
-[data-theme="light"] .user-message .message-content {
-  background: rgba(37, 99, 235, 0.12);
-  color: rgba(15, 23, 42, 0.95);
-  border: 1px solid rgba(37, 99, 235, 0.18);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-}
-
 /* Markdown 文本样式 */
 .message-text {
   width: 100%;
@@ -882,12 +847,6 @@
 .skill-badge-icon {
   flex: 0 0 auto;
   color: #8fb8ff;
-}
-
-[data-theme="light"] .skill-matched-badge {
-  border-color: rgba(42, 91, 180, 0.22);
-  background: rgba(42, 91, 180, 0.08);
-  color: #244272;
 }
 
 .storyboard-panel {
@@ -1520,7 +1479,19 @@
 }
 
 .tool-details {
-  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.tool-call-header {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.tool-call-header:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
 }
 
 .tool-section .section-label {
