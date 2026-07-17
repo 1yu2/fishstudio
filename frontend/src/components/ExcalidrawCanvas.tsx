@@ -10,6 +10,7 @@ import {
 
 import { Excalidraw } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
+import { toast } from './ui/Toast'
 
 type ExcalidrawFile = {
   id: string
@@ -638,7 +639,7 @@ export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
           
           if (currentSelectedImages.length === 0) {
             // 没有选中图片，提示用户
-            alert('请先选中图片')
+            toast('请先选中图片', 'info')
             return
           }
           
@@ -651,7 +652,7 @@ export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
             .filter(Boolean) as string[]
           
           if (imageUrls.length === 0) {
-            alert('无法获取图片数据')
+            toast('无法获取图片数据', 'error')
             return
           }
           
@@ -666,7 +667,7 @@ export const ExcalidrawCanvas = forwardRef<ExcalidrawCanvasHandle, Props>(
             }
           } catch (error) {
             console.error('处理图片失败:', error)
-            alert('处理图片失败，请重试')
+            toast('处理图片失败，请重试', 'error')
           }
           
           // 关闭菜单
