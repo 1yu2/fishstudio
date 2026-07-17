@@ -1,9 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { apiFetch, logout } from '../api'
+import { apiFetch } from '../api'
 import {
-  ArrowLeft,
-  Sun,
-  Moon,
   Server,
   FileCode2,
   Trash2,
@@ -18,14 +15,16 @@ import {
   Zap,
   Package,
   Brain,
-  LogOut,
+  Palette,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
+import PersonalizationPanel from './PersonalizationPanel'
+import { PageHeader } from './ui/PageHeader'
 import './SettingsPage.css'
 
 // ─── Types ──────────────────────────────────────────────────────────
 type ThemeMode = 'dark' | 'light'
-type TabId = 'workspace' | 'skills' | 'tools' | 'mcp' | 'env'
+type TabId = 'personal' | 'workspace' | 'skills' | 'tools' | 'mcp' | 'env'
 type MCPView = 'form' | 'json'
 
 /** Tool skills (生图/生视频等，来自后端 DEFAULT_SKILLS) */
@@ -174,14 +173,6 @@ const TOOL_DETAILS: Record<string, ToolDetail> = {
     iconBg: 'linear-gradient(135deg,#ff2442,#ff6b6b)',
     iconChar: '书',
   },
-}
-
-// ─── Helper ──────────────────────────────────────────────────────────
-function goHome() {
-  const url = new URL(window.location.href)
-  url.searchParams.delete('page')
-  window.history.pushState({}, '', url.toString())
-  window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -1016,6 +1007,7 @@ interface SettingsPageProps {
 }
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode; badge?: string }[] = [
+  { id: 'personal', label: '个性化', icon: <Palette size={16} /> },
   { id: 'workspace', label: '工作空间', icon: <Brain size={16} />, badge: 'NEW' },
   { id: 'skills', label: 'Skills', icon: <Package size={16} /> },
   { id: 'tools', label: '工具', icon: <Wrench size={16} /> },
@@ -1023,7 +1015,7 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode; badge?: string }[
   { id: 'env', label: '环境变量', icon: <FileCode2 size={16} /> },
 ]
 
-const NEW_BADGE_KEY = 'fishstudio_workspace_seen'
+const NEW_BADGE_KEY = 'fishstudio:workspace_seen'
 
 export default function SettingsPage({ theme, onToggleTheme }: SettingsPageProps) {
   const [activeTab, setActiveTab] = useState<TabId>('workspace')
@@ -1041,6 +1033,7 @@ export default function SettingsPage({ theme, onToggleTheme }: SettingsPageProps
 
   const renderPanel = useCallback(() => {
     switch (activeTab) {
+      case 'personal': return <PersonalizationPanel />
       case 'workspace': return <WorkspacePanel />
       case 'skills': return <SkillsPanel />
       case 'tools':  return <ToolsPanel />
@@ -1052,30 +1045,7 @@ export default function SettingsPage({ theme, onToggleTheme }: SettingsPageProps
   return (
     <div className="settings-page">
       <div className="settings-page__bg" />
-      <header className="settings-page__header">
-        <div className="settings-page__header-left">
-          <button className="settings-page__back-btn" onClick={goHome}>
-            <ArrowLeft size={16} />返回
-          </button>
-          <span className="settings-page__title">设置</span>
-        </div>
-        <div className="settings-page__header-right">
-          <button className="settings-page__theme-btn" onClick={onToggleTheme}>
-            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-            {theme === 'dark' ? '亮色' : '暗色'}
-          </button>
-          <button
-            className="settings-page__theme-btn"
-            onClick={() => {
-              if (window.confirm('确定要退出登录吗？')) logout()
-            }}
-            title="退出登录"
-          >
-            <LogOut size={16} />
-            退出
-          </button>
-        </div>
-      </header>
+      <PageHeader title="设置" theme={theme} onToggleTheme={onToggleTheme} variant="sub" />
       <div className="settings-page__body">
         <nav className="settings-page__sidebar">
           {TABS.map((tab) => (
