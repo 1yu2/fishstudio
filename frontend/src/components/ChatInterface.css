@@ -1442,3 +1442,188 @@
     bottom: 24px;
   }
 }
+
+/* ===== B · 白昼工作室 覆盖层（2026-07 重设计，追加于文件末尾） ===== */
+
+/* 聊天面板头部 */
+.chat-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-title h1 {
+  color: var(--text-primary);
+}
+
+.header-title p {
+  color: var(--text-secondary);
+}
+
+.chat-header__avatar {
+  display: inline-flex;
+  margin-right: 4px;
+}
+
+/* 画布悬浮工具条 */
+.control-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.control-btn:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+/* 消息气泡 */
+.message .message-content {
+  border-radius: var(--radius-md);
+}
+
+.user-message .message-content {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+}
+
+.assistant-message .message-content {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.message-text a {
+  color: var(--accent);
+}
+
+/* 工具调用步骤卡片 */
+.tool-call-wrapper {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.tool-call-header .tool-name {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.pulsing-dot {
+  background: var(--accent);
+}
+
+.status-dot.done {
+  background: var(--success);
+}
+
+.tool-details {
+  border-top: 1px solid var(--border);
+}
+
+.tool-section .section-label {
+  color: var(--text-tertiary);
+}
+
+.tool-section pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+/* 技能命中徽标 */
+.skill-matched-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 输入区 */
+.chat-input-container {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.chat-input {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+}
+
+.chat-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: none;
+}
+
+.upload-image-button {
+  color: var(--text-secondary);
+}
+
+.upload-image-button:hover {
+  color: var(--accent);
+}
+
+.send-button {
+  background: var(--accent);
+}
+
+.send-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+/* 空画布引导浮层 */
+.canvas-guide {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  max-width: 460px;
+  width: calc(100% - 48px);
+  padding: 28px 32px;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.canvas-guide__title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.canvas-guide__sub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.canvas-guide__examples {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.canvas-guide__example {
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.canvas-guide__example:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}

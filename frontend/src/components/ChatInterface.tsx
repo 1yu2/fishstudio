@@ -9,6 +9,17 @@ import ExcalidrawCanvas, {
 } from './ExcalidrawCanvas'
 import Model3DViewer from './Model3DViewer'
 import { parseStoryboard, Storyboard } from './storyboard'
+import { usePreferences } from '../utils/preferences'
+import { Avatar } from './ui/Avatar'
+import { toast } from './ui/Toast'
+import { confirmDialog } from './ui/ConfirmDialog'
+
+const CANVAS_GUIDE_EXAMPLES = [
+  '生成一套 12 生肖毛绒吉祥物，每个生肖一张图，统一风格',
+  '用我上传的图片和音频生成虚拟人口型同步视频',
+  '把这张产品图生成一段 5 秒的宣传视频',
+  '生成一个可爱机器人的 3D 模型',
+]
 
 type ChatInterfaceProps = {
   initialCanvasId?: string
@@ -99,6 +110,7 @@ const StoryboardPanel = ({ storyboard }: { storyboard: Storyboard }) => (
 const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: ChatInterfaceProps) => {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
+  const [prefs] = usePreferences()
   const [isLoading, setIsLoading] = useState(false)
   const [isPaused, setIsPaused] = useState(false) // 暂停状态
   const [uploadedImages, setUploadedImages] = useState<string[]>([]) // 上传的图片URL列表
@@ -278,7 +290,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
           setCanvases(migrated)
           // 优先使用本地记录的选中ID，如果不存在则默认选中第一个
           const urlId = getCanvasIdFromUrl()
-          const lastId = localStorage.getItem('ai_agent_current_canvas_id')
+          const lastId = localStorage.getItem('fishstudio:current_canvas_id')
           const preferredId = initialCanvasId || urlId || lastId || ''
           const target = migrated.find((c: Canvas) => c.id === preferredId) || migrated[0]
           const canvasId = target.id
@@ -348,7 +360,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
   // 保存当前选中的画布ID到本地，方便刷新后恢复
   useEffect(() => {
     if (currentCanvasId) {
-      localStorage.setItem('ai_agent_current_canvas_id', currentCanvasId)
+      localStorage.setItem('fishstudio:current_canvas_id', currentCanvasId)
     }
   }, [currentCanvasId])
 
@@ -903,7 +915,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                     )
     
     if (!isImage && !isAudio && !isVideo) {
-      alert('只支持图片、音频或视频文件')
+      toast('只支持图片、音频或视频文件', 'error')
       return
     }
     
@@ -931,7 +943,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       }
     } catch (error) {
       console.error('文件上传失败:', error)
-      alert('文件上传失败，请重试')
+      toast('文件上传失败，请重试', 'error')
     } finally {
       // 清空文件选择，允许重复选择同一文件
       if (fileInputRef.current) {
@@ -994,7 +1006,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               }
             } catch (error) {
               console.error('文件粘贴上传失败:', error)
-              alert('文件粘贴上传失败，请重试')
+              toast('文件粘贴上传失败，请重试', 'error')
             }
           })()
           break // 只处理第一个文件
@@ -1321,7 +1333,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
       }
     } catch (error) {
       console.error('下载3D模型失败:', error)
-      alert(`下载失败: ${error instanceof Error ? error.message : '未知错误'}`)
+      toast(`下载失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
     }
   }
 
@@ -1349,8 +1361,8 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
             </button>
             <button
               className="control-btn"
-              onClick={() => {
-                if (window.confirm('确定要退出登录吗？')) logout()
+              onClick={async () => {
+                if (await confirmDialog({ title: '确定要退出登录吗？', confirmText: '退出登录' })) logout()
               }}
               title="退出登录"
             >
@@ -1456,7 +1468,7 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                     }
                   } catch (err) {
                     console.error('处理图片失败:', err)
-                    alert('添加图片到输入框失败，请重试')
+                    toast('添加图片到输入框失败，请重试', 'error')
                   }
                     }}
                     on3DModelClick={(modelUrl, format, mtlUrl, textureUrl) => {
@@ -1487,6 +1499,21 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
                       excalidrawRef.current?.clearSelection()
                 }}
                     />
+            )}
+
+            {/* 空画布引导：尚未开始对话时显示，开始创作后自动消失 */}
+            {messages.length === 0 && (
+              <div className="canvas-guide">
+                <div className="canvas-guide__title">从一句话开始创作</div>
+                <div className="canvas-guide__sub">点击示例填入输入框，或直接在右侧描述你的想法</div>
+                <div className="canvas-guide__examples">
+                  {CANVAS_GUIDE_EXAMPLES.map((ex) => (
+                    <button key={ex} className="canvas-guide__example" onClick={() => setInput(ex)}>
+                      {ex}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
 
@@ -1618,6 +1645,9 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               <h1>FishStudio</h1>
               <p>使用AI生成图像</p>
             </div>
+            <span className="chat-header__avatar" title={prefs.nickname}>
+              <Avatar avatarId={prefs.avatarId} nickname={prefs.nickname} size={26} />
+            </span>
             <button
               className="control-btn"
               onClick={goToSettings}
