@@ -5,6 +5,8 @@ import SettingsPage from './components/SettingsPage'
 import LoginPage from './components/LoginPage'
 import { getToken } from './api'
 import { applyPrefs, migrateLegacyKeys } from './utils/preferences'
+import { Toaster } from './components/ui/Toast'
+import { ConfirmHost } from './components/ui/ConfirmDialog'
 import './App.css'
 
 type ThemeMode = 'dark' | 'light'
@@ -77,6 +79,8 @@ function App() {
     return (
       <div className="app">
         <LoginPage onLoggedIn={() => setAuthed(true)} />
+        <Toaster />
+        <ConfirmHost />
       </div>
     )
   }
@@ -95,6 +99,8 @@ function App() {
       ) : (
         <HomePage theme={theme} onToggleTheme={toggleTheme} />
       )}
+      <Toaster />
+      <ConfirmHost />
     </div>
   )
 }

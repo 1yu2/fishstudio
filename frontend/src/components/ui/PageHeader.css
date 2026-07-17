@@ -1,0 +1,115 @@
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.page-header__left,
+.page-header__right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.page-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.page-header__logo {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+}
+
+.page-header__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.page-header__subtitle {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.page-header__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.page-header__btn:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.page-header__user {
+  position: relative;
+}
+
+.page-header__avatar-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.page-header__menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+}
+
+.page-header__menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 100;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+}
+
+.page-header__menu-name {
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.page-header__menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--danger);
+  cursor: pointer;
+}
+
+.page-header__menu-item:hover {
+  background: var(--surface-2);
+}
