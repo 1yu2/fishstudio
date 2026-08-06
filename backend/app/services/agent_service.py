@@ -17,6 +17,7 @@ from app.tools.audio_mixing import concatenate_audio_tool, mix_audio_with_bgm_to
 from app.tools.model_3d_generation import generate_3d_model_tool
 from app.tools.qwen_omni_understanding import qwen_omni_understand_tool
 from app.tools.qwen_tts import qwen_voice_cloning_tool, qwen_voice_design_tool
+from app.tools.series_tools import SERIES_TOOLS
 from app.tools.skill_tools import (
     delete_skill_file_tool,
     init_skill_tool,
@@ -34,8 +35,13 @@ from app.tools.workspace_tools import write_memory
 logger = logging.getLogger(__name__)
 
 
-def create_agent():
-    """创建LangGraph Agent"""
+def create_agent(project_type: Optional[str] = None):
+    """创建LangGraph Agent
+
+    Args:
+        project_type: 项目类型（可选）。short_drama 等系列项目只注入相关工作流，
+            拿不到项目类型时传 None 维持全量注入（兼容旧行为）。
+    """
     # 使用 LLM 工厂创建模型实例（默认使用火山引擎）
     model = create_llm()
 
@@ -68,13 +74,17 @@ def create_agent():
         delete_skill_file_tool,
         # 工作空间长期记忆工具
         write_memory,
+        # 系列剧高层领域工具（工作流编排：项目/分镜/资产/审批/批量生成/渲染）
+        *SERIES_TOOLS,
     ]
     logger.info(f"🛠️  注册工具: {[tool.name for tool in tools]}")
 
-    # 动态生成工具列表描述
+    # 轻量工具列表：工具 schema（含完整参数与描述）已由模型工具绑定机制携带，
+    # 系统提示里只保留一行式「名称 + 首行简介」概览，避免重复注入完整描述（约 7100 字符）。
     tool_descriptions = []
     for tool in tools:
-        tool_descriptions.append(f"- {tool.name}: {tool.description}")
+        first_line = (tool.description or "").strip().splitlines()[0].strip()
+        tool_descriptions.append(f"- {tool.name}: {first_line}")
     tools_list_text = "\n".join(tool_descriptions)
 
     # 使用prompt模块生成完整提示词
@@ -84,6 +94,7 @@ def create_agent():
         tools_list_text=tools_list_text,
         skills_context=skills_context,
         workspace_context=workspace_context,
+        project_type=project_type,
     )
 
     # 创建Agent

@@ -3,6 +3,8 @@ FishStudio Agent 提示词模块
 包含系统提示词和各工作流提示词
 """
 
+from typing import Optional
+
 # 基础系统提示词（使用占位符）
 SYSTEM_PROMPT = """你是 FishStudio，一个拥有高度自主决策能力的多模态 AI 创作专家。你不仅是工具的调用者,更是能够独立理解复杂意图、自主拆解任务并交付最终成品的数字化设计师。
 
@@ -360,6 +362,7 @@ def get_full_prompt(
     tools_list_text: str,
     skills_context: str = "",
     workspace_context: str = "",
+    project_type: Optional[str] = None,
 ) -> str:
     """
     组合完整的Agent提示词
@@ -368,12 +371,17 @@ def get_full_prompt(
         tools_list_text: 工具列表描述文本
         skills_context: 已启用 skills 的上下文（可选）
         workspace_context: 工作空间身份记忆上下文（可选）
+        project_type: 项目类型（可选）。short_drama/series 类项目只注入
+            系列视频相关工作流（VIDEO + AUDIO）；None 或其他值维持全量注入（兼容）。
 
     Returns:
         完整的提示词
     """
-    # 组合所有工作流
-    workflows = f"{UNDERSTANDING_PROMPT}\n\n{VIDEO_PROMPT}\n\n{DIGITAL_PROMPT}\n\n{AUDIO_PROMPT}"
+    # 按项目类型注入工作流：系列视频项目不需要 3D/数字人工作流（S8 保守瘦身）
+    if project_type in ("short_drama", "series", "poetry"):
+        workflows = f"{VIDEO_PROMPT}\n\n{AUDIO_PROMPT}"
+    else:
+        workflows = f"{UNDERSTANDING_PROMPT}\n\n{VIDEO_PROMPT}\n\n{DIGITAL_PROMPT}\n\n{AUDIO_PROMPT}"
 
     # 使用占位符填充完整提示词
     full_prompt = SYSTEM_PROMPT.format(

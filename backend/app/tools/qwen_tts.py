@@ -29,6 +29,9 @@ if ENV_PATH.exists():
 # 从环境变量获取配置
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
 DASHSCOPE_BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com").strip()
+QWEN_VOICE_CLONE_TARGET_MODEL = os.getenv(
+    "QWEN_VOICE_CLONE_TARGET_MODEL", "qwen3-tts-vc-2026-01-22"
+).strip()
 
 # 音频存储目录
 STORAGE_DIR = BASE_DIR / "storage"
@@ -245,6 +248,87 @@ class VoiceCloningInput(BaseModel):
     language: str = Field(default="zh", description="语言代码，zh/en/de/it/pt/es/ja/ko/fr/ru，默认zh")
 
 
+class VoiceSynthesisInput(BaseModel):
+    voice_id: str = Field(description="声音复刻或声音设计接口返回的持久化音色 ID")
+    text: str = Field(description="要合成的文本内容")
+    language: str = Field(default="zh", description="语言代码，默认 zh")
+    target_model: str = Field(
+        default=QWEN_VOICE_CLONE_TARGET_MODEL,
+        description="创建该音色时绑定的 target_model",
+    )
+
+
+@tool("qwen_voice_synthesis", args_schema=VoiceSynthesisInput)
+def qwen_voice_synthesis_tool(
+    voice_id: str,
+    text: str,
+    language: str = "zh",
+    target_model: str = QWEN_VOICE_CLONE_TARGET_MODEL,
+) -> str:
+    """使用已创建的持久化音色 ID 直接合成，不重复执行音色创建。"""
+    try:
+        if not DASHSCOPE_API_KEY:
+            return "Error: 未配置 DASHSCOPE_API_KEY（请在 backend/.env 设置）"
+        if not voice_id.strip():
+            return "Error: voice_id 不能为空"
+
+        url = f"{DASHSCOPE_BASE_URL.rstrip('/')}/api/v1/services/aigc/multimodal-generation/generation"
+        payload = {
+            "model": target_model or QWEN_VOICE_CLONE_TARGET_MODEL,
+            "input": {
+                "text": text,
+                "voice": voice_id,
+                "language_type": LANGUAGE_MAP.get(language.lower(), "Auto"),
+            },
+        }
+        headers = {
+            "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        response = requests.post(url, json=payload, headers=headers, timeout=120)
+        if response.status_code != 200:
+            return f"Error: 语音合成失败: status={response.status_code}, body={response.text}"
+
+        data = response.json()
+        audio_url = ((data.get("output") or {}).get("audio") or {}).get("url", "")
+        if not audio_url:
+            return f"Error: 响应中未找到音频URL. Response: {json.dumps(data)}"
+        audio_response = requests.get(audio_url, timeout=60)
+        audio_response.raise_for_status()
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        safe_text = "".join(
+            char if char.isalnum() or char in (" ", "-", "_") else "" for char in text[:30]
+        ).replace(" ", "_")
+        extension = ".wav" if ".wav" in audio_url.lower() else ".mp3"
+        filename = f"voice_synthesis_{timestamp}_{unique_id}"
+        if safe_text:
+            filename += f"_{safe_text}"
+        filename += extension
+        file_path = AUDIOS_DIR / filename
+        file_path.write_bytes(audio_response.content)
+        local_path = f"/storage/audios/{filename}"
+        return json.dumps(
+            {
+                "audio_url": local_path,
+                "local_path": local_path,
+                "original_url": audio_url,
+                "text": text,
+                "voice_name": voice_id,
+                "voice_id": voice_id,
+                "target_model": target_model or QWEN_VOICE_CLONE_TARGET_MODEL,
+                "language": language,
+                "provider": target_model or QWEN_VOICE_CLONE_TARGET_MODEL,
+                "request_id": data.get("request_id", ""),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as error:
+        logger.exception("使用持久化音色合成失败")
+        return f"Error: {error}"
+
+
 @tool("qwen_voice_cloning", args_schema=VoiceCloningInput)
 def qwen_voice_cloning_tool(reference_audio: str, text: str, language: str = "zh") -> str:
     """
@@ -291,7 +375,7 @@ def qwen_voice_cloning_tool(reference_audio: str, text: str, language: str = "zh
             "model": "qwen-voice-enrollment",
             "input": {
                 "action": "create",
-                "target_model": "qwen3-tts-vc-2026-01-22",  # 使用声音复刻模型
+                "target_model": QWEN_VOICE_CLONE_TARGET_MODEL,
                 "preferred_name": f"vc{uuid.uuid4().hex[:8]}",
                 "audio": {"data": audio_data},
                 "language": language,
@@ -320,7 +404,7 @@ def qwen_voice_cloning_tool(reference_audio: str, text: str, language: str = "zh
         synth_url = f"{DASHSCOPE_BASE_URL.rstrip('/')}/api/v1/services/aigc/multimodal-generation/generation"
 
         synth_payload = {
-            "model": "qwen3-tts-vc-2026-01-22",
+            "model": QWEN_VOICE_CLONE_TARGET_MODEL,
             "input": {
                 "text": text,
                 "voice": voice_name,
@@ -376,6 +460,8 @@ def qwen_voice_cloning_tool(reference_audio: str, text: str, language: str = "zh
                 "text": text,
                 "reference_audio": reference_audio,
                 "voice_name": voice_name,
+                "voice_id": voice_name,
+                "target_model": QWEN_VOICE_CLONE_TARGET_MODEL,
                 "language": language,
                 "provider": "qwen-tts-voice-cloning",
                 "request_id": synth_data.get("request_id", ""),

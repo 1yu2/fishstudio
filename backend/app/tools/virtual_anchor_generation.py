@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -221,19 +221,6 @@ def drop_first_frame_from_video(video_path: Path, fps: int) -> bool:
         logger.warning(f"⚠️ fps 无效，跳过首帧裁剪: fps={fps}")
         return False
 
-
-def build_comfyui_extra_data(raw_workflow: Dict[str, Any], cloudberry_mode: bool) -> Dict[str, Any]:
-    if not cloudberry_mode:
-        return {}
-
-    workflow = copy.deepcopy(raw_workflow)
-    workflow_extra = workflow.setdefault("extra", {})
-    if isinstance(workflow_extra, dict):
-        workflow_extra["cloudberry_mode"] = True
-    else:
-        workflow["extra"] = {"cloudberry_mode": True}
-    return {"extra_pnginfo": {"workflow": workflow}}
-
     temp_path = video_path.with_name(f"{video_path.stem}_drop_first_frame_tmp{video_path.suffix}")
     command = build_drop_first_frame_command(
         ffmpeg_path=_get_ffmpeg_path(),
@@ -263,6 +250,19 @@ def build_comfyui_extra_data(raw_workflow: Dict[str, Any], cloudberry_mode: bool
             except Exception:
                 pass
         return False
+
+
+def build_comfyui_extra_data(raw_workflow: Dict[str, Any], cloudberry_mode: bool) -> Dict[str, Any]:
+    if not cloudberry_mode:
+        return {}
+
+    workflow = copy.deepcopy(raw_workflow)
+    workflow_extra = workflow.setdefault("extra", {})
+    if isinstance(workflow_extra, dict):
+        workflow_extra["cloudberry_mode"] = True
+    else:
+        workflow["extra"] = {"cloudberry_mode": True}
+    return {"extra_pnginfo": {"workflow": workflow}}
 
 
 def extract_comfyui_execution_error(history_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -566,7 +566,7 @@ VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 # ComfyUI 配置
 COMFYUI_SERVER_ADDRESS = os.getenv("COMFYUI_SERVER_ADDRESS", "").strip()
 COMFYUI_WORKFLOW_PATH = os.getenv("COMFYUI_WORKFLOW_PATH", "").strip()
-COMFYUI_CLOUDBERRY_MODE = os.getenv("COMFYUI_CLOUDBERRY_MODE", "true").lower() == "true"
+COMFYUI_CLOUDBERRY_MODE = os.getenv("COMFYUI_CLOUDBERRY_MODE", "false").lower() == "true"
 
 # BizyAir 配置
 BIZYAIR_API_KEY = os.getenv("BIZYAIR_API_KEY", "").strip()

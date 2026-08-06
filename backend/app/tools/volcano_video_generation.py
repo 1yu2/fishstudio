@@ -286,23 +286,22 @@ def submit_video_generation_task(
     image_url: Optional[str] = None,
     start_image_url: Optional[str] = None,
     end_image_url: Optional[str] = None,
-    mode: str = "text",  # "text", "image", "start_end"
+    mode: str = "text",
+    model: Optional[str] = None,
 ) -> Tuple[str, bool]:
     """
     提交视频生成任务到火山引擎/DMXAPI
 
+    R9.3：model 非空时使用锁定模型，否则自动选择。
     Returns:
         Tuple[str, bool]: (任务ID或视频URL, 是否使用streaming模式)
     """
     if not VOLCANO_API_KEY:
         raise ValueError("未配置 VOLCANO_API_KEY（请在 backend/.env 设置）")
 
-    # 火山引擎/DMXAPI 视频生成端点
     url = f"{ACTIVE_BASE_URL}/responses"
 
-    # 根据是否使用 DMXAPI 选择不同的处理方式
     if VOLCANO_USE_DMXAPI:
-        # DMXAPI: 使用 streaming 模式直接获取视频
         return submit_dmxapi_task(
             prompt=prompt,
             duration=duration,
@@ -312,9 +311,9 @@ def submit_video_generation_task(
             end_image_url=end_image_url,
             mode=mode,
             url=url,
+            model=model or DMXAPI_VIDEO_MODEL,
         )
     else:
-        # 火山引擎直连: 使用原来的方式（返回task_id, 非streaming）
         task_id = submit_volcano_task(
             prompt=prompt,
             duration=duration,
@@ -323,7 +322,7 @@ def submit_video_generation_task(
             start_image_url=start_image_url,
             end_image_url=end_image_url,
             mode=mode,
-            url=url,
+            model=model or VOLCANO_VIDEO_MODEL,
         )
         return (task_id, False)
 
@@ -337,15 +336,17 @@ def submit_dmxapi_task(
     end_image_url: Optional[str] = None,
     mode: str = "text",
     url: str = "",
+    model: str = "",
 ) -> Tuple[str, bool]:
     """
     使用 DMXAPI 提交视频生成任务
     1. 提交任务获取 task_id
     2. 轮询查询任务状态
     3. 返回视频 URL
+    R9.3：model 非空时使用锁定模型。
     """
-    # DMXAPI 模型
-    model = DMXAPI_VIDEO_MODEL
+    if not model:
+        model = DMXAPI_VIDEO_MODEL
 
     # 构建 input 数组
     input_data = []
@@ -574,11 +575,14 @@ def submit_volcano_task(
     end_image_url: Optional[str] = None,
     mode: str = "text",
     url: str = "",
+    model: str = "",
 ) -> str:
     """
     使用火山引擎直连提交视频生成任务（轮询模式）
     返回 TaskId
+    R9.3：model 非空时使用锁定模型。
     """
+    used_model = model or VOLCANO_VIDEO_MODEL
 
     # 构建 content 数组
     content = []
@@ -614,7 +618,7 @@ def submit_volcano_task(
 
     # 构建请求体
     # 火山引擎直连使用 content 字段
-    payload = {"model": VOLCANO_VIDEO_MODEL, "content": content, "ratio": ratio, "watermark": False}
+    payload = {"model": used_model, "content": content, "ratio": ratio, "watermark": False}
 
     # 如果指定了时长，添加到请求中（4-12秒，默认5秒）
     if duration:
@@ -654,9 +658,58 @@ def submit_volcano_task(
     return str(task_id)
 
 
+def query_video_generation_task_once(task_id: str) -> dict:
+    """
+    单步（非阻塞）查询视频生成任务状态，供 provider adapter / worker 使用。
+
+    Returns:
+        dict:
+            state: "succeeded" | "failed" | "pending"
+            status: 原始 status 字符串
+            video_url: 完成时的视频URL（未完成/失败为 None）
+            error: 失败时的错误信息（无则 ""）
+            raw: 原始响应
+    """
+    if not VOLCANO_API_KEY:
+        raise ValueError("未配置 VOLCANO_API_KEY")
+
+    url = f"{ACTIVE_BASE_URL}/contents/generations/tasks/{task_id}"
+    headers = {"Authorization": f"Bearer {VOLCANO_API_KEY}", "Content-Type": "application/json"}
+
+    response = requests.get(url, headers=headers, timeout=30)
+    if response.status_code != 200:
+        raise Exception(f"查询任务失败: status={response.status_code}, body={response.text}")
+
+    data = response.json()
+    status = data.get("status")
+    status_lower = status.lower() if status else ""
+
+    if status_lower in ["failed", "error"]:
+        error_msg = data.get("error") or data.get("error_message") or "任务失败"
+        return {"state": "failed", "status": status, "video_url": None, "error": str(error_msg), "raw": data}
+
+    if status_lower in ["succeeded", "success", "completed", "done", "finished"]:
+        content = data.get("content")
+        if content and isinstance(content, dict):
+            video_url = content.get("video_url")
+        else:
+            video_url = (
+                data.get("video_url") or data.get("content", {}).get("video_url")
+                if isinstance(data.get("content"), dict)
+                else None
+            )
+        if video_url:
+            return {"state": "succeeded", "status": status, "video_url": video_url, "error": "", "raw": data}
+        # 状态完成但没有 video_url，按进行中处理
+        return {"state": "pending", "status": status, "video_url": None, "error": "", "raw": data}
+
+    # pending/processing/running/queued/in_progress/in_queue 及未知状态都按进行中
+    return {"state": "pending", "status": status, "video_url": None, "error": "", "raw": data}
+
+
 def query_video_generation_task(task_id: str, max_wait_time: int = 600) -> dict:
     """
-    查询视频生成任务状态，轮询直到完成
+    查询视频生成任务状态，轮询直到完成（阻塞版本，供旧工具调用，行为保持不变）
 
     Args:
         task_id: 任务ID
@@ -665,14 +718,6 @@ def query_video_generation_task(task_id: str, max_wait_time: int = 600) -> dict:
     Returns:
         任务结果字典，包含视频URL等信息
     """
-    if not VOLCANO_API_KEY:
-        raise ValueError("未配置 VOLCANO_API_KEY")
-
-    # 查询任务状态的端点
-    url = f"{ACTIVE_BASE_URL}/contents/generations/tasks/{task_id}"
-
-    headers = {"Authorization": f"Bearer {VOLCANO_API_KEY}", "Content-Type": "application/json"}
-
     start_time = time.time()
     poll_interval = 5  # 每5秒查询一次
 
@@ -683,66 +728,24 @@ def query_video_generation_task(task_id: str, max_wait_time: int = 600) -> dict:
         if time.time() - start_time > max_wait_time:
             raise TimeoutError(f"任务超时: 超过{max_wait_time}秒未完成")
 
-        # 查询任务状态
-        response = requests.get(url, headers=headers, timeout=30)
+        step = query_video_generation_task_once(task_id)
+        logger.info(f"📊 任务状态: {step['status']}")
 
-        if response.status_code != 200:
-            error_msg = f"查询任务失败: status={response.status_code}, body={response.text}"
-            logger.error(f"❌ {error_msg}")
-            raise Exception(error_msg)
+        if step["state"] == "failed":
+            raise Exception(f"任务失败: {step['error']}")
 
-        data = response.json()
+        if step["state"] == "succeeded":
+            data_for_log = truncate_base64_for_logging(step["raw"])
+            logger.info(f"✅ 任务完成: {json.dumps(data_for_log, ensure_ascii=False)}")
+            return {
+                "status": step["status"],
+                "video_url": step["video_url"],
+                "task_id": task_id,
+                "raw_response": step["raw"],
+            }
 
-        # 根据API文档，状态在 status 字段
-        status = data.get("status")
-
-        logger.info(f"📊 任务状态: {status}")
-
-        # 检查错误
-        if status and status.lower() in ["failed", "error"]:
-            error_msg = data.get("error") or data.get("error_message") or "任务失败"
-            raise Exception(f"任务失败: {error_msg}")
-
-        # 任务完成状态（根据API文档，状态为 "succeeded"）
-        if status and status.lower() in ["succeeded", "success", "completed", "done", "finished"]:
-            # 提取视频URL（根据API文档，在 content.video_url 字段）
-            content = data.get("content")
-            if content and isinstance(content, dict):
-                video_url = content.get("video_url")
-            else:
-                # 兼容其他可能的格式
-                video_url = (
-                    data.get("video_url") or data.get("content", {}).get("video_url")
-                    if isinstance(data.get("content"), dict)
-                    else None
-                )
-
-            if video_url:
-                # 截断base64字符串用于日志打印
-                data_for_log = truncate_base64_for_logging(data)
-                logger.info(f"✅ 任务完成: {json.dumps(data_for_log, ensure_ascii=False)}")
-                return {"status": status, "video_url": video_url, "task_id": task_id, "raw_response": data}
-            else:
-                # 状态是完成但没有视频URL，继续等待
-                logger.warning(f"⚠️ 任务状态为 {status} 但 video_url 为空，继续等待...")
-                time.sleep(poll_interval)
-                continue
-
-        # 任务进行中状态（pending, processing, running 等）
-        if status and status.lower() in [
-            "pending",
-            "processing",
-            "running",
-            "queued",
-            "in_progress",
-            "in_queue",
-        ]:
-            logger.info(f"⏳ 任务进行中（状态: {status}），{poll_interval}秒后继续查询...")
-            time.sleep(poll_interval)
-            continue
-
-        # 未知状态，默认认为进行中
-        logger.warning(f"⚠️ 未知任务状态: {status}，按进行中处理，{poll_interval}秒后继续查询...")
+        # 进行中（含"完成但暂无 video_url"和未知状态），继续等待
+        logger.info(f"⏳ 任务进行中（状态: {step['status']}），{poll_interval}秒后继续查询...")
         time.sleep(poll_interval)
 
 

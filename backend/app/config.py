@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""
     sentry_traces_sample_rate: float = 0.0  # 0.0 关闭性能追踪；生产可设 0.1
 
+    # 是否允许 Mock Provider 兜底（无真实 provider 时静默生成假产物）。
+    # 生产必须保持 "false"；测试/本地演示显式设 "true"。
+    allow_mock_providers: str = "false"
+
+
+def mock_providers_enabled() -> bool:
+    """读取 ALLOW_MOCK_PROVIDERS（运行时直读 env，便于测试 monkeypatch）。"""
+    import os
+
+    return os.getenv("ALLOW_MOCK_PROVIDERS", "false").strip().lower() in ("1", "true", "yes")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

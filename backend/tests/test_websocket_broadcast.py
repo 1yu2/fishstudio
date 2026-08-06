@@ -1,6 +1,8 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.main import app
 
@@ -36,3 +38,19 @@ def test_chat_request_accepts_canvas_id():
     response = client.post("/api/chat", json={"message": "ping", "canvas_id": "canvas-test"})
 
     assert response.status_code == 200
+
+
+def test_ws_rejects_missing_or_invalid_token(monkeypatch):
+    """开启鉴权（WS_AUTH_DISABLED=false，生产默认值）时，无 token / 无效 token 必须 4401。"""
+    monkeypatch.setenv("WS_AUTH_DISABLED", "false")
+
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/canvas-test"):
+            pass
+    assert exc_info.value.code == 4401
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/canvas-test?token=not-a-jwt"):
+            pass
+    assert exc_info.value.code == 4401

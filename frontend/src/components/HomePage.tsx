@@ -7,6 +7,7 @@ import { PageHeader } from './ui/PageHeader'
 import { Greeting } from './ui/Greeting'
 import { toast } from './ui/Toast'
 import { confirmDialog } from './ui/ConfirmDialog'
+import { goToStudioHome } from './studio/navigation'
 
 type ThemeMode = 'dark' | 'light'
 
@@ -508,6 +509,9 @@ export default function HomePage({
               </button>
             </div>
             <div className="home__toolbar-right">
+              <button className="home__select" style={{ cursor: 'pointer' }} onClick={goToStudioHome} title="短剧/系列视频工作台">
+                🎬 短剧工作台
+              </button>
               <div className="home__search">
                 <Search size={16} />
                 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索项目名 / ID" />

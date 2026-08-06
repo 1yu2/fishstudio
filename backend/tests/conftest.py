@@ -10,11 +10,22 @@ os.environ.setdefault("JWT_SECRET", "test-secret-test-secret-test-secret")
 os.environ.setdefault("ADMIN_USERNAME", "admin")
 os.environ.setdefault("ADMIN_PASSWORD", "test-admin-password")
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
+# 测试环境允许 mock provider 兜底（生产严禁设置，必须保持默认 false）
+os.environ.setdefault("ALLOW_MOCK_PROVIDERS", "true")
+# 测试环境跳过 WS 鉴权（现有测试不带 token）。生产环境严禁设置该变量，必须保持默认 false。
+os.environ.setdefault("WS_AUTH_DISABLED", "true")
 
 # 2) 把 backend/ 加到 sys.path
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+
+# 提前加载 langchain_core.tools：test_audio_mixing.py 会在它未加载时向 sys.modules
+# 塞一个同名 stub 模块，导致后续收集 app.main（langgraph -> langchain_core）时崩溃。
+try:
+    import langchain_core.tools  # noqa: F401
+except Exception:
+    pass
 
 import pytest
 

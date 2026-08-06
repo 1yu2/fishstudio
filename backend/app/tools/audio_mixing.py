@@ -1,11 +1,9 @@
-"""
-音频混音工具 - 播客后期制作
-包含音频拼接、背景音乐混音、音量调整等功能
-"""
+"""基于 FFmpeg 的音频拼接、BGM 选择与混音工具。"""
 
 import json
 import logging
-import os
+import re
+import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -17,95 +15,77 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-# 优先加载 backend/.env
 BASE_DIR = Path(__file__).parent.parent.parent
 ENV_PATH = BASE_DIR / ".env"
 if ENV_PATH.exists():
     load_dotenv(ENV_PATH)
 
-# 音频存储目录
 STORAGE_DIR = BASE_DIR / "storage"
 AUDIOS_DIR = STORAGE_DIR / "audios"
-BGM_DIR = STORAGE_DIR / "bgm"  # 背景音乐目录
-PODCASTS_DIR = STORAGE_DIR / "podcasts"  # 播客输出目录
+BGM_DIR = STORAGE_DIR / "bgm"
+PODCASTS_DIR = STORAGE_DIR / "podcasts"
 
-# 确保目录存在
-AUDIOS_DIR.mkdir(parents=True, exist_ok=True)
-BGM_DIR.mkdir(parents=True, exist_ok=True)
-PODCASTS_DIR.mkdir(parents=True, exist_ok=True)
+for directory in (AUDIOS_DIR, BGM_DIR, PODCASTS_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
 
 try:
     import imageio_ffmpeg
 
-    IMAGEIO_FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-    ffmpeg_bin_dir = BASE_DIR / ".bin"
-    ffmpeg_bin_dir.mkdir(parents=True, exist_ok=True)
-    ffmpeg_dir = str(ffmpeg_bin_dir)
-    ffmpeg_link = ffmpeg_bin_dir / "ffmpeg"
-    if not ffmpeg_link.exists():
-        try:
-            ffmpeg_link.symlink_to(IMAGEIO_FFMPEG_PATH)
-        except Exception:
-            pass
-    ffprobe_link = ffmpeg_bin_dir / "ffprobe"
-    if ffprobe_link.is_symlink():
-        try:
-            ffprobe_link.unlink()
-        except Exception:
-            pass
-    os.environ["PATH"] = f"{ffmpeg_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 except Exception:
-    IMAGEIO_FFMPEG_PATH = ""
+    FFMPEG_PATH = ""
 
-# 检查pydub是否可用
-try:
-    from pydub import AudioSegment
-    from pydub.effects import normalize as normalize_audio
-
-    PYDUB_AVAILABLE = True
-except ImportError:
-    PYDUB_AVAILABLE = False
-    logger.warning("⚠️ 未安装 pydub，音频混音功能将不可用。请安装：pip install pydub")
+FFMPEG_AVAILABLE = bool(FFMPEG_PATH and Path(FFMPEG_PATH).is_file())
+_DURATION_PATTERN = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 
 
-def configure_pydub_ffmpeg() -> str:
-    """Point pydub at the bundled imageio-ffmpeg binary when available."""
-    if not PYDUB_AVAILABLE:
-        return ""
-
-    ffmpeg_path = IMAGEIO_FFMPEG_PATH
-
-    if ffmpeg_path:
-        AudioSegment.converter = ffmpeg_path
-        AudioSegment.ffmpeg = ffmpeg_path
-        AudioSegment.ffprobe = ffmpeg_path
-        logger.info(f"✅ pydub 使用 imageio-ffmpeg: {ffmpeg_path}")
-
-    return ffmpeg_path
+def _require_ffmpeg() -> None:
+    if not FFMPEG_AVAILABLE:
+        raise RuntimeError("imageio-ffmpeg 不可用，无法处理音频")
 
 
-configure_pydub_ffmpeg()
+def _resolve_audio_path(audio_path: str) -> Path:
+    if audio_path.startswith("/storage/"):
+        path = BASE_DIR / audio_path.lstrip("/")
+    else:
+        path = Path(audio_path)
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(audio_path)
+    return path
 
 
-def load_audio_segment(file_path: Path) -> "AudioSegment":
-    """Load an audio file through ffmpeg without requiring ffprobe."""
-    suffix = file_path.suffix.lower().lstrip(".")
-    codec_by_format = {
-        "mp3": "mp3",
-        "m4a": "aac",
-        "aac": "aac",
-        "ogg": "libvorbis",
-        "flac": "flac",
-    }
-    codec = codec_by_format.get(suffix)
-    if codec:
-        return AudioSegment.from_file(str(file_path), format=suffix, codec=codec)
-    return AudioSegment.from_file(str(file_path))
+def _run_ffmpeg(arguments: list[str], timeout: int = 180) -> None:
+    _require_ffmpeg()
+    result = subprocess.run(
+        [FFMPEG_PATH, "-hide_banner", "-nostdin", "-y", *arguments],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "FFmpeg 执行失败").strip()
+        raise RuntimeError(detail[-2000:])
+
+
+def probe_audio_duration(file_path: Path | str) -> float:
+    """不依赖 ffprobe，直接从 FFmpeg 输入元数据读取音频时长。"""
+    _require_ffmpeg()
+    path = Path(file_path).resolve()
+    result = subprocess.run(
+        [FFMPEG_PATH, "-hide_banner", "-nostdin", "-i", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    match = _DURATION_PATTERN.search(result.stderr or "")
+    if not match:
+        raise RuntimeError(f"无法读取音频时长: {path.name}")
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
 class ConcatenateAudioInput(BaseModel):
-    """音频拼接输入参数"""
-
     audio_files: List[str] = Field(
         description="要拼接的音频文件路径列表，按顺序拼接，如['/storage/audios/1.wav', '/storage/audios/2.wav']"
     )
@@ -113,7 +93,7 @@ class ConcatenateAudioInput(BaseModel):
         default=200, description="交叉淡入淡出时长（毫秒），默认200ms，设为0则无过渡"
     )
     silence_duration: int = Field(
-        default=1200, description="音频片段之间的静音时长（毫秒），默认1200ms，播客对话推荐1000-1500ms"
+        default=1200, description="音频片段之间的静音时长（毫秒），默认1200ms"
     )
 
 
@@ -121,225 +101,171 @@ class ConcatenateAudioInput(BaseModel):
 def concatenate_audio_tool(
     audio_files: List[str], crossfade_duration: int = 200, silence_duration: int = 1200
 ) -> str:
-    """
-    音频拼接工具 - 将多个音频文件按顺序拼接成一个文件
-
-    适用于将多个角色的语音片段拼接成完整对话。
-    支持交叉淡入淡出和静音间隔，使过渡更自然。
-
-    Args:
-        audio_files: 音频文件路径列表（按拼接顺序）
-        crossfade_duration: 交叉淡入淡出时长（毫秒），0表示无过渡
-        silence_duration: 片段间静音时长（毫秒）
-
-    Returns:
-        拼接后的音频文件路径JSON
-    """
+    """将多个音频按顺序拼接为 WAV，支持交叉淡化或静音间隔。"""
     try:
-        if not PYDUB_AVAILABLE:
-            return "Error: 未安装 pydub 库，请运行: pip install pydub"
-
         if len(audio_files) < 2:
             return "Error: 至少需要2个音频文件才能拼接"
+        if crossfade_duration < 0 or silence_duration < 0:
+            return "Error: crossfade_duration 和 silence_duration 不能为负数"
 
-        logger.info(f"🔗 开始拼接 {len(audio_files)} 个音频文件")
+        paths = [_resolve_audio_path(path) for path in audio_files]
+        durations = [probe_audio_duration(path) for path in paths]
+        input_args: list[str] = []
+        filters: list[str] = []
+        for index, path in enumerate(paths):
+            input_args.extend(["-i", str(path)])
+            filters.append(
+                f"[{index}:a]aresample=48000,"
+                "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+                f"[a{index}]"
+            )
 
-        # 加载所有音频
-        audio_segments = []
-        for audio_path in audio_files:
-            # 转换为绝对路径
-            if audio_path.startswith("/storage/"):
-                file_path = BASE_DIR / audio_path.lstrip("/")
-            else:
-                file_path = Path(audio_path)
+        if crossfade_duration > 0:
+            current = "a0"
+            current_duration = durations[0]
+            for index in range(1, len(paths)):
+                fade_seconds = min(
+                    crossfade_duration / 1000.0,
+                    max(0.01, current_duration - 0.01),
+                    max(0.01, durations[index] - 0.01),
+                )
+                output_label = "out" if index == len(paths) - 1 else f"xf{index}"
+                filters.append(
+                    f"[{current}][a{index}]acrossfade=d={fade_seconds:.3f}:c1=tri:c2=tri"
+                    f"[{output_label}]"
+                )
+                current = output_label
+                current_duration += durations[index] - fade_seconds
+        else:
+            labels: list[str] = []
+            for index in range(len(paths)):
+                labels.append(f"[a{index}]")
+                if silence_duration > 0 and index < len(paths) - 1:
+                    silence_label = f"s{index}"
+                    filters.append(
+                        "anullsrc=channel_layout=stereo:sample_rate=48000:"
+                        f"d={silence_duration / 1000.0:.3f}[{silence_label}]"
+                    )
+                    labels.append(f"[{silence_label}]")
+            filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[out]")
 
-            if not file_path.exists():
-                return f"Error: 文件不存在: {audio_path}"
-
-            logger.info(f"📁 加载音频: {file_path.name}")
-            audio = load_audio_segment(file_path)
-            audio_segments.append(audio)
-
-        # 拼接音频
-        combined = audio_segments[0]
-
-        for i, audio in enumerate(audio_segments[1:], 1):
-            if crossfade_duration > 0:
-                # 使用交叉淡入淡出
-                combined = combined.append(audio, crossfade=crossfade_duration)
-                logger.info(f"✅ 拼接片段 {i}（交叉淡入淡出 {crossfade_duration}ms）")
-            else:
-                # 添加静音间隔后直接拼接
-                if silence_duration > 0:
-                    silence = AudioSegment.silent(duration=silence_duration)
-                    combined = combined + silence + audio
-                    logger.info(f"✅ 拼接片段 {i}（静音间隔 {silence_duration}ms）")
-                else:
-                    combined = combined + audio
-                    logger.info(f"✅ 拼接片段 {i}（无间隔）")
-
-        # 生成输出文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-        filename = f"concatenated_{timestamp}_{unique_id}.wav"
+        AUDIOS_DIR.mkdir(parents=True, exist_ok=True)
+        filename = f"concatenated_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}.wav"
         output_path = AUDIOS_DIR / filename
-
-        # 导出
-        combined.export(str(output_path), format="wav")
-
+        _run_ffmpeg(
+            [
+                *input_args,
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                "[out]",
+                "-c:a",
+                "pcm_s16le",
+                str(output_path),
+            ]
+        )
+        duration = probe_audio_duration(output_path)
         http_path = f"/storage/audios/{filename}"
-
-        result = {
-            "audio_url": http_path,
-            "local_path": http_path,
-            "duration_seconds": len(combined) / 1000.0,
-            "file_count": len(audio_files),
-            "crossfade_duration": crossfade_duration,
-            "silence_duration": silence_duration,
-            "message": f"成功拼接 {len(audio_files)} 个音频文件",
-        }
-
-        result_json = json.dumps(result, ensure_ascii=False)
-        logger.info(f"✅ 音频拼接完成: {http_path}, 总时长: {len(combined) / 1000:.2f}秒")
-        return result_json
-
-    except Exception as e:
-        logger.error(f"❌ 音频拼接失败: {str(e)}")
-        import traceback
-
-        logger.error(traceback.format_exc())
-        return f"Error: {str(e)}"
+        return json.dumps(
+            {
+                "audio_url": http_path,
+                "local_path": http_path,
+                "duration_seconds": duration,
+                "file_count": len(audio_files),
+                "crossfade_duration": crossfade_duration,
+                "silence_duration": silence_duration,
+                "message": f"成功拼接 {len(audio_files)} 个音频文件",
+            },
+            ensure_ascii=False,
+        )
+    except FileNotFoundError as error:
+        return f"Error: 文件不存在: {error}"
+    except Exception as error:
+        logger.exception("音频拼接失败")
+        return f"Error: {error}"
 
 
 class SelectBGMInput(BaseModel):
-    """智能选择BGM输入参数"""
-
-    scene_description: str = Field(
-        description="场景描述，如'欢快的开场'、'深沉的讨论'、'轻松的聊天'等，用于匹配合适的背景音乐"
-    )
+    scene_description: str = Field(description="用于匹配背景音乐文件名的场景描述")
     duration_seconds: Optional[float] = Field(
-        default=None, description="期望的BGM时长（秒），如果指定则会循环或裁剪BGM以匹配时长"
+        default=None, description="期望时长；指定后自动循环、裁剪并淡出"
     )
 
 
 @tool("select_background_music", args_schema=SelectBGMInput)
 def select_bgm_tool(scene_description: str, duration_seconds: Optional[float] = None) -> str:
-    """
-    智能BGM选择工具 - 从内置BGM库中选择最合适的背景音乐
-
-    根据场景描述（如'欢快的开场'、'深沉的讨论'），智能匹配合适的背景音乐。
-    BGM文件名即为场景描述，系统会自动进行语义匹配。
-
-    Args:
-        scene_description: 场景描述文本
-        duration_seconds: 期望的BGM时长（秒），None表示使用原始时长
-
-    Returns:
-        选中的BGM文件路径JSON
-    """
+    """从 BGM 目录选择文件，并可生成指定时长的循环裁剪版本。"""
     try:
-        if not PYDUB_AVAILABLE:
-            return "Error: 未安装 pydub 库，请运行: pip install pydub"
-
-        logger.info(f"🎵 开始选择BGM: scene={scene_description}")
-
-        # 获取所有BGM文件
-        bgm_files = list(BGM_DIR.glob("*.mp3")) + list(BGM_DIR.glob("*.wav"))
-
+        bgm_files = sorted(
+            path
+            for pattern in ("*.mp3", "*.wav", "*.m4a", "*.aac", "*.ogg", "*.flac")
+            for path in BGM_DIR.glob(pattern)
+        )
         if not bgm_files:
             return f"Error: BGM目录为空，请在 {BGM_DIR} 添加背景音乐文件"
 
-        logger.info(f"📁 找到 {len(bgm_files)} 个BGM文件")
+        keywords = [word for word in scene_description.lower().split() if word]
+        scored = [
+            (sum(1 for word in keywords if word in path.stem.lower()), path)
+            for path in bgm_files
+        ]
+        best_score, best_match = max(scored, key=lambda item: (item[0], item[1].name))
+        original_duration = probe_audio_duration(best_match)
+        adjusted_duration = original_duration
 
-        # 简单的关键词匹配（可以后续升级为语义相似度匹配）
-        scene_keywords = scene_description.lower()
-        best_match = None
-        best_score = 0
-
-        for bgm_file in bgm_files:
-            # 文件名（不含扩展名）作为描述
-            bgm_desc = bgm_file.stem.lower()
-
-            # 计算匹配度（简单的关键词匹配）
-            score = sum(1 for word in scene_keywords.split() if word in bgm_desc)
-
-            if score > best_score:
-                best_score = score
-                best_match = bgm_file
-
-        # 如果没有关键词匹配，随机选择第一个
-        if best_match is None:
-            best_match = bgm_files[0]
-            logger.info(f"⚠️ 未找到匹配的BGM，使用默认: {best_match.name}")
-        else:
-            logger.info(f"✅ 匹配到BGM: {best_match.name} (匹配度: {best_score})")
-
-        # 加载BGM
-        bgm = load_audio_segment(best_match)
-        original_duration = len(bgm) / 1000.0
-
-        # 如果指定了时长，调整BGM
-        if duration_seconds is not None and duration_seconds > 0:
-            target_duration_ms = int(duration_seconds * 1000)
-            current_duration_ms = len(bgm)
-
-            if current_duration_ms < target_duration_ms:
-                # BGM太短，循环播放
-                loops_needed = (target_duration_ms // current_duration_ms) + 1
-                bgm = bgm * loops_needed
-                bgm = bgm[:target_duration_ms]
-                logger.info(f"🔄 BGM循环播放，从 {original_duration:.2f}s 延长至 {duration_seconds:.2f}s")
-            elif current_duration_ms > target_duration_ms:
-                # BGM太长，裁剪
-                bgm = bgm[:target_duration_ms]
-                logger.info(f"✂️ BGM裁剪，从 {original_duration:.2f}s 缩短至 {duration_seconds:.2f}s")
-
-            # 添加淡出效果
-            bgm = bgm.fade_out(duration=2000)
-
-        # 保存处理后的BGM（如果有调整）
         if duration_seconds is not None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            unique_id = str(uuid.uuid4())[:8]
-            filename = f"bgm_{timestamp}_{unique_id}.mp3"
+            if duration_seconds <= 0:
+                return "Error: duration_seconds 必须大于 0"
+            AUDIOS_DIR.mkdir(parents=True, exist_ok=True)
+            filename = f"bgm_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}.mp3"
             output_path = AUDIOS_DIR / filename
-            bgm.export(str(output_path), format="mp3")
+            fade_duration = min(2.0, duration_seconds)
+            fade_start = max(0.0, duration_seconds - fade_duration)
+            _run_ffmpeg(
+                [
+                    "-stream_loop",
+                    "-1",
+                    "-i",
+                    str(best_match),
+                    "-t",
+                    f"{duration_seconds:.3f}",
+                    "-af",
+                    f"afade=t=out:st={fade_start:.3f}:d={fade_duration:.3f}",
+                    "-c:a",
+                    "libmp3lame",
+                    "-b:a",
+                    "192k",
+                    str(output_path),
+                ]
+            )
+            adjusted_duration = probe_audio_duration(output_path)
             http_path = f"/storage/audios/{filename}"
         else:
             http_path = f"/storage/bgm/{best_match.name}"
 
-        result = {
-            "bgm_path": http_path,
-            "bgm_name": best_match.stem,
-            "original_duration": original_duration,
-            "adjusted_duration": len(bgm) / 1000.0,
-            "match_score": best_score,
-            "scene_description": scene_description,
-            "message": f"已选择BGM: {best_match.stem}",
-        }
-
-        result_json = json.dumps(result, ensure_ascii=False)
-        logger.info(f"✅ BGM选择完成: {best_match.name}")
-        return result_json
-
-    except Exception as e:
-        logger.error(f"❌ BGM选择失败: {str(e)}")
-        import traceback
-
-        logger.error(traceback.format_exc())
-        return f"Error: {str(e)}"
+        return json.dumps(
+            {
+                "bgm_path": http_path,
+                "bgm_name": best_match.stem,
+                "original_duration": original_duration,
+                "adjusted_duration": adjusted_duration,
+                "match_score": best_score,
+                "scene_description": scene_description,
+                "message": f"已选择BGM: {best_match.stem}",
+            },
+            ensure_ascii=False,
+        )
+    except Exception as error:
+        logger.exception("BGM选择失败")
+        return f"Error: {error}"
 
 
 class MixAudioWithBGMInput(BaseModel):
-    """音频与BGM混音输入参数"""
-
     voice_audio: str = Field(description="主音频文件路径（人声/对话）")
     bgm_audio: str = Field(description="背景音乐文件路径")
-    bgm_volume: float = Field(
-        default=-26, description="BGM背景音量调整（dB），负数表示降低音量，推荐-24到-28之间（5%左右）"
-    )
-    intro_duration: float = Field(default=3.0, description="BGM开场时长（秒），原声播放后再减弱，默认3秒")
-    normalize: bool = Field(default=True, description="是否进行音量归一化，推荐开启")
+    bgm_volume: float = Field(default=-26, description="对话开始后的 BGM 音量调整（dB）")
+    intro_duration: float = Field(default=3.0, description="人声开始前的 BGM 开场时长（秒）")
+    normalize: bool = Field(default=True, description="是否执行响度归一化")
 
 
 @tool("mix_audio_with_bgm", args_schema=MixAudioWithBGMInput)
@@ -350,214 +276,79 @@ def mix_audio_with_bgm_tool(
     intro_duration: float = 3.0,
     normalize: bool = True,
 ) -> str:
-    """
-    音频BGM混音工具 - 将人声/对话与背景音乐混合
-
-    将主音频（人声对话）与背景音乐混合，支持专业的BGM开场效果：
-    - BGM先以原声音量播放开场（intro_duration秒）
-    - 然后淡入过渡到背景音量（约5%音量），作为对话背景音
-    - 自动调整BGM音量，确保人声清晰
-
-    Args:
-        voice_audio: 主音频文件路径（人声）
-        bgm_audio: 背景音乐文件路径
-        bgm_volume: BGM背景音量调整（dB），推荐-24到-28（约5%音量）
-        intro_duration: BGM开场时长（秒），原声播放后再减弱
-        normalize: 是否音量归一化
-
-    Returns:
-        混音后的音频文件路径JSON
-    """
+    """将人声延迟到开场之后，与循环 BGM 混合并输出 MP3。"""
     try:
-        if not PYDUB_AVAILABLE:
-            return "Error: 未安装 pydub 库，请运行: pip install pydub"
+        if intro_duration < 0:
+            return "Error: intro_duration 不能为负数"
+        voice_path = _resolve_audio_path(voice_audio)
+        bgm_path = _resolve_audio_path(bgm_audio)
+        voice_duration = probe_audio_duration(voice_path)
+        total_duration = intro_duration + voice_duration
+        fade_duration = min(2.0, max(0.0, total_duration - intro_duration))
+        fade_out_duration = min(3.0, total_duration)
+        fade_out_start = max(0.0, total_duration - fade_out_duration)
+        delay_ms = int(round(intro_duration * 1000))
 
-        logger.info(f"🎧 开始混音: voice={voice_audio}, bgm={bgm_audio}")
-
-        # 加载主音频
-        if voice_audio.startswith("/storage/"):
-            voice_path = BASE_DIR / voice_audio.lstrip("/")
-        else:
-            voice_path = Path(voice_audio)
-
-        if not voice_path.exists():
-            return f"Error: 主音频文件不存在: {voice_audio}"
-
-        voice = load_audio_segment(voice_path)
-        voice_duration = len(voice) / 1000.0
-        logger.info(f"📁 加载主音频: {voice_path.name}, 时长: {voice_duration:.2f}s")
-
-        # 加载BGM
-        if bgm_audio.startswith("/storage/"):
-            bgm_path = BASE_DIR / bgm_audio.lstrip("/")
-        else:
-            bgm_path = Path(bgm_audio)
-
-        if not bgm_path.exists():
-            return f"Error: BGM文件不存在: {bgm_audio}"
-
-        bgm = load_audio_segment(bgm_path)
-        bgm_duration = len(bgm) / 1000.0
-        logger.info(f"📁 加载BGM: {bgm_path.name}, 时长: {bgm_duration:.2f}s")
-
-        # 计算总时长：BGM开场 + 主音频
-        intro_duration_ms = int(intro_duration * 1000)
-        total_duration_ms = intro_duration_ms + len(voice)
-
-        # 调整BGM时长以匹配总时长
-        if len(bgm) < total_duration_ms:
-            # BGM太短，循环播放
-            loops_needed = (total_duration_ms // len(bgm)) + 1
-            bgm = bgm * loops_needed
-            bgm = bgm[:total_duration_ms]
-            logger.info("🔄 BGM循环播放以匹配总时长")
-        elif len(bgm) > total_duration_ms:
-            # BGM太长，裁剪
-            bgm = bgm[:total_duration_ms]
-            logger.info("✂️ BGM裁剪以匹配总时长")
-
-        # BGM音量处理：
-        # - 前 intro_duration 秒：原音量
-        # - intro_duration 到 intro_duration + fade_duration：从原音量过渡到背景音量
-        # - 之后：背景音量
-
-        fade_duration = 2000  # 2秒过渡时间
-
-        # 分离BGM的三个部分
-        bgm_intro = bgm[:intro_duration_ms]  # 开场部分（原音量）
-
-        if intro_duration_ms + fade_duration < len(bgm):
-            bgm_fade = bgm[intro_duration_ms : intro_duration_ms + fade_duration]  # 过渡部分
-            bgm_background = bgm[intro_duration_ms + fade_duration :]  # 背景部分
-
-            # 过渡部分：从原音量渐变到背景音量
-            # 创建音量渐变效果
-            fade_steps = 20  # 分20步渐变
-            step_duration = fade_duration // fade_steps
-            bgm_fade_processed = AudioSegment.empty()
-
-            for i in range(fade_steps):
-                # 计算当前步骤的音量调整
-                progress = i / fade_steps  # 0 到 1
-                current_volume_adjustment = bgm_volume * progress  # 从0逐渐到bgm_volume
-
-                # 提取当前步骤的音频片段
-                start = i * step_duration
-                end = min((i + 1) * step_duration, len(bgm_fade))
-                segment = bgm_fade[start:end]
-
-                # 调整音量
-                segment = segment + current_volume_adjustment
-                bgm_fade_processed += segment
-
-            # 背景部分：固定背景音量
-            bgm_background_processed = bgm_background + bgm_volume
-
-            # 拼接所有部分
-            bgm_processed = bgm_intro + bgm_fade_processed + bgm_background_processed
-            logger.info(
-                f"🎬 BGM效果：前{intro_duration:.1f}s原音量 → {fade_duration / 1000:.1f}s过渡 → 背景音量{bgm_volume}dB"
+        if fade_duration > 0:
+            volume_expression = (
+                "pow(10\\,("
+                f"{bgm_volume:.3f}*min(max(t-{intro_duration:.3f}\\,0)/{fade_duration:.3f}\\,1)"
+                ")/20)"
             )
         else:
-            # intro_duration太长，直接处理
-            bgm_processed = bgm[:intro_duration_ms] + (bgm[intro_duration_ms:] + bgm_volume)
-            logger.info("⚠️ BGM时长较短，简化处理")
+            volume_expression = f"pow(10\\,{bgm_volume:.3f}/20)"
 
-        # 在BGM结尾添加淡出效果
-        bgm_processed = bgm_processed.fade_out(duration=3000)
+        normalize_filter = ",loudnorm=I=-16:LRA=11:TP=-1.5" if normalize else ""
+        filter_complex = (
+            f"[1:a]atrim=0:{total_duration:.3f},asetpts=PTS-STARTPTS,"
+            f"volume='{volume_expression}':eval=frame,"
+            f"afade=t=out:st={fade_out_start:.3f}:d={fade_out_duration:.3f}[bgm];"
+            f"[0:a]adelay={delay_ms}:all=1,apad,atrim=0:{total_duration:.3f}[voice];"
+            "[bgm][voice]amix=inputs=2:duration=longest:dropout_transition=0"
+            f"{normalize_filter}[out]"
+        )
 
-        # 人声处理：在开场后开始
-        # 创建静音片段用于开场
-        silence_intro = AudioSegment.silent(duration=intro_duration_ms)
-        voice_with_intro = silence_intro + voice
-
-        # 确保人声和BGM长度一致
-        if len(voice_with_intro) > len(bgm_processed):
-            voice_with_intro = voice_with_intro[: len(bgm_processed)]
-        elif len(voice_with_intro) < len(bgm_processed):
-            # 人声部分较短，BGM裁剪
-            bgm_processed = bgm_processed[: len(voice_with_intro)]
-
-        # 混音：叠加人声
-        mixed = bgm_processed.overlay(voice_with_intro)
-        logger.info(f"🎵 混音完成（包含{intro_duration:.1f}秒BGM开场）")
-
-        # 音量归一化
-        if normalize:
-            mixed = normalize_audio(mixed)
-            logger.info("📊 音量归一化完成")
-
-        # 生成输出文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-        filename = f"podcast_{timestamp}_{unique_id}.mp3"
+        PODCASTS_DIR.mkdir(parents=True, exist_ok=True)
+        filename = f"podcast_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}.mp3"
         output_path = PODCASTS_DIR / filename
-
-        # 导出（MP3格式，适合播客）
-        mixed.export(str(output_path), format="mp3", bitrate="192k")
-
+        _run_ffmpeg(
+            [
+                "-i",
+                str(voice_path),
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(bgm_path),
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[out]",
+                "-t",
+                f"{total_duration:.3f}",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                "192k",
+                str(output_path),
+            ]
+        )
+        duration = probe_audio_duration(output_path)
         http_path = f"/storage/podcasts/{filename}"
-
-        result = {
-            "audio_url": http_path,
-            "local_path": http_path,
-            "duration_seconds": len(mixed) / 1000.0,
-            "voice_audio": voice_audio,
-            "bgm_audio": bgm_audio,
-            "bgm_volume": bgm_volume,
-            "normalized": normalize,
-            "message": "混音完成，播客已生成",
-        }
-
-        result_json = json.dumps(result, ensure_ascii=False)
-        logger.info(f"✅ 混音完成: {http_path}, 时长: {len(mixed) / 1000:.2f}s")
-        return result_json
-
-    except Exception as e:
-        logger.error(f"❌ 混音失败: {str(e)}")
-        import traceback
-
-        logger.error(traceback.format_exc())
-        return f"Error: {str(e)}"
-
-
-if __name__ == "__main__":
-    """测试工具"""
-    from pathlib import Path
-
-    from dotenv import load_dotenv
-
-    env_path = Path(__file__).parent.parent.parent / ".env"
-    if env_path.exists():
-        load_dotenv(env_path)
-
-    logging.basicConfig(level=logging.INFO)
-
-    # 测试音频拼接
-    # print("\n测试音频拼接...")
-    # result = concatenate_audio_tool.invoke({
-    #     "audio_files": [
-    #         "/storage/audios/audio1.wav",
-    #         "/storage/audios/audio2.wav"
-    #     ],
-    #     "crossfade_duration": 200,
-    #     "silence_duration": 500
-    # })
-    # print("结果:", result)
-
-    # 测试BGM选择
-    # print("\n测试BGM选择...")
-    # result = select_bgm_tool.invoke({
-    #     "scene_description": "欢快的开场",
-    #     "duration_seconds": 60
-    # })
-    # print("结果:", result)
-
-    # 测试混音
-    # print("\n测试混音...")
-    # result = mix_audio_with_bgm_tool.invoke({
-    #     "voice_audio": "/storage/audios/voice.wav",
-    #     "bgm_audio": "/storage/bgm/happy.mp3",
-    #     "bgm_volume": -20
-    # })
-    # print("结果:", result)
+        return json.dumps(
+            {
+                "audio_url": http_path,
+                "local_path": http_path,
+                "duration_seconds": duration,
+                "voice_audio": voice_audio,
+                "bgm_audio": bgm_audio,
+                "bgm_volume": bgm_volume,
+                "normalized": normalize,
+                "message": "混音完成，播客已生成",
+            },
+            ensure_ascii=False,
+        )
+    except FileNotFoundError as error:
+        return f"Error: 文件不存在: {error}"
+    except Exception as error:
+        logger.exception("混音失败")
+        return f"Error: {error}"

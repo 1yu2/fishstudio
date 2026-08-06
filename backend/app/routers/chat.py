@@ -19,6 +19,12 @@ from app.db.database import get_session
 from app.db.models import User
 from app.services.agent_service import process_chat_stream
 from app.services.connection_manager import manager
+from app.services.execution_context import (
+    ExecutionContext,
+    get_execution_context,
+    reset_execution_context,
+    set_execution_context,
+)
 from app.services.history_service import history_service
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -32,9 +38,12 @@ class ChatRequest(BaseModel):
 
 
 @router.get("/canvases")
-async def get_canvases(session: AsyncSession = Depends(get_session)):
-    """获取所有画布历史"""
-    return await history_service.get_canvases(session)
+async def get_canvases(
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """获取当前用户的画布历史"""
+    return await history_service.get_canvases(session, owner_id=user.id)
 
 
 @router.post("/canvases")
@@ -50,13 +59,22 @@ async def save_canvas(
     这里直接存原始 JSON，避免 data 被过滤导致刷新后画布空白。
     """
     payload = await request.json()
-    return await history_service.save_canvas(session, payload, owner_id=user.id)
+    try:
+        return await history_service.save_canvas(session, payload, owner_id=user.id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="无权修改该画布")
 
 
 @router.delete("/canvases/{canvas_id}")
-async def delete_canvas(canvas_id: str, session: AsyncSession = Depends(get_session)):
-    """删除画布"""
-    await history_service.delete_canvas(session, canvas_id)
+async def delete_canvas(
+    canvas_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """删除画布（仅 owner 可删）"""
+    deleted = await history_service.delete_canvas(session, canvas_id, owner_id=user.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="画布不存在或无权删除")
     return {"success": True}
 
 
@@ -220,37 +238,62 @@ async def upload_video(file: UploadFile = File(...)):
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     """
     处理聊天请求，返回流式响应
     支持OpenAI格式的流式输出
     """
     try:
+        # canvas 归属校验：canvas 存在且属于别的用户时拒绝
+        if request.canvas_id and session is not None:
+            owner_id = await history_service.get_canvas_owner(session, request.canvas_id)
+            if owner_id is not None and owner_id != user.id:
+                raise HTTPException(status_code=403, detail="无权访问该画布")
+
         # 构建消息历史
         messages = request.messages.copy() if request.messages else []
         messages.append({"role": "user", "content": request.message})
 
+        # 中间件在返回 StreamingResponse 后就 reset 了 ExecutionContext，
+        # SSE 生成器真正执行时上下文已失效；这里显式捕获一份（含 request_id /
+        # user_id / canvas_id），在生成器内部重新 set，结束 reset。
+        base_ctx = get_execution_context()
+        stream_ctx = ExecutionContext(
+            request_id=base_ctx.request_id,
+            run_id=base_ctx.run_id,
+            user_id=str(user.id),
+            canvas_id=request.canvas_id,
+        )
+
         async def stream_and_broadcast():
-            if request.canvas_id:
-                await manager.broadcast(
-                    request.canvas_id,
-                    json.dumps({"type": "user_message", "content": request.message}, ensure_ascii=False),
-                )
-
-            async for chunk in process_chat_stream(messages, request.session_id):
-                yield chunk
-                if not request.canvas_id or not chunk.startswith("data: "):
-                    continue
-
-                data_str = chunk[len("data: ") :].strip()
-                if not data_str:
-                    continue
-                if data_str == "[DONE]":
+            ctx_token = set_execution_context(stream_ctx)
+            try:
+                if request.canvas_id:
                     await manager.broadcast(
-                        request.canvas_id, json.dumps({"type": "done"}, ensure_ascii=False)
+                        request.canvas_id,
+                        json.dumps({"type": "user_message", "content": request.message}, ensure_ascii=False),
                     )
-                else:
-                    await manager.broadcast(request.canvas_id, data_str)
+
+                async for chunk in process_chat_stream(messages, request.session_id):
+                    yield chunk
+                    if not request.canvas_id or not chunk.startswith("data: "):
+                        continue
+
+                    data_str = chunk[len("data: ") :].strip()
+                    if not data_str:
+                        continue
+                    if data_str == "[DONE]":
+                        await manager.broadcast(
+                            request.canvas_id, json.dumps({"type": "done"}, ensure_ascii=False)
+                        )
+                    else:
+                        await manager.broadcast(request.canvas_id, data_str)
+            finally:
+                reset_execution_context(ctx_token)
 
         # 返回流式响应 - 确保立即发送，不缓冲
         return StreamingResponse(
@@ -263,5 +306,8 @@ async def chat(request: ChatRequest):
                 "Content-Type": "text/event-stream; charset=utf-8",
             },
         )
+    except HTTPException:
+        # 业务异常（403/404 等）不能吞成 500
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

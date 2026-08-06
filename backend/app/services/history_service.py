@@ -26,9 +26,14 @@ def _row_to_dict(row: Canvas) -> dict[str, Any]:
 
 
 class HistoryService:
-    async def get_canvases(self, session: AsyncSession) -> list[dict[str, Any]]:
+    async def get_canvases(
+        self, session: AsyncSession, owner_id: int | None = None
+    ) -> list[dict[str, Any]]:
         # 按更新时间倒序，与原"新的在前"一致
-        result = await session.execute(select(Canvas).order_by(desc(Canvas.updated_at)))
+        stmt = select(Canvas).order_by(desc(Canvas.updated_at))
+        if owner_id is not None:
+            stmt = stmt.where(Canvas.owner_id == owner_id)
+        result = await session.execute(stmt)
         return [_row_to_dict(row) for row in result.scalars().all()]
 
     async def save_canvas(
@@ -50,6 +55,13 @@ class HistoryService:
             )
             session.add(row)
         else:
+            # 已存在的画布：owner 不匹配则拒绝（owner_id 为 None 的历史数据允许回填）
+            if (
+                owner_id is not None
+                and existing.owner_id is not None
+                and existing.owner_id != owner_id
+            ):
+                raise PermissionError("canvas belongs to another user")
             existing.name = str(canvas_data.get("name", existing.name))
             if "createdAt" in canvas_data:
                 existing.created_at_ts = float(canvas_data.get("createdAt") or 0.0)
@@ -66,9 +78,19 @@ class HistoryService:
         await session.refresh(row)
         return _row_to_dict(row)
 
-    async def delete_canvas(self, session: AsyncSession, canvas_id: str) -> bool:
+    async def get_canvas_owner(self, session: AsyncSession, canvas_id: str) -> int | None:
+        """返回画布的 owner_id；画布不存在返回 None（与"无主"无法区分，调用方按场景处理）。"""
+        row = await session.get(Canvas, canvas_id)
+        return row.owner_id if row is not None else None
+
+    async def delete_canvas(
+        self, session: AsyncSession, canvas_id: str, owner_id: int | None = None
+    ) -> bool:
         row = await session.get(Canvas, canvas_id)
         if row is None:
+            return False
+        # owner 不匹配则拒绝（owner_id 为 None 的历史数据视为无主，允许删除）
+        if owner_id is not None and row.owner_id is not None and row.owner_id != owner_id:
             return False
         await session.delete(row)
         await session.commit()

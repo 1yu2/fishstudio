@@ -18,6 +18,11 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import get_settings
+from app.services.execution_context import (
+    ExecutionContext,
+    reset_execution_context,
+    set_execution_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +75,14 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             path=request.url.path,
         )
         request.state.request_id = rid
+        # 同步写入 ExecutionContext（user_id 等由后续服务填充）
+        token = set_execution_context(ExecutionContext.new_ids(request_id=rid))
 
         try:
             response = await call_next(request)
         finally:
             # 即使异常也保证清理
-            pass
+            reset_execution_context(token)
 
         response.headers["X-Request-ID"] = rid
         return response
