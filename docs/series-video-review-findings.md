@@ -1,6 +1,6 @@
 # FishStudio 系列视频项目 Review 问题清单
 
-> 最新 Review 日期：2026-08-06
+> 最新 Review 日期：2026-08-07
 > Review 基线：`docs/series-video-optimization-plan.md` v1.3
 > Review 范围：Series/Storyboard/Asset/Approval、Workflow、GenerationJob/Worker、MiniMax H3/火山 Provider、Usage、Timeline、前端短剧工作台
 > 首次 Review 结论：领域模型和工作台骨架基本齐全，但仍存在生产发布阻塞问题，当前状态更接近“Mock 驱动的短剧 MVP 骨架”，尚不能认定为完整方案交付。
@@ -19,13 +19,15 @@
 > 2026-08-05 第十三次整改后复审结论：**第十二次 Review 的两个 P0 已完成代码级整改。Volcano 锁定模型已实际进入外部请求，Resolver 使用当前 Adapter 的有效模型并拒绝所有 Provider 无法执行的时长；clone_voice 已改为数据库持久化 Quote、HMAC 不透明 Token、行锁一次性消费，并在同一事务中创建 Workflow Run/Step、预留预算、保存 Job 价格快照和 Usage 预留记录。当前代码级 P0 已关闭，但真实 PostgreSQL 迁移、真实 Provider E2E、H3 实验验收和原有前端/音色/并发等 8 个 P1 尚未完成，因此仍不能认定为完整生产验收通过。最新结论以下一节为准。**
 > 2026-08-06 第十四次整改后复审结论：**8 个 P1 中 6 个已完成：Qwen 持久化 `voice_id` 复用、Retry 双 Session 并发、图片候选 UI、clone_voice 前端闭环、真实 PostgreSQL 带数据迁移/降级回升、Python 3.13 FFmpeg 音频混音均已通过。剩余 2 个 P1 都依赖真实付费凭证：MiniMax H3 协议/质量/成本基准，以及 MiniMax/火山/DashScope 3～8 镜头真实 E2E 与供应商账单对账。当前无已知代码级 P0；代码和本地基础设施验收通过，生产发布仍需完成两项真实 Provider 验收。**
 > 2026-08-06 Hailuo-02 低价路径复测结论：**修复 locked model 分辨率透传后，真实 `MiniMax-Hailuo-02` 首帧图生视频请求已按 `512P / 6 秒` 成功执行。提交 metadata 与供应商状态均为 512P，产物为 512×910、24 FPS、141 帧、约 5.88 秒，可正常解码并抽帧；首、中、末帧差异显著，确认不是静态占位视频。该低价执行路径已通过技术验收；实际扣费仍需在 MiniMax 控制台按 task id 对账。**
+> 2026-08-07 本地全链路自测结论：**使用全新 PostgreSQL 数据库和显式 Mock Provider 执行 3 镜头完整 E2E，最终 52/52 项通过。自测过程中修复了“已确认真实 Provider 报价在 Mock 模式下无法执行”以及“视频 submit/success 重复累计预计费用”两个问题，并将 Shot 选择断言更新为图片/视频独立选择槽。当前本地逻辑链路通过；真实 Provider 多镜头 E2E 和账单对账仍属于外部发布门槛。**
 
 ---
 
-## 最新结论：2026-08-06 第十四次整改后复审
+## 最新结论：2026-08-07 本地全链路自测后复审
 
 > 本轮继续整改第十三次 Review 的 8 个 P1，并执行了真实 PostgreSQL 16 验收。
 > 2026-08-06 已配置 `MINIMAX_API_KEY`。首次真实 Hailuo-02 V1 调用暴露 locked model 分辨率未透传问题；修复并补回归测试后，第二次真实调用已按 512P 成功完成，低价路径通过技术验收。
+> 2026-08-07 使用全新 PostgreSQL 库完成 3 镜头 Mock 全链路回归，52/52 项通过；本轮发现的 Mock 路由锁定和视频费用重复累计问题均已修复。
 
 ### R11.1 最终判断
 
@@ -69,7 +71,7 @@
 | 检查 | 结果 |
 |------|------|
 | `ruff check app tests scripts` | ✅ 通过。 |
-| `python -m pytest -q` | ✅ `302 passed, 22 skipped, 12 warnings`。 |
+| `python -m pytest -q` | ✅ `303 passed, 22 skipped, 12 warnings`。 |
 | Python 3.13 音频真实执行 | ✅ `7 passed`，包含拼接、crossfade、BGM 循环裁剪、归一化混音。 |
 | PostgreSQL 16 迁移与 Retry | ✅ `7 passed`，包含带数据升级、downgrade/upgrade、双 Session 并发。 |
 | `alembic heads` | ✅ 唯一 Head 为 `0007`。 |
@@ -79,6 +81,8 @@
 | MiniMax Hailuo-02 首次 V1 smoke test | ⚠️ submit/query/fetch 成功，耗时 156.608 秒，产物 5.88 秒且可播放；但因 locked model 分辨率未透传，实际输出为 768×1364。该问题已修复。 |
 | locked model 分辨率回归 | ✅ 新增测试确认 Hailuo-02 锁定请求体和 metadata 保持 512P；512P 仅允许 Hailuo-02 图生视频。 |
 | MiniMax Hailuo-02 512P 复测 | ✅ task id `427824186212640`；请求与供应商状态均为 512P，输出 512×910、24 FPS、141 帧、约 5.88 秒；总耗时 73.75 秒，可正常解码和抽帧，首/中/末帧差确认存在实际动态。内部估价 ¥0.60，实际账单待控制台确认。 |
+| 本地 3 镜头 Mock E2E | ✅ 全新 PostgreSQL 库从 `0001` 升级至 `0007` 后执行，52/52 通过；10 个 Job 全部成功，图片/视频/TTS/渲染产物完整，权限、重试、暂停、认领、个人资产和选择槽均通过。 |
+| 视频费用事件对账 | ✅ 3 个视频 Quote 合计 ¥7.50，Usage `estimated_cost` 合计 ¥7.50；submit 事件只保留费用快照，不再与终态事件重复累计。 |
 | MiniMax H3 真实基准 | ⚠️ 未执行，保持 `MINIMAX_H3_EXPERIMENTAL=false`。 |
 | 真实 3～8 镜头 E2E | ⚠️ 未执行。 |
 

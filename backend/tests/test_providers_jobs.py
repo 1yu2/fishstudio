@@ -196,6 +196,20 @@ def test_router_raises_no_provider_when_mock_disabled(monkeypatch):
     assert exc_info.value.error_code == "no_provider"
 
 
+def test_locked_video_provider_falls_back_to_mock_only_when_enabled(monkeypatch):
+    from app.tools import volcano_video_generation as vvg
+    from app.worker import generation_worker
+
+    monkeypatch.setattr(vvg, "VOLCANO_API_KEY", "")
+    monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "true")
+    provider, mocked = generation_worker._resolve_locked_video_provider("volcano")
+    assert provider is not None and provider.name == "mock" and mocked is True
+
+    monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "false")
+    provider, mocked = generation_worker._resolve_locked_video_provider("volcano")
+    assert provider is None and mocked is False
+
+
 def test_router_reference_mode_filters_volcano(monkeypatch):
     # reference 仅 H3 支持；minimax 无 key 时火山被 supports 过滤 → mock 兜底
     monkeypatch.setattr("app.tools.volcano_video_generation.VOLCANO_API_KEY", "k")

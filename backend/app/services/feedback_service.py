@@ -2,7 +2,7 @@
 
 - record_feedback：写 ArtifactFeedback；action=selected 时同步写选中：
   step_id 非空 → WorkflowStep.selected_artifact_id（episode 级 render 选择）；
-  artifact 来自某 shot 的 job → Shot.selected_artifact_id（shot 级选择）。
+  artifact 来自某 shot 的 job → 按类型写 Shot 的图片/视频独立选择槽。
   step_id 会做强校验：必须属于 artifact 所在项目，且 artifact 是该 step
   关联 job 的产物（review 0.3，防跨项目写入）。
 - aggregate_provider_scores：按 provider/model 离线聚合平均评分与选择率。
@@ -47,10 +47,11 @@ async def record_feedback(
     - artifact 必须由该 step 关联的 GenerationJob 产生
       （job.workflow_step_id == step_id 且 artifact.job_id == job.id）。
 
-    选中语义（简单版）：直接覆盖已有 selected_artifact_id（覆盖行为本身也
-    留下一条 selected 反馈，历史可追溯；不单独引入 superseded 反馈类型）。
+    选中语义（简单版）：直接覆盖同类型的已有选择（覆盖行为本身也留下一条
+    selected 反馈，历史可追溯；不单独引入 superseded 反馈类型）。
     两级选择：WorkflowStep.selected_artifact_id（episode 级 render 用）保留；
-    artifact 来自某 shot 的 job 时同步写 Shot.selected_artifact_id（shot 级）。
+    artifact 来自某 shot 的 job 时，图片写 selected_image_artifact_id，视频写
+    selected_video_artifact_id，两个槽位互不覆盖。
     step_id 可空：前端按 shot 选择时仅写 Shot 级（要求 job.shot_id 非空且
     job.project_id == artifact.project_id，即该 shot 属于本项目）。
     """

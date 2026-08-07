@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+from decimal import Decimal
 
 import httpx
 
@@ -231,6 +232,21 @@ def main():
     usage = c.get("/api/usage/summary").json()
     check("usage_events 有记录", bool(usage.get("rows")), json.dumps(usage)[:200])
     print("  quote total =", quote["total"], " usage =", json.dumps(usage)[:300])
+    quoted_video_cost = sum(
+        Decimal(item["subtotal"])
+        for item in quote["items"]
+        if item["operation"] == "generate_video"
+    )
+    executed_video_provider = "mock" if PROVIDER_MODE == "mock" else VIDEO_PROVIDER
+    video_usage = next(
+        (row for row in usage.get("rows", []) if row.get("provider") == executed_video_provider),
+        {},
+    )
+    check(
+        "video estimated_cost 不重复累计",
+        Decimal(str(video_usage.get("estimated_cost", 0))) == quoted_video_cost,
+        f"quote={quoted_video_cost} usage={video_usage.get('estimated_cost')}",
+    )
 
     # 渲染产物
     render_jobs = [j for j in jobs if j["operation"] == "render_episode"]
@@ -273,7 +289,7 @@ for line in p.stderr.splitlines():
           len(sels) == SHOT_COUNT and all(s in {"selected", "latest", "placeholder"} for s in sels),
           f"selections={sels}")
 
-    # ── 选定产物（Shot 级，复审 0.3/P2-2）──
+    # ── 选定产物（Shot 级独立视频选择槽，复审 0.3/P2-2）──
     sh0 = all_shots[0]
     vids = [a for a in shot_artifacts[sh0["id"]] if (a.get("kind") or a.get("type")) == "video"]
     vid0 = vids[0].get("id") or vids[0].get("artifact_id")
@@ -282,9 +298,9 @@ for line in p.stderr.splitlines():
     check("feedback selected（无 step_id）", r.status_code == 200, r.text[:120])
     sb4 = c.get(f"/api/series/projects/{pid}/storyboard").json()
     sh0_after = [s for sc in sb4[0]["scenes"] for s in sc["shots"] if s["id"] == sh0["id"]][0]
-    check("Shot.selected_artifact_id 写入",
-          sh0_after.get("selected_artifact_id") == vid0,
-          str(sh0_after.get("selected_artifact_id"))[:40])
+    check("Shot.selected_video_artifact_id 写入",
+          sh0_after.get("selected_video_artifact_id") == vid0,
+          str(sh0_after.get("selected_video_artifact_id"))[:40])
 
     # feedback 伪造他项目 step_id → 403（复审 0.3）
     r = c.post("/api/series/projects", json={"title": "第二项目", "project_type": "short_drama"})

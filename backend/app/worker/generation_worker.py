@@ -13,9 +13,10 @@ from typing import Awaitable, Callable, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import mock_providers_enabled
 from app.db.database import SessionLocal
 from app.db.models import GenerationJob, SeriesProject, WorkflowRun
-from app.providers.base import VideoGenerationRequest
+from app.providers.base import VideoGenerationRequest, VideoProvider
 from app.providers.pricing import PRICE_TABLE_VERSION, estimate_video_cost
 from app.providers.video_router import NoProviderError, RouteDecision, VideoProviderRouter
 from app.services import asset_service, job_service, timeline_renderer, usage_service, workflow_service
@@ -38,6 +39,20 @@ def _provider_semaphore(name: str) -> asyncio.Semaphore:
 
 
 _router = VideoProviderRouter()
+
+
+def _resolve_locked_video_provider(provider_name: str) -> tuple[Optional[VideoProvider], bool]:
+    """解析报价锁定 Provider；显式 Mock 模式下允许不可用真实 Provider 降级。"""
+    provider = next((item for item in _router.providers if item.name == provider_name), None)
+    if provider is not None and provider.name == "mock":
+        return (provider, True) if mock_providers_enabled() else (None, False)
+    if provider is not None and provider.is_available():
+        return provider, False
+    if mock_providers_enabled():
+        mock_provider = next((item for item in _router.providers if item.name == "mock"), None)
+        if mock_provider is not None:
+            return mock_provider, True
+    return None, False
 
 
 def _build_video_request(job: GenerationJob) -> VideoGenerationRequest:
@@ -190,14 +205,13 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
     # R1.4：优先使用 job.params.routing_snapshot（来自已确认 Quote 的锁定快照）；
     # 仅当无快照时动态路由（重试/回退等场景）
     if not job.external_task_id:
+        submit_model: Optional[str] = None
         routing_snapshot = (job.params or {}).get("routing_snapshot")
         if routing_snapshot:
             # 使用已锁定 Provider/Model
             locked_prov_name = routing_snapshot.get("provider", job.provider)
-            decision_prov = next(
-                (p for p in _router.providers if p.name == locked_prov_name), None
-            )
-            if decision_prov is None or not decision_prov.is_available():
+            decision_prov, mocked = _resolve_locked_video_provider(locked_prov_name)
+            if decision_prov is None:
                 await finalize_job(
                     session, job, success=False,
                     error_code="provider_unavailable",
@@ -214,7 +228,7 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             if billable and billable != req.duration:
                 req.duration = billable
             locked_model = routing_snapshot.get("model", "")
-            if not provider.supports(req, model=locked_model):
+            if not mocked and not provider.supports(req, model=locked_model):
                 await finalize_job(
                     session, job, success=False,
                     error_code="routing_snapshot_invalid",
@@ -228,22 +242,31 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
                     },
                 )
                 return
-            job.provider = routing_snapshot.get("provider", job.provider)
-            job.model = routing_snapshot.get("model", job.model)
+            job.provider = provider.name
+            job.model = "mock-video" if mocked else locked_model
             job.params = {
                 **(job.params or {}),
                 "resolution": routing_snapshot.get("resolution", "768P"),
                 "price_snapshot": routing_snapshot.get("price_snapshot", {}),
             }
+            if mocked:
+                job.params = {
+                    **job.params,
+                    "mock_execution": {
+                        "quoted_provider": locked_prov_name,
+                        "quoted_model": locked_model,
+                    },
+                }
+            else:
+                submit_model = locked_model
             await session.flush()
             estimated = routing_snapshot.get("estimated_total_cost") or estimate_video_cost(
-                job.provider, job.model,
+                locked_prov_name, locked_model,
                 routing_snapshot.get("resolution", "768P"),
                 output_seconds=req.duration,
                 input_image_count=len(req.reference_images) + (1 if req.first_frame else 0),
                 regeneration_output_seconds=req.duration if req.mode == "regenerate" else 0,
             )
-            mocked = False
             sem = _provider_semaphore(provider.name)
 
         else:
@@ -277,10 +300,11 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
                 regeneration_output_seconds=req.duration if req.mode == "regenerate" else 0,
             )
             mocked = decision.mocked
+            submit_model = decision.model
             sem = _provider_semaphore(provider.name)
 
         async with sem:
-            result = await provider.submit(req, model=routing_snapshot.get("model") if routing_snapshot else None)
+            result = await provider.submit(req, model=submit_model)
         latency_ms = int((time.monotonic() - started) * 1000)
         if not result.success:
             await finalize_job(
@@ -295,20 +319,20 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             )
             return
         job.external_task_id = result.external_request_id
-        protocol_version = (
+        protocol_version = "mock" if mocked else (
             (routing_snapshot or {}).get("protocol")
             or (result.raw_metadata or {}).get("protocol")
             or "v1"
         )
         job.params = {**(job.params or {}), "protocol_version": protocol_version}
         # R5.5：验证 Provider 实际使用的模型与锁定快照一致，不一致时标失败
-        locked_model = (routing_snapshot or {}).get("model") or (decision.model if routing_snapshot else None)
-        if locked_model and result.model and result.model != locked_model:
+        expected_model = job.model
+        if expected_model and result.model and result.model != expected_model:
             await finalize_job(
                 session, job, success=False,
                 error_code="model_mismatch",
                 error=(
-                    f"Provider 返回模型 {result.model} 与锁定模型 {locked_model} 不一致"
+                    f"Provider 返回模型 {result.model} 与执行模型 {expected_model} 不一致"
                 ),
                 usage_fields={
                     "operation": "generate_video.submit", "status": "failed",
@@ -323,9 +347,12 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
         await session.refresh(job)
         await _record_job_usage(
             session, job, operation="generate_video.submit", status="submitted",
-            latency_ms=latency_ms, estimated_cost=estimated,
+            latency_ms=latency_ms,
             provider_request_id=result.external_request_id,
-            event_metadata={"mocked": mocked},
+            event_metadata={
+                "mocked": mocked,
+                "estimated_cost_snapshot": str(estimated) if estimated is not None else "",
+            },
         )
         if result.artifacts:
             await _finish_job(session, job, req, result, estimated, started)
@@ -346,7 +373,9 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             return
         from app.providers.pricing import estimate_video_cost as evc
 
-        estimated = evc(
+        estimated = ((job.params or {}).get("routing_snapshot") or {}).get(
+            "estimated_total_cost"
+        ) or evc(
             job.provider or "minimax",
             job.model or "MiniMax-H3",
             (job.params or {}).get("resolution", "768P"),
