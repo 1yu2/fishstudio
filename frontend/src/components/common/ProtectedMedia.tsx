@@ -7,6 +7,7 @@
  * 含加载中 / 失败态。
  */
 import {
+  forwardRef,
   useEffect,
   useState,
   type AudioHTMLAttributes,
@@ -60,15 +61,16 @@ function useProtectedSrc(src: string | undefined): { resolved: string | undefine
   return { resolved, state }
 }
 
-export function ProtectedVideo({
+export const ProtectedVideo = forwardRef<HTMLVideoElement, { src?: string } & Omit<VideoHTMLAttributes<HTMLVideoElement>, 'src'>>(({
   src,
   ...rest
-}: { src?: string } & Omit<VideoHTMLAttributes<HTMLVideoElement>, 'src'>) {
+}, ref) => {
   const { resolved, state } = useProtectedSrc(src)
   if (state === 'loading') return <div className="protected-media protected-media--loading">加载中…</div>
   if (state === 'error' || !resolved) return <div className="protected-media protected-media--error">媒体加载失败</div>
-  return <video src={resolved} {...rest} />
-}
+  return <video ref={ref} src={resolved} {...rest} />
+})
+ProtectedVideo.displayName = 'ProtectedVideo'
 
 export function ProtectedImage({
   src,

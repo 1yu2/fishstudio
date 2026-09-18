@@ -10,8 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     Approval,
     AssetCard,
+    DirectorPlanRevision,
     Episode,
+    ScriptRevision,
+    SeriesBibleRevision,
     StoryboardRevision,
+    StyleBibleRevision,
+    WorkflowRun,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +55,52 @@ async def _validate_target(
         if episode is None or episode.project_id != project_id:
             raise PermissionError("target belongs to another project")
         return row
+    if target_type == "script":
+        stmt = select(ScriptRevision).where(
+            ScriptRevision.episode_id == target_id,
+            ScriptRevision.revision == target_revision,
+        )
+        row = (await session.execute(stmt)).scalars().first()
+        if row is None:
+            raise ValueError(
+                f"script revision {target_revision} of episode {target_id} not found"
+            )
+        episode = await session.get(Episode, row.episode_id)
+        if episode is None or episode.project_id != project_id:
+            raise PermissionError("target belongs to another project")
+        return row
+    if target_type == "director_plan":
+        row = (
+            await session.execute(
+                select(DirectorPlanRevision).where(
+                    DirectorPlanRevision.episode_id == target_id,
+                    DirectorPlanRevision.revision == target_revision,
+                )
+            )
+        ).scalars().first()
+        if row is None:
+            raise ValueError(f"director plan revision {target_revision} not found")
+        episode = await session.get(Episode, row.episode_id)
+        if episode is None or episode.project_id != project_id:
+            raise PermissionError("target belongs to another project")
+        return row
+    if target_type in {"series_bible", "style_bible"}:
+        model = SeriesBibleRevision if target_type == "series_bible" else StyleBibleRevision
+        row = (
+            await session.execute(
+                select(model).where(
+                    model.project_id == target_id,
+                    model.revision == target_revision,
+                )
+            )
+        ).scalars().first()
+        if row is None:
+            raise ValueError(
+                f"{target_type} revision {target_revision} of project {target_id} not found"
+            )
+        if row.project_id != project_id:
+            raise PermissionError("target belongs to another project")
+        return row
     if target_type == "asset":
         row = await session.get(AssetCard, target_id)
         if row is None or row.version != target_revision:
@@ -86,10 +137,55 @@ async def approve(
     )
     session.add(row)
 
-    if target_type == "storyboard":
-        target.status = "approved"
-    else:
-        target.status = "approved"
+    target.status = "approved"
+    if target_type == "script":
+        episode = await session.get(Episode, target.episode_id)
+        if episode is not None:
+            episode.status = "storyboarding"
+    if target_type == "director_plan":
+        episode = await session.get(Episode, target.episode_id)
+        if episode is not None:
+            episode.status = "storyboarding"
+    if target_type in {"series_bible", "style_bible"}:
+        model = SeriesBibleRevision if target_type == "series_bible" else StyleBibleRevision
+        id_field = (
+            "series_bible_revision_id"
+            if target_type == "series_bible"
+            else "style_bible_revision_id"
+        )
+        # 新批准版本成为项目真相源；旧批准版本与基于旧版的创作结果保留但失效。
+        old_rows = (
+            await session.execute(
+                select(model).where(
+                    model.project_id == project_id,
+                    model.id != target.id,
+                    model.status == "approved",
+                )
+            )
+        ).scalars().all()
+        for old in old_rows:
+            old.status = "superseded"
+        episodes = (
+            await session.execute(select(Episode).where(Episode.project_id == project_id))
+        ).scalars().all()
+        episode_ids = [episode.id for episode in episodes]
+        for episode in episodes:
+            setattr(episode, id_field, target.id)
+            if episode.status not in {"draft", "planning"}:
+                episode.status = "scripting"
+        from app.services import dependency_invalidation_service
+
+        await dependency_invalidation_service.apply_invalidation(
+            session,
+            project_id=project_id,
+            source_type=target_type,
+            source_id=project_id,
+            source_revision=target.revision,
+            changed_fields=["structured_payload"],
+            user_id=approved_by,
+            reason=f"{target_type}_approved",
+            change_token=target.id,
+        )
 
     await session.commit()
     await session.refresh(row)
@@ -161,6 +257,52 @@ async def check_generation_gate(
     """
     reasons: list[str] = []
 
+    requires_bibles = bool(
+        await session.scalar(
+            select(WorkflowRun.id)
+            .where(
+                WorkflowRun.project_id == project_id,
+                WorkflowRun.template_version >= 3,
+            )
+            .limit(1)
+        )
+    )
+    if requires_bibles:
+        series_bible = await session.scalar(
+            select(SeriesBibleRevision)
+            .where(
+                SeriesBibleRevision.project_id == project_id,
+                SeriesBibleRevision.status == "approved",
+            )
+            .order_by(SeriesBibleRevision.revision.desc())
+            .limit(1)
+        )
+        style_bible = await session.scalar(
+            select(StyleBibleRevision)
+            .where(
+                StyleBibleRevision.project_id == project_id,
+                StyleBibleRevision.status == "approved",
+            )
+            .order_by(StyleBibleRevision.revision.desc())
+            .limit(1)
+        )
+        if series_bible is None:
+            reasons.append("Series Bible 尚未审批")
+        if style_bible is None:
+            reasons.append("Style Bible 尚未审批")
+
+    script = (
+        await session.execute(
+            select(ScriptRevision)
+            .where(ScriptRevision.episode_id == episode_id)
+            .order_by(ScriptRevision.revision.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    # 兼容没有剧本版本的存量项目；一旦进入新版剧本流，就必须先通过审稿。
+    if script is not None and script.status != "approved":
+        reasons.append(f"剧本 revision {script.revision} 未审批（当前状态 {script.status}）")
+
     stmt = (
         select(StoryboardRevision)
         .where(StoryboardRevision.episode_id == episode_id)
@@ -172,6 +314,10 @@ async def check_generation_gate(
         return False, ["该集还没有分镜 revision"]
     if revision.status != "approved":
         reasons.append(f"分镜 revision {revision.revision} 未审批（当前状态 {revision.status}）")
+    if script is not None and revision.based_on_script_revision_id != script.id:
+        reasons.append(
+            f"分镜 revision {revision.revision} 未基于当前剧本 revision {script.revision}"
+        )
 
     asset_ids = collect_character_asset_ids(revision.payload or {})
     for aid in asset_ids:

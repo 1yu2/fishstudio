@@ -13,9 +13,15 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import replace
 from typing import Any, Optional
 
 from app.services import workflow_service
+from app.services.execution_context import (
+    get_execution_context,
+    reset_execution_context,
+    set_execution_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,10 +157,14 @@ async def plan_with_llm(
     """
     from app.services.workflow_nodes import NODE_TYPES
 
-    if llm is None:
-        from app.llm.factory import create_llm
-
-        llm = create_llm()
+    runtime_invocation = llm is None
+    if runtime_invocation:
+        from app.model_runtime import (
+            ChatModelRequest,
+            ModelPolicy,
+            ModelRequestContext,
+            get_model_runtime,
+        )
 
     def _fallback(reason: str) -> dict[str, Any]:
         logger.warning(f"LLM Planner 回退规则版: {reason}")
@@ -171,7 +181,40 @@ async def plan_with_llm(
         goal=goal,
     )
     try:
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=LLM_TIMEOUT_SECONDS)
+        ctx = get_execution_context()
+        ctx_token = set_execution_context(
+            replace(ctx, creative_role="planner", prompt_version="planner_v1")
+        )
+        try:
+            if runtime_invocation:
+                ctx = get_execution_context()
+                invocation = await asyncio.wait_for(
+                    get_model_runtime().invoke_chat(
+                        prompt,
+                        ChatModelRequest(
+                            policy=ModelPolicy(
+                                purpose="planner",
+                                quality_tier="fast",
+                                required_capabilities=frozenset({"stream"}),
+                            )
+                        ),
+                        context=ModelRequestContext(
+                            request_id=ctx.request_id or "",
+                            project_id=ctx.project_id,
+                            workflow_run_id=ctx.workflow_run_id,
+                            workflow_step_id=ctx.workflow_step_id,
+                            creative_role="planner",
+                            prompt_version="planner_v1",
+                        ),
+                    ),
+                    timeout=LLM_TIMEOUT_SECONDS,
+                )
+                response = invocation.response
+                planner_model = invocation.snapshot.model
+            else:
+                response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=LLM_TIMEOUT_SECONDS)
+        finally:
+            reset_execution_context(ctx_token)
         text = getattr(response, "content", response)
         if isinstance(text, list):  # 部分模型返回 content blocks
             text = "".join(str(b.get("text", "")) if isinstance(b, dict) else str(b) for b in text)
@@ -198,6 +241,6 @@ async def plan_with_llm(
     ok, errors = workflow_service.validate_plan(plan)
     if not ok:
         return _fallback(f"validate_plan 失败: {'; '.join(errors)}")
-    plan["planner_model"] = _llm_model_name(llm)
+    plan["planner_model"] = planner_model if runtime_invocation else _llm_model_name(llm)
     plan["extra_nodes"] = extra
     return plan

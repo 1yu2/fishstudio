@@ -27,7 +27,9 @@ from app.routers import artifacts as artifacts_router
 from app.routers import assets as assets_router
 from app.routers import auth as auth_router
 from app.routers import chat
+from app.routers import eval as eval_router
 from app.routers import jobs as jobs_router
+from app.routers import model_runtime as model_runtime_router
 from app.routers import series as series_router
 from app.routers import settings as settings_router
 from app.routers import workflow as workflow_router
@@ -214,6 +216,8 @@ app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(jobs_router.router, prefix="/api", tags=["jobs"])
 app.include_router(series_router.router, prefix="/api", tags=["series"])
 app.include_router(workflow_router.router, prefix="/api", tags=["workflow"])
+app.include_router(model_runtime_router.router, prefix="/api", tags=["model-runtime"])
+app.include_router(eval_router.router, prefix="/api", tags=["eval"])
 
 
 async def _ws_authenticate(websocket: WebSocket, canvas_id: str) -> bool:

@@ -20,7 +20,11 @@ export default function StudioHome({
   const [loading, setLoading] = useState(true)
   const [title, setTitle] = useState('')
   const [goal, setGoal] = useState('')
-  const [useLlmPlanner, setUseLlmPlanner] = useState(false)
+  const [mode, setMode] = useState<'quick' | 'professional'>('quick')
+  const [style, setStyle] = useState('')
+  const [durationSeconds, setDurationSeconds] = useState(90)
+  const [episodeCount, setEpisodeCount] = useState(1)
+  const [budget, setBudget] = useState(100)
   const [creating, setCreating] = useState(false)
 
   useEffect(() => {
@@ -44,24 +48,16 @@ export default function StudioHome({
     if (!t || creating) return
     setCreating(true)
     try {
-      const project = await seriesApi.createProject({ title: t })
-      try {
-        const created = (await seriesApi.createRun(project.id, goal.trim() || undefined, useLlmPlanner)) as unknown as {
-          plan?: { planner_model?: string; planner_fallback?: boolean; fallback_reason?: string }
-        }
-        const plan = created?.plan
-        if (useLlmPlanner && plan) {
-          if (plan.planner_fallback) {
-            toast(`AI 规划已回退为规则规划${plan.fallback_reason ? `：${plan.fallback_reason}` : ''}`, 'error')
-          } else if (plan.planner_model) {
-            toast(`AI 规划已生效（${plan.planner_model}）`, 'success')
-          }
-        }
-      } catch (e) {
-        console.error('创建 workflow run 失败', e)
-        toast('项目已创建，但 workflow 启动失败', 'error')
-      }
-      goToStudioProject(project.id)
+      const result = await seriesApi.startStudioProject({
+        title: t,
+        mode,
+        story: goal.trim(),
+        style: style.trim(),
+        target_duration_ms: durationSeconds * 1000,
+        episode_count: episodeCount,
+        budget_cny: budget,
+      })
+      goToStudioProject(result.project.id)
     } catch (e) {
       console.error(e)
       toast(e instanceof Error ? e.message : '创建失败', 'error')
@@ -78,6 +74,14 @@ export default function StudioHome({
           <div className="studio__section-title" style={{ margin: 0 }}>
             新建短剧
           </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className={`studio__btn${mode === 'quick' ? ' studio__btn--primary' : ''}`} onClick={() => setMode('quick')}>
+              快速创作
+            </button>
+            <button className={`studio__btn${mode === 'professional' ? ' studio__btn--primary' : ''}`} onClick={() => setMode('professional')}>
+              专业制作
+            </button>
+          </div>
           <input
             className="studio__input"
             placeholder="短剧标题，例如：午夜便利店 第一季"
@@ -87,19 +91,21 @@ export default function StudioHome({
           <textarea
             className="studio__textarea"
             rows={2}
-            placeholder="目标描述（可选）：风格、时长、集数、受众…"
+            placeholder="故事梗概 / 创作目标"
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
           />
+          <input className="studio__input" placeholder="视觉风格，例如：电影感、暖色霓虹" value={style} onChange={(e) => setStyle(e.target.value)} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
+            <label className="studio__muted">单集秒数<input className="studio__input" type="number" min={1} value={durationSeconds} onChange={(e) => setDurationSeconds(Math.max(1, Number(e.target.value)))} /></label>
+            <label className="studio__muted">集数<input className="studio__input" type="number" min={1} max={100} value={episodeCount} onChange={(e) => setEpisodeCount(Math.max(1, Number(e.target.value)))} /></label>
+            <label className="studio__muted">预算（CNY）<input className="studio__input" type="number" min={0} value={budget} onChange={(e) => setBudget(Math.max(0, Number(e.target.value)))} /></label>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <button className="studio__btn studio__btn--primary" onClick={createProject} disabled={creating || !title.trim()}>
-              创建并进入工作台
+              创建并进入{mode === 'quick' ? '快速模式' : '专业工作台'}
               <ArrowRight size={14} />
             </button>
-            <label className="studio__muted" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-              <input type="checkbox" checked={useLlmPlanner} onChange={(e) => setUseLlmPlanner(e.target.checked)} />
-              使用 AI 规划（实验）
-            </label>
           </div>
         </section>
 

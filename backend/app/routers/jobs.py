@@ -12,8 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_user
 from app.db.database import get_session
 from app.db.models import GenerationJob, SeriesProject, User
-from app.providers.video_router import VideoProviderRouter
-from app.services import cost_service, job_service, usage_service, workflow_service
+from app.model_runtime.media import get_media_runtime
+from app.services import (
+    cost_service,
+    job_event_service,
+    job_service,
+    usage_service,
+    workflow_service,
+)
 from app.services.ownership import check_project_access
 
 logger = logging.getLogger(__name__)
@@ -21,7 +27,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # provider cancel（best-effort）用的路由表；与 worker 共用同一路由配置
-_video_router = VideoProviderRouter()
+_media_runtime = get_media_runtime()
+_media_runtime.video_router()
 
 
 class JobResponse(BaseModel):
@@ -38,6 +45,11 @@ class JobResponse(BaseModel):
     progress: int
     attempt: int
     max_attempts: int
+    priority: int = 0
+    worker_class: str = "media"
+    leased_by: str = ""
+    heartbeat_at: Optional[datetime] = None
+    dead_lettered_at: Optional[datetime] = None
     error_code: str
     error: str
     result: dict
@@ -61,6 +73,11 @@ class JobResponse(BaseModel):
             progress=job.progress,
             attempt=job.attempt,
             max_attempts=job.max_attempts,
+            priority=getattr(job, "priority", 0),
+            worker_class=getattr(job, "worker_class", "media"),
+            leased_by=getattr(job, "leased_by", ""),
+            heartbeat_at=getattr(job, "heartbeat_at", None),
+            dead_lettered_at=getattr(job, "dead_lettered_at", None),
             error_code=job.error_code,
             error=job.error,
             result=job.result or {},
@@ -112,6 +129,22 @@ async def list_jobs(
         # 不带 project_id 时不做全量暴露：要求调用方给 project_id
         raise HTTPException(status_code=400, detail="project_id is required")
     return {"jobs": [JobResponse.from_job(j).model_dump(mode="json") for j in jobs]}
+
+
+@router.get("/jobs/events")
+async def list_job_events(
+    project_id: str,
+    after: int = 0,
+    limit: int = 200,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """断线可续传的事件游标接口；Redis 负责低延迟通知，DB 提供一致回放。"""
+    await _check_project_access(session, project_id, user)
+    rows = await job_event_service.list_events(
+        session, project_id, after=max(0, after), limit=limit
+    )
+    return {"events": [job_event_service.event_payload(row) for row in rows]}
 
 
 @router.get("/jobs/{job_id}")
@@ -207,11 +240,15 @@ async def retry_job(
         status="pending",
         logical_job_key=job.logical_job_key or "",
         step_attempt=job.step_attempt or 0,
+        priority=getattr(job, "priority", 0),
+        worker_class=getattr(job, "worker_class", "media"),
     )
     session.add(new_job)
     await session.flush()
     await session.refresh(new_job)  # 应用 ORM 默认值（含 id）
     job.superseded_by = new_job.id
+    await job_event_service.emit(session, new_job, "job.queued", payload={"retry_of": job.id})
+    await job_event_service.notify_ready(new_job.id)
     await session.commit()
     await session.refresh(job)
     return JobResponse.from_job(new_job).model_dump(mode="json")
@@ -236,9 +273,8 @@ async def cancel_job(
     job = await _get_job_checked(session, job_id, user)
     # best-effort 取消外部任务：不阻塞本地取消，失败仅记日志
     if job.external_task_id and job.provider:
-        provider = next(
-            (p for p in _video_router.providers if p.name == job.provider), None
-        )
+        deployment = _media_runtime.get("video", job.provider)
+        provider = deployment.provider if deployment else None
         if provider is not None:
             try:
                 await provider.cancel(job.external_task_id)
@@ -251,6 +287,7 @@ async def cancel_job(
     if not ok:
         raise HTTPException(status_code=409, detail=f"已终态不可取消: {job.status}")
     await session.refresh(job)
+    await job_event_service.emit(session, job, "job.canceled")
     await workflow_service.on_job_finished(session, job)
     await session.commit()
     return JobResponse.from_job(job).model_dump(mode="json")

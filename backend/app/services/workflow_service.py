@@ -7,7 +7,7 @@
 - creates_jobs 节点：Gate 过后经 job_planner 展开 GenerationJob → status=running，
   等 worker 经 on_job_finished 回推终态。
 - 纯编排节点：project.initialize 自动 succeeded；outline.generate /
-  storyboard.generate / asset.character.generate 是 LLM 创意节点，MVP 不自动执行，
+  episode.script.generate / storyboard.generate / asset.character.generate 是创意节点，不自动执行，
   置 waiting_approval，由高层工具（save_storyboard / create_character_asset）或
   人工 API 调 complete_step 标记完成。
 """
@@ -20,11 +20,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     AssetCard,
+    DirectorPlanRevision,
     Episode,
     GenerationJob,
+    ScriptRevision,
+    SeriesBibleRevision,
     SeriesProject,
     SkillManifest,
     StoryboardRevision,
+    StyleBibleRevision,
+    TimelineRevision,
     WorkflowRun,
     WorkflowStep,
     WorkflowStepDependency,
@@ -42,7 +47,7 @@ from app.services.workflow_nodes import (
 logger = logging.getLogger(__name__)
 
 BUILTIN_TEMPLATE_KEY = "short-drama"
-BUILTIN_TEMPLATE_VERSION = 1
+BUILTIN_TEMPLATE_VERSION = 5
 
 # Planner 提交参数的硬上限（与模板 default_policy 的 max_shots_per_episode 共同生效）
 MAX_EPISODES = 32
@@ -77,14 +82,14 @@ async def seed_builtin_templates(session: AsyncSession) -> WorkflowTemplate:
         template.default_policy = SHORT_DRAMA_TEMPLATE_DEFAULT_POLICY
 
     stmt = select(SkillManifest).where(
-        SkillManifest.key == "short-drama", SkillManifest.version == "1.0.0"
+        SkillManifest.key == "short-drama", SkillManifest.version == "4.0.0"
     )
     if (await session.execute(stmt)).scalars().first() is None:
         session.add(
             SkillManifest(
                 key="short-drama",
                 name="内置短剧创作技能",
-                version="1.0.0",
+                version="4.0.0",
                 input_schema={"goal": "str", "episodes": "int", "shots_per_episode": "int"},
                 output_schema={"run_id": "str"},
                 required_capabilities=list(NODE_TYPES.keys()),
@@ -143,7 +148,7 @@ def validate_plan(plan: dict[str, Any]) -> tuple[bool, list[str]]:
 # Run 创建（模板图按集展开）
 # ─────────────────────────────────────────
 
-# extra_nodes 默认插入点：内置 DAG 的尾部链 shot.audio.generate → episode.render
+# extra_nodes 作为 final render 的附加前置约束；保留 episode.render node_key 兼容旧 Planner。
 _EXTRA_NODE_DEFAULT_UPSTREAM = "shot.audio.generate"
 _EXTRA_NODE_RENDER_SINK = "episode.render"
 
@@ -151,7 +156,7 @@ _EXTRA_NODE_RENDER_SINK = "episode.render"
 def apply_extra_nodes(
     graph: dict[str, Any], extra_nodes: list[Any]
 ) -> dict[str, Any]:
-    """把 Planner 校验过的额外节点插入 DAG 尾部链（episode.render 之前）。纯函数。
+    """把 Planner 校验过的额外节点作为 final render 的附加前置链。纯函数。
 
     落地语义（受控最小实现，见 P2-1）：
     - 元素为 str(node_type) 或 {"node_type": ..., "upstream": ...}（dict 形式可
@@ -344,7 +349,21 @@ async def create_run(
 # 纯编排且 MVP 自动完成的节点
 _AUTO_COMPLETE_TYPES = {"project.initialize"}
 # LLM 创意/登记节点：MVP 不自动执行，等工具/人工 complete_step
-_WAIT_EXTERNAL_TYPES = {"outline.generate", "storyboard.generate", "asset.character.generate"}
+_WAIT_EXTERNAL_TYPES = {
+    "series.bible.generate",
+    "style.bible.generate",
+    "outline.generate",
+    "episode.script.generate",
+    "episode.script.review",
+    "director.plan.generate",
+    "storyboard.generate",
+    "storyboard.continuity.check",
+    "asset.character.generate",
+    "timeline.plan",
+    "episode.director.review",
+    "episode.final.qc",
+    "publish.package.generate",
+}
 
 # waiting_approval 也要参与重估：审批/费用 Gate 在审批提交或 confirm-cost 后的
 # 下一次 advance 必须能重新判定并放行（E2E 发现的卡死问题）；状态未变时不得
@@ -358,7 +377,10 @@ def upstream_all_succeeded(
     """依赖判定纯函数（拆出便于单测）。"""
     status_by_id = {s.id: s.status for s in steps}
     for d in deps:
-        if d.downstream_step_id == step_id and status_by_id.get(d.upstream_step_id) != "succeeded":
+        if d.downstream_step_id == step_id and status_by_id.get(d.upstream_step_id) not in {
+            "succeeded",
+            "skipped",
+        }:
             return False
     return True
 
@@ -372,6 +394,50 @@ def _find_step(steps: list[WorkflowStep], step_id: str) -> Optional[WorkflowStep
 
 async def _approval_passed(session: AsyncSession, run: WorkflowRun, step: WorkflowStep) -> bool:
     """requires_approval 节点的 Gate 判定。"""
+    if step.node_type in {"series.bible.approve", "style.bible.approve"}:
+        is_series = step.node_type == "series.bible.approve"
+        model = SeriesBibleRevision if is_series else StyleBibleRevision
+        target_type = "series_bible" if is_series else "style_bible"
+        revision = (
+            await session.execute(
+                select(model)
+                .where(model.project_id == run.project_id)
+                .order_by(model.revision.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if revision is None:
+            return False
+        return await approval_service.is_approved(
+            session, target_type, run.project_id, revision.revision
+        )
+    if step.node_type == "episode.script.approve":
+        stmt = (
+            select(ScriptRevision)
+            .where(ScriptRevision.episode_id == step.entity_id)
+            .order_by(ScriptRevision.revision.desc())
+            .limit(1)
+        )
+        revision = (await session.execute(stmt)).scalars().first()
+        if revision is None:
+            return False
+        return await approval_service.is_approved(
+            session, "script", step.entity_id, revision.revision
+        )
+    if step.node_type == "director.plan.approve":
+        revision = (
+            await session.execute(
+                select(DirectorPlanRevision)
+                .where(DirectorPlanRevision.episode_id == step.entity_id)
+                .order_by(DirectorPlanRevision.revision.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if revision is None:
+            return False
+        return await approval_service.is_approved(
+            session, "director_plan", step.entity_id, revision.revision
+        )
     if step.node_type == "storyboard.approve":
         stmt = (
             select(StoryboardRevision)
@@ -402,6 +468,12 @@ async def _approval_passed(session: AsyncSession, run: WorkflowRun, step: Workfl
         if not ok:
             return False
         return bool((run.input_snapshot or {}).get("cost_confirmed"))
+    if step.node_type in {"episode.render", "episode.render.final"}:
+        revision = (await session.execute(select(TimelineRevision).where(
+            TimelineRevision.episode_id == step.entity_id,
+            TimelineRevision.status == "approved",
+        ).order_by(TimelineRevision.revision.desc()).limit(1))).scalars().first()
+        return revision is not None
     return True
 
 
@@ -439,7 +511,7 @@ async def _expand_jobs(session: AsyncSession, run: WorkflowRun, step: WorkflowSt
             session, run=run, step=step, episode_id=step.entity_id
         )
         return len(jobs)
-    if step.node_type == "episode.render":
+    if step.node_type in {"episode.render", "episode.render.final"}:
         await job_planner.plan_episode_render_job(
             session, run=run, step=step, episode_id=step.entity_id
         )

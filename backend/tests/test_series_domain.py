@@ -8,7 +8,12 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.series import StoryboardPayload
+from app.schemas.series import (
+    ScriptPayload,
+    SeriesBiblePayload,
+    StoryboardPayload,
+    StyleBiblePayload,
+)
 from app.services.approval_service import collect_character_asset_ids
 from app.services.storyboard_service import parse_legacy_storyboard_text
 
@@ -64,6 +69,7 @@ class TestStoryboardPayload:
         with pytest.raises(ValidationError):
             StoryboardPayload.model_validate(payload)
 
+
     def test_dialogue_time_inverted_rejected(self):
         payload = _payload(
             dialogue_tracks=[{"text": "台词", "start_ms": 2000, "end_ms": 2000}]
@@ -97,6 +103,78 @@ class TestStoryboardPayload:
         with pytest.raises(ValidationError):
             StoryboardPayload.model_validate(payload)
 
+
+class TestScriptPayload:
+    def test_valid_structured_script(self):
+        payload = ScriptPayload.model_validate(
+            {
+                "episode_objective": "女主拿到账本",
+                "hook": "保险柜突然打开",
+                "conflict": "保安正在赶来",
+                "payoff": "账本证明她是清白的",
+                "cliffhanger": "账本最后一页被撕掉",
+                "scenes": [
+                    {
+                        "number": 1,
+                        "action": ["女主打开保险柜"],
+                        "dialogue": [{"speaker": "女主", "text": "找到了"}],
+                    }
+                ],
+            }
+        )
+        assert payload.scenes[0].dialogue[0].text == "找到了"
+
+    def test_duplicate_scene_number_rejected(self):
+        with pytest.raises(ValidationError):
+            ScriptPayload.model_validate(
+                {
+                    "episode_objective": "目标",
+                    "hook": "钩子",
+                    "conflict": "冲突",
+                    "cliffhanger": "悬念",
+                    "scenes": [{"number": 1}, {"number": 1}],
+                }
+            )
+
+    def test_empty_scenes_rejected(self):
+        with pytest.raises(ValidationError):
+            ScriptPayload.model_validate(
+                {
+                    "episode_objective": "目标",
+                    "hook": "钩子",
+                    "conflict": "冲突",
+                    "cliffhanger": "悬念",
+                    "scenes": [],
+                }
+            )
+
+
+class TestBiblePayload:
+    def test_series_bible_valid(self):
+        payload = SeriesBiblePayload.model_validate(
+            {
+                "premise": "失忆继承人寻找真相",
+                "theme": "身份与选择",
+                "main_conflict": "她必须在家族与真相之间选择",
+                "characters": [{"key": "heroine", "name": "林夏"}],
+                "season_arc": [{"episode": 1, "hook": "遗嘱被调包"}],
+            }
+        )
+        assert payload.characters[0].key == "heroine"
+
+    def test_series_bible_requires_core_fields(self):
+        with pytest.raises(ValidationError):
+            SeriesBiblePayload.model_validate({"premise": "只有设定"})
+
+    def test_style_bible_valid(self):
+        payload = StyleBiblePayload.model_validate(
+            {"visual_style": "二维国风漫剧", "color_palette": ["朱红", "墨黑"]}
+        )
+        assert payload.aspect_ratio == "9:16"
+
+    def test_style_bible_requires_visual_style(self):
+        with pytest.raises(ValidationError):
+            StyleBiblePayload.model_validate({"visual_style": ""})
 
 # ─────────────────────────────────────────
 # 旧文本分镜解析（纯函数）

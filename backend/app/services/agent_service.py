@@ -43,7 +43,7 @@ def create_agent(project_type: Optional[str] = None):
             拿不到项目类型时传 None 维持全量注入（兼容旧行为）。
     """
     # 使用 LLM 工厂创建模型实例（默认使用火山引擎）
-    model = create_llm()
+    model = create_llm(purpose="agent", quality_tier="balanced")
 
     # 创建工具列表
     tools = [

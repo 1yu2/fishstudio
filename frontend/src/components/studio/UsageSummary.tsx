@@ -10,7 +10,7 @@ export default function UsageSummary({ projectId }: { projectId?: string }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const list = await seriesApi.getUsageSummary(projectId)
+        const list = await seriesApi.getUsageSummary(projectId, 'operation')
         setRows(Array.isArray(list) ? list : [])
       } catch (e) {
         setError(e instanceof Error ? e.message : '加载失败')
@@ -28,23 +28,31 @@ export default function UsageSummary({ projectId }: { projectId?: string }) {
     <table className="usage-table">
       <thead>
         <tr>
-          <th>Provider</th>
+          <th>成本类别</th>
           <th>任务数</th>
+          <th>输入 / 输出用量</th>
           <th>费用（CNY）</th>
         </tr>
       </thead>
       <tbody>
         {rows.map((r, i) => (
-          <tr key={r.provider || i}>
-            <td>{r.provider || '-'}</td>
+          <tr key={r.operation || i}>
+            <td>{r.operation || '-'}</td>
             <td>{r.job_count ?? '-'}</td>
-            <td>¥ {Number(r.total_cost ?? 0).toFixed(2)}</td>
+            <td>{Number(r.input_units || 0).toLocaleString()} / {Number(r.output_units || 0).toLocaleString()}</td>
+            <td>
+              ¥ {Number(r.total_cost ?? 0).toFixed(2)}
+              {Number(r.unpriced_count || 0) > 0 && (
+                <span className="studio__muted"> · {r.unpriced_count} 笔未计价</span>
+              )}
+            </td>
           </tr>
         ))}
         <tr>
           <td>
             <b>合计</b>
           </td>
+          <td />
           <td />
           <td>
             <b>¥ {total.toFixed(2)}</b>

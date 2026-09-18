@@ -10,6 +10,7 @@
   类 Approval 全部置 superseded（修改即失效旧审批）。
 """
 
+import json
 import logging
 import re
 from typing import Any, Optional
@@ -19,8 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     Approval,
+    DirectorPlanRevision,
     Episode,
     Scene,
+    ScriptRevision,
     SeriesProject,
     Shot,
     StoryboardRevision,
@@ -126,7 +129,7 @@ async def _next_revision(session: AsyncSession, episode_id: str) -> int:
 
 
 async def _supersede_storyboard_approvals(session: AsyncSession, episode_id: str) -> None:
-    """该 episode 的 storyboard 类审批全部置 superseded（修改即失效）。"""
+    """该 episode 的 storyboard 审批和已批准状态全部失效。"""
     stmt = select(Approval).where(
         Approval.target_type == "storyboard",
         Approval.target_id == episode_id,
@@ -134,6 +137,16 @@ async def _supersede_storyboard_approvals(session: AsyncSession, episode_id: str
     )
     for row in (await session.execute(stmt)).scalars().all():
         row.status = "superseded"
+    revisions = (
+        await session.execute(
+            select(StoryboardRevision).where(
+                StoryboardRevision.episode_id == episode_id,
+                StoryboardRevision.status == "approved",
+            )
+        )
+    ).scalars().all()
+    for revision in revisions:
+        revision.status = "stale"
 
 
 def _find_episode_spec(
@@ -158,6 +171,14 @@ async def _materialize(
     revision_id: str,
 ) -> None:
     """把 payload 的 scene/shot 物化为 ORM 行（更新或新建），并清理消失的 pending shot。"""
+    director_plan = (
+        await session.execute(
+            select(DirectorPlanRevision)
+            .where(DirectorPlanRevision.episode_id == episode.id)
+            .order_by(DirectorPlanRevision.revision.desc())
+            .limit(1)
+        )
+    ).scalars().first()
     # 现有场景（按 id 索引）
     scene_rows = (
         (await session.execute(select(Scene).where(Scene.episode_id == episode.id)))
@@ -205,6 +226,19 @@ async def _materialize(
                 shot = shots_by_id[shot_spec.shot_id]
                 shot.shot_no = shot_spec.number
                 shot.duration_ms = shot_spec.duration_ms
+                shot.shot_type = shot_spec.shot_type
+                shot.narrative_purpose = shot_spec.narrative_purpose
+                shot.composition = shot_spec.composition
+                shot.action_start = shot_spec.action_start
+                shot.action_end = shot_spec.action_end
+                shot.emotion = shot_spec.emotion
+                shot.first_frame_prompt = shot_spec.first_frame_prompt
+                shot.last_frame_prompt = shot_spec.last_frame_prompt
+                shot.generation_mode = shot_spec.generation_mode
+                shot.continuity_constraints = shot_spec.continuity_constraints
+                shot.risk_tags = shot_spec.risk_tags
+                shot.locked_asset_versions = shot_spec.locked_asset_versions
+                shot.qa_status = shot_spec.qa_status
                 shot.visual_prompt = shot_spec.visual_prompt
                 shot.camera = camera
                 shot.transition = transition
@@ -214,12 +248,29 @@ async def _materialize(
                 shot.subtitle_tracks = subtitle
                 shot.sort_order = sh_idx
                 shot.storyboard_revision_id = revision_id
+                shot.director_plan_revision_id = director_plan.id if director_plan else None
+                shot.director_intent_key = shot_spec.director_intent_key
             else:
                 shot = Shot(
                     scene_id=scene.id,
                     storyboard_revision_id=revision_id,
+                    director_plan_revision_id=director_plan.id if director_plan else None,
+                    director_intent_key=shot_spec.director_intent_key,
                     shot_no=shot_spec.number,
                     duration_ms=shot_spec.duration_ms,
+                    shot_type=shot_spec.shot_type,
+                    narrative_purpose=shot_spec.narrative_purpose,
+                    composition=shot_spec.composition,
+                    action_start=shot_spec.action_start,
+                    action_end=shot_spec.action_end,
+                    emotion=shot_spec.emotion,
+                    first_frame_prompt=shot_spec.first_frame_prompt,
+                    last_frame_prompt=shot_spec.last_frame_prompt,
+                    generation_mode=shot_spec.generation_mode,
+                    continuity_constraints=shot_spec.continuity_constraints,
+                    risk_tags=shot_spec.risk_tags,
+                    locked_asset_versions=shot_spec.locked_asset_versions,
+                    qa_status=shot_spec.qa_status,
                     visual_prompt=shot_spec.visual_prompt,
                     camera=camera,
                     transition=transition,
@@ -250,6 +301,7 @@ async def save_storyboard(
     episode_id: str,
     payload: "StoryboardPayload | dict[str, Any]",
     created_by: str = "",
+    based_on_script_revision_id: Optional[str] = None,
 ) -> StoryboardRevision:
     """校验并保存新 revision，同步物化 Scene/Shot，旧 revision/审批置 superseded。"""
     if isinstance(payload, dict):
@@ -259,6 +311,22 @@ async def save_storyboard(
     if episode is None or episode.project_id != project.id:
         raise ValueError(f"episode {episode_id} not found in project {project.id}")
 
+    if based_on_script_revision_id:
+        script_revision = await session.get(ScriptRevision, based_on_script_revision_id)
+        if script_revision is None or script_revision.episode_id != episode_id:
+            raise ValueError("based_on_script_revision_id 不属于当前集")
+    else:
+        script_revision = (
+            await session.execute(
+                select(ScriptRevision)
+                .where(ScriptRevision.episode_id == episode_id)
+                .order_by(ScriptRevision.revision.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if script_revision is not None:
+            based_on_script_revision_id = script_revision.id
+
     revision_no = await _next_revision(session, episode_id)
     payload_dict = payload.model_dump()
     row = StoryboardRevision(
@@ -266,6 +334,7 @@ async def save_storyboard(
         revision=revision_no,
         schema_version=payload.schema_version,
         payload=payload_dict,
+        based_on_script_revision_id=based_on_script_revision_id,
         status="draft",
         created_by=created_by,
     )
@@ -360,6 +429,19 @@ async def list_episodes_with_storyboard(
                             "storyboard_revision_id": sh.storyboard_revision_id,
                             "shot_no": sh.shot_no,
                             "duration_ms": sh.duration_ms,
+                            "shot_type": sh.shot_type,
+                            "narrative_purpose": sh.narrative_purpose,
+                            "composition": sh.composition,
+                            "action_start": sh.action_start,
+                            "action_end": sh.action_end,
+                            "emotion": sh.emotion,
+                            "first_frame_prompt": sh.first_frame_prompt,
+                            "last_frame_prompt": sh.last_frame_prompt,
+                            "generation_mode": sh.generation_mode,
+                            "continuity_constraints": sh.continuity_constraints,
+                            "risk_tags": sh.risk_tags,
+                            "locked_asset_versions": sh.locked_asset_versions,
+                            "qa_status": sh.qa_status,
                             "visual_prompt": sh.visual_prompt,
                             "camera": sh.camera,
                             "transition": sh.transition,
@@ -384,8 +466,17 @@ async def list_episodes_with_storyboard(
                 "title": ep.title,
                 "synopsis": ep.synopsis,
                 "status": ep.status,
+                "objective": ep.objective,
+                "hook": ep.hook,
+                "conflict": ep.conflict,
+                "payoff": ep.payoff,
+                "cliffhanger": ep.cliffhanger,
+                "target_duration_ms": ep.target_duration_ms,
                 "current_revision": revision_row.revision if revision_row else None,
                 "revision_status": revision_row.status if revision_row else None,
+                "based_on_script_revision_id": (
+                    revision_row.based_on_script_revision_id if revision_row else None
+                ),
                 "scenes": scene_dicts,
             }
         )
@@ -395,6 +486,19 @@ async def list_episodes_with_storyboard(
 # update_shot 允许修改的白名单字段
 SHOT_EDITABLE_FIELDS = {
     "duration_ms",
+    "shot_type",
+    "narrative_purpose",
+    "composition",
+    "action_start",
+    "action_end",
+    "emotion",
+    "first_frame_prompt",
+    "last_frame_prompt",
+    "generation_mode",
+    "continuity_constraints",
+    "risk_tags",
+    "locked_asset_versions",
+    "qa_status",
     "visual_prompt",
     "camera",
     "transition",
@@ -426,16 +530,35 @@ async def update_shot(
         except PermissionError:
             raise PermissionError("shot belongs to another user") from None
 
-    changed_content = False
+    changed_fields: list[str] = []
+    before: dict[str, Any] = {}
     for key, value in fields.items():
         if key not in SHOT_EDITABLE_FIELDS:
             continue
         if key in SHOT_CONTENT_FIELDS and getattr(shot, key) != value:
-            changed_content = True
+            changed_fields.append(key)
+            before[key] = getattr(shot, key)
         setattr(shot, key, value)
 
-    if changed_content and episode is not None:
-        await _supersede_storyboard_approvals(session, episode.id)
+    if changed_fields and episode is not None:
+        from app.services import dependency_invalidation_service
+
+        change_token = json.dumps(
+            {"before": before, "after": {key: fields[key] for key in changed_fields}},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        await dependency_invalidation_service.apply_invalidation(
+            session,
+            project_id=episode.project_id,
+            source_type="shot",
+            source_id=shot.id,
+            changed_fields=changed_fields,
+            user_id=user_id,
+            reason="shot_content_changed",
+            change_token=change_token,
+        )
 
     await session.commit()
     await session.refresh(shot)

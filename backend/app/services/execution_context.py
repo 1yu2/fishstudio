@@ -14,6 +14,9 @@ class ExecutionContext:
     canvas_id: Optional[str] = None
     project_id: Optional[str] = None
     workflow_run_id: Optional[str] = None
+    workflow_step_id: Optional[str] = None
+    creative_role: Optional[str] = None
+    prompt_version: Optional[str] = None
 
     @classmethod
     def new_ids(cls, **kwargs) -> "ExecutionContext":

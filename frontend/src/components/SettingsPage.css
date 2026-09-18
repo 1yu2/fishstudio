@@ -239,6 +239,29 @@
   gap: 10px;
 }
 
+.runtime-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.runtime-model-card {
+  padding: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+[data-theme='light'] .runtime-model-card { background: rgba(248, 250, 252, 0.9); }
+.runtime-model-card__title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; }
+.runtime-model-card__state { padding: 2px 7px; border-radius: 999px; font-size: 11px; }
+.runtime-model-card__state--on { color: #34d399; background: rgba(16, 185, 129, 0.12); }
+.runtime-model-card__state--off { color: #fb7185; background: rgba(244, 63, 94, 0.12); }
+.runtime-model-card__meta { margin-top: 10px; color: #94a3b8; font-size: 12px; text-transform: uppercase; }
+.runtime-model-card__model { margin-top: 5px; color: #cbd5e1; font-family: monospace; font-size: 12px; overflow-wrap: anywhere; }
+[data-theme='light'] .runtime-model-card__model { color: #475569; }
+
 /* ═══════════════════════════════════════════════
    Skills 面板
    ═══════════════════════════════════════════════ */

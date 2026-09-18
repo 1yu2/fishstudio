@@ -109,7 +109,7 @@ export default function CostQuotePanel({
             {expiry && (
               <span className={expiry.expired ? 'studio__error' : 'studio__muted'}>{expiry.text}</span>
             )}
-            <b>总价：¥ {Number(quote.total).toFixed(2)}</b>
+            <b>总价：{quote.total === 'unavailable' ? '价格 unavailable' : `¥ ${Number(quote.total).toFixed(2)}`}</b>
             <button className="studio__btn studio__btn--sm" onClick={fetchQuote} disabled={loading}>
               重新报价
             </button>

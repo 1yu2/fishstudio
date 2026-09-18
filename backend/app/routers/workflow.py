@@ -3,6 +3,7 @@
 错误映射约定同 series 路由：PermissionError → 403；不存在 → 404；参数错误 → 400。
 """
 
+from dataclasses import replace
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,6 +14,11 @@ from app.auth.dependencies import get_current_user
 from app.db.database import get_session
 from app.db.models import User, WorkflowRun, WorkflowStep
 from app.services import cost_service, planner_service, series_service, workflow_service
+from app.services.execution_context import (
+    get_execution_context,
+    reset_execution_context,
+    set_execution_context,
+)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -164,7 +170,13 @@ async def create_run(
         await workflow_service.seed_builtin_templates(session)
         goal = body.goal or project.title
         if body.use_llm_planner:
-            plan = await planner_service.plan_with_llm(goal, project.settings)
+            ctx_token = set_execution_context(
+                replace(get_execution_context(), project_id=project.id)
+            )
+            try:
+                plan = await planner_service.plan_with_llm(goal, project.settings)
+            finally:
+                reset_execution_context(ctx_token)
         else:
             plan = planner_service.plan_from_template(goal, project.settings)
         run = await workflow_service.create_run(

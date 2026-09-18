@@ -8,7 +8,7 @@
 (a) 空库 → upgrade head 后 0001 四表 + 0002 十八表全部存在；
 (b) 只有 0001 四表且含历史数据、无 alembic_version 的老库 → bootstrap 后数据保留；
 (c) 重复执行 bootstrap 幂等不报错；
-(d) head 带数据 → downgrade 0006 → upgrade head，核心数据保留且 0007 表可重建。
+(d) head 带数据 → downgrade 0006 → upgrade head，核心数据保留且后续表可重建。
 """
 
 import asyncio
@@ -31,7 +31,16 @@ EXPECTED_TABLES = {
     "storyboard_revisions", "shots", "asset_cards", "workflow_runs", "workflow_steps",
     "workflow_step_dependencies", "generation_jobs", "artifacts", "asset_artifact_refs",
     "shot_asset_refs", "approvals", "usage_events", "artifact_feedback",
-    "clone_voice_quotes",
+    "clone_voice_quotes", "script_revisions", "series_bible_revisions",
+    "style_bible_revisions", "invalidation_events", "model_invocations",
+    "director_plan_revisions", "observer_reviews",
+    "artifact_candidates", "regeneration_requests",
+    "timeline_revisions",
+    "qc_reports", "publications", "publish_packages",
+    "reference_analyses", "shot_references",
+    "job_events", "provider_circuits",
+    "benchmark_datasets", "eval_runs", "price_table_entries", "budget_alerts",
+    "publication_metrics",
 }
 
 
@@ -120,12 +129,12 @@ def _tables_and_revision():
 
 
 def test_empty_database_upgrades_to_head(mig_env):
-    """(a) 空库 → upgrade head → 全部表存在，版本 0007。"""
+    """(a) 空库 → upgrade head → 全部表存在，版本 0020。"""
     asyncio.run(mig_env.bootstrap_and_upgrade())
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0007"
+    assert revision == "0020"
 
     # 0006 新列：shots 拆分选择槽 + usage_events.cost_source
     def _columns(table):
@@ -150,6 +159,15 @@ def test_empty_database_upgrades_to_head(mig_env):
     assert "selected_video_artifact_id" in shot_cols
     assert "selected_artifact_id" not in shot_cols
     assert "cost_source" in _columns("usage_events")
+    assert "based_on_script_revision_id" in _columns("storyboard_revisions")
+    assert {"series_bible_revision_id", "style_bible_revision_id"} <= _columns("episodes")
+    assert {
+        "based_on_series_bible_revision_id",
+        "based_on_style_bible_revision_id",
+    } <= _columns("script_revisions")
+    assert {"narrative_purpose", "generation_mode", "qa_status"} <= _columns("shots")
+    assert {"priority", "worker_class", "leased_by", "heartbeat_at", "dead_lettered_at"} <= _columns("generation_jobs")
+    assert "storage_backend" in _columns("artifacts")
 
 
 def test_legacy_0001_database_stamps_0001_then_upgrades(mig_env):
@@ -192,7 +210,7 @@ def test_legacy_0001_database_stamps_0001_then_upgrades(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0007"
+    assert revision == "0020"
 
     async def _legacy_rows():
         engine = create_async_engine(TEST_DATABASE_URL)
@@ -223,11 +241,11 @@ def test_bootstrap_is_idempotent(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0007"
+    assert revision == "0020"
 
 
 def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
-    """0007 账本迁移可降至 0006 再回升，既有项目数据不丢失。"""
+    """0007～0010 可降至 0006 再回升，既有项目数据不丢失。"""
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -266,8 +284,12 @@ def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
 
     command.upgrade(cfg, "head")
     tables, revision = _tables_and_revision()
-    assert revision == "0007"
+    assert revision == "0020"
     assert "clone_voice_quotes" in tables
+    assert "script_revisions" in tables
+    assert "series_bible_revisions" in tables
+    assert "style_bible_revisions" in tables
+    assert "invalidation_events" in tables
 
     async def _project_title():
         engine = create_async_engine(TEST_DATABASE_URL)

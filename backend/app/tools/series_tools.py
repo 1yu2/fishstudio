@@ -7,6 +7,7 @@
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any, Optional
 
 from langchain_core.tools import tool
@@ -23,14 +24,20 @@ from app.db.models import (
 from app.services import (
     approval_service,
     asset_service,
+    bible_service,
     cost_service,
     job_planner,
     planner_service,
+    script_service,
     series_service,
     storyboard_service,
     workflow_service,
 )
-from app.services.execution_context import get_execution_context
+from app.services.execution_context import (
+    get_execution_context,
+    reset_execution_context,
+    set_execution_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +101,13 @@ async def create_series_project(
             planner_model = ""
             extra_nodes = None
             if use_llm_planner:
-                plan = await planner_service.plan_with_llm(title, project.settings or {})
+                ctx_token = set_execution_context(
+                    replace(get_execution_context(), project_id=project.id)
+                )
+                try:
+                    plan = await planner_service.plan_with_llm(title, project.settings or {})
+                finally:
+                    reset_execution_context(ctx_token)
                 input_snapshot = {**plan.get("params", {}), "goal": title}
                 planner_model = plan.get("planner_model", "rule-based")
                 extra_nodes = plan.get("extra_nodes") or None
@@ -111,6 +124,105 @@ async def create_series_project(
             return f"✅ 已创建项目 {project.id}（{title}），工作流 Run {run.id}（状态 {run.status}）。"
         except (ValueError, PermissionError) as e:
             return f"❌ 创建项目失败：{e}"
+
+
+@tool
+async def save_episode_script(
+    project_id: str,
+    episode_id: str,
+    script: dict[str, Any],
+    based_on_revision: Optional[int] = None,
+) -> str:
+    """保存结构化单集剧本为新的不可变 revision。
+
+    Args:
+        project_id: 项目 ID
+        episode_id: 集 ID
+        script: 包含 episode_objective、hook、conflict、cliffhanger、scenes 的剧本结构
+        based_on_revision: 修订已有剧本时传当前 revision，防止并发覆盖
+    """
+    user_id, _ = _ctx_ids()
+    async with SessionLocal() as session:
+        try:
+            project = await _get_owned_project(session, project_id)
+            episode = await session.get(Episode, episode_id)
+            if episode is None or episode.project_id != project.id:
+                raise ValueError(f"集 {episode_id} 不属于项目 {project_id}")
+            revision = await script_service.create_revision(
+                session,
+                episode_id,
+                script,
+                user_id=user_id,
+                created_by="agent",
+                source_type="agent",
+                based_on_revision=based_on_revision,
+            )
+            run = await _latest_run(session, project_id)
+            if run is not None:
+                step = await _find_step(
+                    session, run.id, "episode.script.generate", episode_id
+                )
+                if step is not None and step.status in {
+                    "draft",
+                    "ready",
+                    "waiting_approval",
+                }:
+                    await workflow_service.complete_step(
+                        session, step.id, {"revision": revision.revision}
+                    )
+            return (
+                f"✅ 剧本已保存：episode {episode_id} revision {revision.revision}，"
+                f"共 {len((revision.structured_payload or {}).get('scenes', []))} 场。"
+            )
+        except (ValueError, PermissionError) as e:
+            return f"❌ 保存剧本失败：{e}"
+
+
+@tool
+async def save_project_bible(
+    project_id: str,
+    kind: str,
+    payload: dict[str, Any],
+    based_on_revision: Optional[int] = None,
+) -> str:
+    """保存项目 Series/Style Bible 为新的不可变 revision。
+
+    Args:
+        project_id: 项目 ID
+        kind: series 或 style
+        payload: 对应 Bible 的结构化内容
+        based_on_revision: 修订时传当前 revision，防止并发覆盖
+    """
+    user_id, _ = _ctx_ids()
+    if kind not in {"series", "style"}:
+        return "❌ kind 必须是 series 或 style"
+    async with SessionLocal() as session:
+        try:
+            await _get_owned_project(session, project_id)
+            revision = await bible_service.create_revision(
+                session,
+                project_id,
+                kind,
+                payload,
+                user_id=user_id,
+                created_by="agent",
+                source_type="agent",
+                based_on_revision=based_on_revision,
+            )
+            run = await _latest_run(session, project_id)
+            if run is not None:
+                step = await _find_step(
+                    session, run.id, f"{kind}.bible.generate", project_id
+                )
+                if step is not None and step.status in {
+                    "draft", "ready", "waiting_approval"
+                }:
+                    await workflow_service.complete_step(
+                        session, step.id, {"revision": revision.revision}
+                    )
+            return f"✅ {kind} Bible 已保存：revision {revision.revision}。"
+        except (ValueError, PermissionError) as error:
+            return f"❌ 保存 Bible 失败：{error}"
 
 
 @tool
@@ -264,11 +376,11 @@ async def create_character_asset(
 
 @tool
 async def approve(target_type: str, target_id: str, target_revision: int) -> str:
-    """审批通过某个对象（分镜 revision 或角色资产版本），并推进工作流。
+    """审批通过 Bible、剧本、分镜 revision 或角色资产版本，并推进工作流。
 
     Args:
-        target_type: storyboard 或 asset
-        target_id: storyboard 时为 episode_id，asset 时为资产 ID
+        target_type: series_bible、style_bible、script、director_plan、storyboard 或 asset
+        target_id: Bible 时为 project_id，script/storyboard 时为 episode_id
         target_revision: revision 号或资产版本号
 
     Returns:
@@ -277,7 +389,9 @@ async def approve(target_type: str, target_id: str, target_revision: int) -> str
     user_id, _ = _ctx_ids()
     async with SessionLocal() as session:
         try:
-            if target_type == "storyboard":
+            if target_type in {"series_bible", "style_bible"}:
+                project_id = target_id
+            elif target_type in {"script", "director_plan", "storyboard"}:
                 episode = await session.get(Episode, target_id)
                 if episode is None:
                     return f"❌ 集 {target_id} 不存在"
@@ -476,6 +590,8 @@ async def render_episode(project_id: str, episode_id: str, render_mode: str = "f
 
 SERIES_TOOLS = [
     create_series_project,
+    save_project_bible,
+    save_episode_script,
     save_storyboard,
     get_storyboard,
     update_shot,

@@ -10,6 +10,7 @@ from typing import Optional
 from langchain_openai import ChatOpenAI
 
 from app.llm.base import BaseLLMProvider
+from app.services.llm_usage_service import LLMUsageCallback
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,9 @@ class VolcanoLLMProvider(BaseLLMProvider):
             base_url=self.base_url,
             temperature=0.7,
             streaming=True,  # 启用流式输出
+            stream_usage=True,
             max_tokens=2048,
+            callbacks=[LLMUsageCallback("volcano", self.model_name)],
             model_kwargs=model_kwargs,
         )
 

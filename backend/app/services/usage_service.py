@@ -70,7 +70,9 @@ async def aggregate_usage(
         func.count().label("count"),
         func.sum(UsageEvent.estimated_cost).label("estimated_cost"),
         func.sum(UsageEvent.actual_cost).label("actual_cost"),
+        func.sum(UsageEvent.input_units).label("input_units"),
         func.sum(UsageEvent.output_units).label("output_units"),
+        func.count().filter(UsageEvent.actual_cost.is_(None)).label("unpriced_count"),
     ).group_by(col)
     if user_id is not None:
         stmt = stmt.where(UsageEvent.user_id == user_id)
@@ -81,14 +83,24 @@ async def aggregate_usage(
 
     result = await session.execute(stmt)
     rows = []
-    for key, count, estimated_cost, actual_cost, output_units in result.all():
+    for (
+        key,
+        count,
+        estimated_cost,
+        actual_cost,
+        input_units,
+        output_units,
+        unpriced_count,
+    ) in result.all():
         rows.append(
             {
                 group_by: key.isoformat() if hasattr(key, "isoformat") else key,
                 "count": count,
-                "estimated_cost": float(estimated_cost or 0),
-                "actual_cost": float(actual_cost or 0),
+                "estimated_cost": float(estimated_cost) if estimated_cost is not None else None,
+                "actual_cost": float(actual_cost) if actual_cost is not None else None,
+                "input_units": float(input_units or 0),
                 "output_units": float(output_units or 0),
+                "unpriced_count": int(unpriced_count or 0),
             }
         )
     return rows

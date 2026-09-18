@@ -111,6 +111,21 @@ class TestBuiltinGraph:
             SHORT_DRAMA_TEMPLATE_GRAPH["edges"],
         )
         assert order.index("project.initialize") < order.index("episode.render")
+        assert (
+            order.index("series.bible.generate")
+            < order.index("series.bible.approve")
+            < order.index("outline.generate")
+        )
+        assert (
+            order.index("style.bible.generate")
+            < order.index("style.bible.approve")
+            < order.index("outline.generate")
+        )
+        assert (
+            order.index("episode.script.generate")
+            < order.index("episode.script.approve")
+            < order.index("storyboard.generate")
+        )
         # shot.image 汇合两条审批分支
         assert order.index("storyboard.approve") < order.index("shot.image.generate")
         assert order.index("asset.version.approve") < order.index("shot.image.generate")
@@ -183,6 +198,11 @@ class TestUpstreamAllSucceeded:
 
     def test_upstream_succeeded(self):
         steps = [_FakeStep("a", "succeeded"), _FakeStep("b", "ready")]
+        deps = [_FakeDep("a", "b")]
+        assert workflow_service.upstream_all_succeeded("b", steps, deps)
+
+    def test_upstream_skipped_is_non_blocking(self):
+        steps = [_FakeStep("a", "skipped"), _FakeStep("b", "ready")]
         deps = [_FakeDep("a", "b")]
         assert workflow_service.upstream_all_succeeded("b", steps, deps)
 

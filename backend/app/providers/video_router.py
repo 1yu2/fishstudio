@@ -77,6 +77,14 @@ class VideoProviderRouter:
             chosen = next((p for p in self.providers if p.name == name), None)
             if chosen is None:
                 raise ValueError(f"显式指定的 provider 不存在: {name}")
+            if isinstance(chosen, MockVideoProvider):
+                if not mock_providers_enabled():
+                    raise NoProviderError(
+                        "显式指定 mock provider，但未开启 ALLOW_MOCK_PROVIDERS"
+                    )
+                if not chosen.supports(req):
+                    raise ValueError(f"显式指定的 provider 不支持该请求: {name}")
+                return self._decide(chosen, req, True, "explicit mock provider")
             if not chosen.is_available() or not chosen.supports(req):
                 raise ValueError(f"显式指定的 provider 不可用或不支持该请求: {name}")
             return self._decide(chosen, req, False, f"explicit provider={name}")

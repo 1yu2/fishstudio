@@ -22,6 +22,8 @@ async def create_project(
     workflow_template_id: Optional[str] = None,
     active_skill_ids: Optional[list[Any]] = None,
     settings: Optional[dict[str, Any]] = None,
+    episode_count: int = 1,
+    target_duration_ms: int = 90000,
 ) -> SeriesProject:
     """创建项目 + 默认第 1 集。
 
@@ -56,7 +58,37 @@ async def create_project(
     )
     session.add(project)
     await session.flush()
-    session.add(Episode(project_id=project.id, episode_no=1, title=title))
+    episode_count = max(1, min(int(episode_count), 100))
+    target_duration_ms = max(1000, int(target_duration_ms))
+    for episode_no in range(1, episode_count + 1):
+        episode_title = title if episode_count == 1 else f"{title} 第{episode_no}集"
+        session.add(
+            Episode(
+                project_id=project.id,
+                episode_no=episode_no,
+                title=episode_title,
+                target_duration_ms=target_duration_ms,
+            )
+        )
+    await session.commit()
+    await session.refresh(project)
+    return project
+
+
+async def set_workspace_mode(
+    session: AsyncSession,
+    project_id: str,
+    mode: str,
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
+) -> SeriesProject:
+    """只切换工作台呈现方式；领域对象与 Workflow 不复制、不迁移。"""
+    if mode not in {"quick", "professional"}:
+        raise ValueError("workspace mode must be quick or professional")
+    project = await get_project(session, project_id, user_id, is_admin=is_admin)
+    if project is None:
+        raise ValueError(f"project {project_id} not found")
+    project.settings = {**(project.settings or {}), "workspace_mode": mode}
     await session.commit()
     await session.refresh(project)
     return project

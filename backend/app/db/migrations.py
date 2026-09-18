@@ -50,6 +50,21 @@ def _detect_schema_revision(inspector) -> str | None:
     """按特征表/列判断无 alembic_version 老库实际处于哪个 revision。
 
     返回值：
+    - "0020"：已有 eval_runs（0020 的改动）
+    - "0019"：已有 job_events（0019 的改动）
+    - "0018"：已有 reference_analyses（0018 的改动）
+    - "0017"：已有 publications（0017 的改动）
+    - "0016"：已有 timeline_revisions（0016 的改动）
+    - "0015"：regeneration_requests 已有 quote_id（0015 的改动）
+    - "0014"：已有 artifact_candidates（0014 的改动）
+    - "0013"：asset_cards 已有 profile（0013 的改动）
+    - "0012"：已有 director_plan_revisions（0012 的改动）
+    - "0011"：已有 model_invocations（0011 的改动）
+    - "0010"：已有 invalidation_events（0010 的改动）
+    - "0009"：已有 series_bible_revisions（0009 的改动）
+    - "0008"：已有 script_revisions（0008 的改动）
+    - "0007"：已有 clone_voice_quotes（0007 的改动）
+    - "0006"：shots 已有 selected_image_artifact_id（0006 的改动）
     - "0005"：generation_jobs 已有 logical_job_key（0005 的改动）
     - "0004"：generation_jobs 已有 workflow_run_id（0004 的改动）
     - "0003"：series 表齐且 generation_jobs.idempotency_key 已是 255（0003 的改动）
@@ -60,6 +75,49 @@ def _detect_schema_revision(inspector) -> str | None:
     tables = set(inspector.get_table_names())
 
     if "series_projects" in tables and _REV2_MARKERS <= tables:
+        if "eval_runs" in tables:
+            return "0020"
+        if "job_events" in tables:
+            return "0019"
+        if "reference_analyses" in tables:
+            return "0018"
+        if "publications" in tables:
+            return "0017"
+        if "timeline_revisions" in tables:
+            return "0016"
+        if "regeneration_requests" in tables:
+            regeneration_columns = {
+                column["name"] for column in inspector.get_columns("regeneration_requests")
+            }
+            if "quote_id" in regeneration_columns:
+                return "0015"
+        if "artifact_candidates" in tables:
+            return "0014"
+        asset_columns = (
+            {column["name"] for column in inspector.get_columns("asset_cards")}
+            if "asset_cards" in tables else set()
+        )
+        if "profile" in asset_columns:
+            return "0013"
+        if "director_plan_revisions" in tables:
+            return "0012"
+        if "model_invocations" in tables:
+            return "0011"
+        if "invalidation_events" in tables:
+            return "0010"
+        if "series_bible_revisions" in tables:
+            return "0009"
+        if "script_revisions" in tables:
+            return "0008"
+        if "clone_voice_quotes" in tables:
+            return "0007"
+        try:
+            shot_cols = {c["name"] for c in inspector.get_columns("shots")}
+        except Exception:
+            shot_cols = set()
+        if "selected_image_artifact_id" in shot_cols:
+            return "0006"
+
         # 区分 0002 / 0003 / 0004 / 0005：
         #   0003 把 generation_jobs.idempotency_key 放宽到 255
         #   0004 增加 generation_jobs.workflow_run_id / workflow_step_id

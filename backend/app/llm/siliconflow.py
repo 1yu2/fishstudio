@@ -8,6 +8,7 @@ import os
 from langchain_openai import ChatOpenAI
 
 from app.llm.base import BaseLLMProvider
+from app.services.llm_usage_service import LLMUsageCallback
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,9 @@ class SiliconFlowLLMProvider(BaseLLMProvider):
             base_url=self.base_url,
             temperature=0.7,
             streaming=True,  # 启用流式输出
+            stream_usage=True,
             max_tokens=2048,
+            callbacks=[LLMUsageCallback("siliconflow", self.model_name)],
             # 关键：禁止并行工具调用，强制"一次调用一个工具 -> 等结果 -> 再下一次"
             model_kwargs={"parallel_tool_calls": False},
         )

@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import StoryboardRevision, WorkflowRun, WorkflowStep
+from app.db.models import BudgetAlert, StoryboardRevision, WorkflowRun, WorkflowStep
 from app.providers.pricing import (
     PRICE_TABLE_VERSION,
     estimate_image_cost,
@@ -62,11 +62,11 @@ def _resolve_image_provider_model() -> tuple[str, str]:
     return "volcano_image", "seedream-4.5"
 
 
-def _image_unit_price() -> Decimal:
-    """图片单价（CNY/张），按当前可用 provider 解析。无价格条目返回 0（调用方兜底）。"""
+def _image_unit_price() -> Optional[Decimal]:
+    """图片单价（CNY/张）；缺失必须显式 unavailable，禁止伪装为零成本。"""
     prov, model = _resolve_image_provider_model()
     price = estimate_image_cost(prov, model, count=1)
-    return price if price is not None else Decimal("0")
+    return price
 
 
 class ShotRoutePlan(BaseModel):
@@ -136,6 +136,18 @@ async def reserve_budget(session: AsyncSession, run_id: str, amount: Decimal) ->
     if run.cost_limit is not None and planned + amount > run.cost_limit:
         return False
     run.estimated_cost = planned + amount
+    if run.cost_limit is not None and run.cost_limit > 0:
+        utilization = float(run.estimated_cost / run.cost_limit)
+        if utilization >= 0.8 and hasattr(session, "scalar") and hasattr(session, "add"):
+            existing = await session.scalar(select(BudgetAlert.id).where(
+                BudgetAlert.run_id == run.id, BudgetAlert.threshold == 80
+            ))
+            if not existing:
+                session.add(BudgetAlert(
+                    run_id=run.id, project_id=getattr(run, "project_id", None), threshold=80,
+                    utilization=utilization, estimated_cost=run.estimated_cost,
+                    cost_limit=run.cost_limit,
+                ))
     await session.flush()
     return True
 
@@ -263,13 +275,14 @@ async def _estimate_step_item(
         count = len(shots) * candidate_count
         unit_price = _image_unit_price()
         prov, model = _resolve_image_provider_model()
-        subtotal = unit_price * count
+        subtotal = unit_price * count if unit_price is not None else None
         return CostQuoteItem(
             step_node_key=step.node_key, operation=operation,
             provider=prov, model=model,
             candidate_count=candidate_count,
-            unit_count=count, unit_price=str(unit_price),
-            subtotal=str(subtotal),
+            unit_count=count,
+            unit_price=str(unit_price) if unit_price is not None else "unavailable",
+            subtotal=str(subtotal) if subtotal is not None else "unavailable",
         )
     if step.node_type == "shot.audio.generate":
         seconds = sum(_shot_tts_seconds(s) for s in shots)
@@ -385,12 +398,16 @@ async def estimate_run_cost(session: AsyncSession, run: WorkflowRun) -> CostQuot
     steps = await _run_pending_job_steps(session, run)
     items: list[CostQuoteItem] = []
     total = Decimal("0")
+    pricing_available = True
     for step in steps:
         item = await _estimate_step_item(session, run, step, policy)
         if item is None:
             continue
         items.append(item)
-        total += Decimal(item.subtotal)
+        if item.subtotal == "unavailable":
+            pricing_available = False
+        else:
+            total += Decimal(item.subtotal)
     # 明细只计未完成 steps；input_hash 与 validate 一致基于全量 steps，
     # 保证 quote 在部分 step 完成后仍可通过复核（仅分镜/参数变化才失效）。
     payload, revision_ids = await _compute_input_payload(
@@ -401,7 +418,7 @@ async def estimate_run_cost(session: AsyncSession, run: WorkflowRun) -> CostQuot
         quote_id=str(uuid.uuid4()),
         run_id=run.id,
         items=items,
-        total=str(total.quantize(Decimal("0.000001"))),
+        total=(str(total.quantize(Decimal("0.000001"))) if pricing_available else "unavailable"),
         price_table_version=PRICE_TABLE_VERSION,
         created_at=now.isoformat(),
         input_hash=_hash_payload(payload),
@@ -446,6 +463,8 @@ async def validate_cost_quote(
             f"quote_id 不匹配（当前最新报价 {quote.get('quote_id')}），"
             "报价已被刷新，请使用最新 quote_id 确认"
         )
+    if quote.get("total") == "unavailable":
+        return False, "报价包含 unavailable 价格，禁止按零成本确认或创建收费任务"
     expires_at = quote.get("expires_at")
     if not expires_at:
         return False, "报价缺少有效期（旧格式报价），请重新生成 cost-quote"

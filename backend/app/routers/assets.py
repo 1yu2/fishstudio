@@ -35,6 +35,8 @@ class PersonalAssetCreate(BaseModel):
     description: str = ""
     provider_meta: dict[str, Any] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
+    profile_schema_version: int = 1
+    profile: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/assets/personal", response_model=AssetCardOut)
@@ -45,16 +47,13 @@ async def create_personal_asset(
 ):
     """创建个人资产（scope=personal、project_id=NULL、user_id=当前用户）。"""
     try:
+        kwargs = {}
+        if body.profile:
+            kwargs = {"profile_schema_version": body.profile_schema_version, "profile": body.profile}
         return await asset_service.create_asset_card(
-            session,
-            None,
-            user.id,
-            type=body.type,
-            name=body.name,
-            description=body.description,
-            provider_meta=body.provider_meta,
-            tags=body.tags,
-            scope="personal",
+            session, None, user.id, type=body.type, name=body.name,
+            description=body.description, provider_meta=body.provider_meta,
+            tags=body.tags, scope="personal", **kwargs,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

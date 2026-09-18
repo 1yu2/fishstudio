@@ -44,6 +44,8 @@ async def create_asset_card(
     tags: Optional[list[Any]] = None,
     scope: str = "project",
     source: str = "",
+    profile_schema_version: int = 1,
+    profile: Optional[dict[str, Any]] = None,
 ) -> AssetCard:
     """创建资产卡首版（version=1, status=draft）。
 
@@ -55,6 +57,8 @@ async def create_asset_card(
             raise ValueError("scope=personal 的资产必须指定 user_id")
     elif project_id is None:
         raise ValueError("scope=project 的资产必须指定 project_id")
+    from app.schemas.series import validate_asset_profile
+
     card = AssetCard(
         project_id=project_id,
         user_id=user_id,
@@ -63,6 +67,8 @@ async def create_asset_card(
         version=1,
         description=description,
         provider_meta=provider_meta or {},
+        profile_schema_version=profile_schema_version,
+        profile=validate_asset_profile(type, profile or {}),
         tags=tags or [],
         scope=scope,
         source=source,
@@ -101,6 +107,8 @@ async def copy_personal_asset_to_project(
         version=1,
         description=src.description,
         provider_meta=dict(src.provider_meta or {}),
+        profile_schema_version=src.profile_schema_version,
+        profile=dict(src.profile or {}),
         tags=list(src.tags or []),
         scope="project",
         source=src.id,
@@ -147,6 +155,9 @@ async def new_asset_version(
     await _supersede_asset_approvals(session, old)
 
     updates = updates or {}
+    from app.schemas.series import validate_asset_profile
+
+    next_profile = validate_asset_profile(old.type, updates.get("profile", old.profile or {}))
     new = AssetCard(
         project_id=old.project_id,
         user_id=old.user_id,
@@ -155,6 +166,8 @@ async def new_asset_version(
         version=old.version + 1,
         description=updates.get("description", old.description),
         provider_meta=updates.get("provider_meta", old.provider_meta),
+        profile_schema_version=updates.get("profile_schema_version", old.profile_schema_version),
+        profile=next_profile,
         tags=updates.get("tags", old.tags),
         scope=updates.get("scope", old.scope),
         source=updates.get("source", old.source),
@@ -163,6 +176,20 @@ async def new_asset_version(
     )
     old.status = "retired"
     session.add(new)
+    if old.project_id:
+        from app.services import dependency_invalidation_service
+
+        await dependency_invalidation_service.apply_invalidation(
+            session,
+            project_id=old.project_id,
+            source_type="asset",
+            source_id=old.id,
+            source_revision=new.version,
+            changed_fields=sorted(updates.keys()) or ["version"],
+            user_id=user_id,
+            reason="asset_version_created",
+            change_token=f"v{new.version}",
+        )
     await session.commit()
     await session.refresh(new)
     return new
@@ -239,7 +266,9 @@ async def _shot_project_id(session: AsyncSession, shot_id: str) -> Optional[str]
 
 
 async def bind_asset_to_shot(
-    session: AsyncSession, shot_id: str, asset_id: str, role: str = "character"
+    session: AsyncSession, shot_id: str, asset_id: str, role: str = "character",
+    *, reference_type: Optional[str] = None, artifact_id: Optional[str] = None,
+    subject: str = "", weight: float = 1.0, sort_order: int = 0, usage: str = "identity",
 ) -> ShotAssetRef:
     """绑定资产到镜头（幂等：重复绑定直接返回已有）。
 
@@ -256,17 +285,43 @@ async def bind_asset_to_shot(
         raise ValueError(f"shot {shot_id} not found")
     if shot_project_id != asset.project_id:
         raise PermissionError("shot and asset belong to different projects")
+    reference_type = reference_type or role
+    allowed_types = {"character", "scene", "style", "composition", "motion", "first_frame", "last_frame", "source_video", "audio"}
+    if reference_type not in allowed_types:
+        raise ValueError(f"unsupported reference_type: {reference_type}")
+    if not 0 < weight <= 2:
+        raise ValueError("reference weight 必须在 0~2 之间")
+    if getattr(asset, "status", "approved") != "approved":
+        raise ValueError("只能绑定 approved 资产版本")
+    if artifact_id:
+        artifact = await session.get(Artifact, artifact_id)
+        if artifact is None or artifact.project_id != shot_project_id:
+            raise ValueError("reference artifact 不存在或不属于当前项目")
 
     stmt = select(ShotAssetRef).where(
         ShotAssetRef.shot_id == shot_id,
         ShotAssetRef.asset_id == asset_id,
         ShotAssetRef.role == role,
+        ShotAssetRef.reference_type == reference_type,
+        ShotAssetRef.artifact_id == artifact_id,
     )
     existing = (await session.execute(stmt)).scalars().first()
     if existing is not None:
         return existing
-    ref = ShotAssetRef(shot_id=shot_id, asset_id=asset_id, role=role)
+    ref = ShotAssetRef(
+        shot_id=shot_id, asset_id=asset_id, role=role, asset_version=getattr(asset, "version", 1),
+        reference_type=reference_type, artifact_id=artifact_id, subject=subject,
+        weight=weight, sort_order=sort_order, usage=usage,
+    )
     session.add(ref)
+    from app.db.models import Shot
+
+    shot = await session.get(Shot, shot_id)
+    if shot is not None:
+        shot.locked_asset_versions = {
+            **(getattr(shot, "locked_asset_versions", {}) or {}),
+            asset.id: getattr(asset, "version", 1),
+        }
     await session.commit()
     await session.refresh(ref)
     return ref
@@ -337,15 +392,19 @@ async def create_artifact(
 ) -> Artifact:
     """建档 artifact；文件存在于 backend/storage/<storage_key> 时计算 sha256。"""
     content_hash = ""
+    storage_backend = "local"
     path = STORAGE_DIR / storage_key
     if path.is_file():
-        content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        from app.services.storage_backend import storage
+
+        storage_backend, content_hash = storage.promote_file(path, storage_key, mime_type)
 
     artifact = Artifact(
         project_id=project_id,
         job_id=job_id,
         type=type,
         storage_key=storage_key,
+        storage_backend=storage_backend,
         content_hash=content_hash,
         mime_type=mime_type,
         duration_ms=duration_ms,

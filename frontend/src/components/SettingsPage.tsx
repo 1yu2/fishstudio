@@ -24,7 +24,7 @@ import './SettingsPage.css'
 
 // ─── Types ──────────────────────────────────────────────────────────
 type ThemeMode = 'dark' | 'light'
-type TabId = 'personal' | 'workspace' | 'skills' | 'tools' | 'mcp' | 'env'
+type TabId = 'personal' | 'workspace' | 'skills' | 'tools' | 'models' | 'mcp' | 'env'
 type MCPView = 'form' | 'json'
 
 /** Tool skills (生图/生视频等，来自后端 DEFAULT_SKILLS) */
@@ -63,6 +63,15 @@ interface EnvItem {
 interface EnvGroup {
   group: string
   items: EnvItem[]
+}
+
+interface RuntimeDeployment {
+  name: string
+  provider: string
+  model: string
+  modality: string
+  enabled: boolean
+  mocked?: boolean
 }
 
 // ─── Tool Skill 详情元数据 ────────────────────────────────────────────
@@ -1000,6 +1009,45 @@ function EnvPanel() {
   )
 }
 
+function ModelRuntimePanel() {
+  const [items, setItems] = useState<RuntimeDeployment[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    apiFetch('/api/model-runtime/deployments')
+      .then(async (response) => {
+        if (!response.ok) throw new Error(response.status === 403 ? '仅管理员可查看模型运行时' : '加载失败')
+        return response.json()
+      })
+      .then((data) => setItems(data.items || []))
+      .catch((reason) => setError(reason.message || '加载失败'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  if (loading) return <div className="settings-loading">加载中…</div>
+  return (
+    <div>
+      <div className="settings-panel__title">模型运行时</div>
+      <div className="settings-panel__desc">统一展示 Chat、图片、视频和语音 Deployment；密钥不会返回到前端。</div>
+      {error ? <div className="settings-toast settings-toast--error"><AlertCircle size={14} />{error}</div> : (
+        <div className="runtime-model-grid">
+          {items.map((item) => (
+            <div className="runtime-model-card" key={`${item.modality}:${item.name}`}>
+              <div className="runtime-model-card__title">
+                <span>{item.name}</span>
+                <span className={`runtime-model-card__state runtime-model-card__state--${item.enabled ? 'on' : 'off'}`}>{item.enabled ? '可用' : '不可用'}</span>
+              </div>
+              <div className="runtime-model-card__meta">{item.modality} · {item.provider}</div>
+              <div className="runtime-model-card__model">{item.model || (item.mocked ? 'Mock Adapter' : 'Provider Adapter')}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── SettingsPage ─────────────────────────────────────────────────────
 interface SettingsPageProps {
   theme: ThemeMode
@@ -1011,6 +1059,7 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode; badge?: string }[
   { id: 'workspace', label: '工作空间', icon: <Brain size={16} />, badge: 'NEW' },
   { id: 'skills', label: 'Skills', icon: <Package size={16} /> },
   { id: 'tools', label: '工具', icon: <Wrench size={16} /> },
+  { id: 'models', label: '模型运行时', icon: <Zap size={16} /> },
   { id: 'mcp', label: 'MCP 服务器', icon: <Server size={16} /> },
   { id: 'env', label: '环境变量', icon: <FileCode2 size={16} /> },
 ]
@@ -1037,6 +1086,7 @@ export default function SettingsPage({ theme, onToggleTheme }: SettingsPageProps
       case 'workspace': return <WorkspacePanel />
       case 'skills': return <SkillsPanel />
       case 'tools':  return <ToolsPanel />
+      case 'models': return <ModelRuntimePanel />
       case 'mcp':    return <MCPPanel />
       case 'env':    return <EnvPanel />
     }

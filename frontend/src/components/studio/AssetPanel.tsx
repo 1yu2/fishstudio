@@ -10,9 +10,10 @@ const TYPE_LABELS: Record<AssetType, string> = {
   style: '风格',
   scene: '场景',
   voice: '音色',
+  prop: '道具',
 }
 
-const TYPE_ORDER: AssetType[] = ['character', 'style', 'scene', 'voice']
+const TYPE_ORDER: AssetType[] = ['character', 'style', 'scene', 'voice', 'prop']
 
 function parseTags(input: string): string[] {
   return input
@@ -367,7 +368,7 @@ export default function AssetPanel({
               ) : null
             }
           />
-          {assets.length === 0 && <div className="studio__muted">暂无资产，先用上方表单创建角色/风格/场景/音色。</div>}
+          {assets.length === 0 && <div className="studio__muted">暂无资产，先用上方表单创建角色/风格/场景/音色/道具。</div>}
         </>
       ) : (
         <PersonalAssetPanel projectId={projectId} onCopied={onChanged} />

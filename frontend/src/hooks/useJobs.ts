@@ -11,12 +11,15 @@ export function useJobs(projectId: string | null, active = true) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const timerRef = useRef<number | null>(null)
+  const eventTimerRef = useRef<number | null>(null)
+  const eventCursorRef = useRef(0)
   const mountedRef = useRef(true)
 
   useEffect(() => {
     mountedRef.current = true
     return () => {
       mountedRef.current = false
+      if (eventTimerRef.current !== null) window.clearTimeout(eventTimerRef.current)
     }
   }, [])
 
@@ -50,6 +53,27 @@ export function useJobs(projectId: string | null, active = true) {
     if (!projectId || !active) return
     void reload()
   }, [projectId, active, reload])
+
+  useEffect(() => {
+    if (!projectId || !active) return
+    eventCursorRef.current = 0
+    let stopped = false
+    const receive = async () => {
+      try {
+        const events = await seriesApi.listJobEvents(projectId, eventCursorRef.current)
+        if (events.length) {
+          eventCursorRef.current = Math.max(...events.map((event) => event.sequence))
+          await load()
+        }
+      } catch { /* 定时全量恢复仍会兜底 */ }
+      if (!stopped) eventTimerRef.current = window.setTimeout(() => void receive(), 1000)
+    }
+    void receive()
+    return () => {
+      stopped = true
+      if (eventTimerRef.current !== null) window.clearTimeout(eventTimerRef.current)
+    }
+  }, [projectId, active, load])
 
   useEffect(() => {
     clearTimer()

@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
@@ -56,6 +56,14 @@ async def download_artifact(
     elif not user.is_admin:
         # project_id 为 NULL 的 artifact 没有创建者字段可校验，过渡期仅 admin 可下
         raise HTTPException(status_code=404, detail="artifact not found")
+
+    if getattr(artifact, "storage_backend", "local") in {"s3", "minio"}:
+        from app.services.storage_backend import storage
+
+        url = storage.signed_url(artifact.storage_key)
+        if not url:
+            raise HTTPException(status_code=503, detail="object storage unavailable")
+        return RedirectResponse(url=url, status_code=307)
 
     path = _resolve_storage_path(artifact.storage_key)
     if not path.is_file():

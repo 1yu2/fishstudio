@@ -196,6 +196,21 @@ def test_router_raises_no_provider_when_mock_disabled(monkeypatch):
     assert exc_info.value.error_code == "no_provider"
 
 
+def test_explicit_mock_provider_respects_switch_and_audit_flag(monkeypatch):
+    router = VideoProviderRouter(providers=[MockVideoProvider()])
+    request = _req(provider_policy="explicit", explicit_provider="mock")
+
+    monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "false")
+    with pytest.raises(NoProviderError):
+        router.select(request)
+
+    monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "true")
+    decision = router.select(request)
+    assert decision.provider.name == "mock"
+    assert decision.mocked is True
+    assert decision.price_snapshot == {}
+
+
 def test_locked_video_provider_falls_back_to_mock_only_when_enabled(monkeypatch):
     from app.tools import volcano_video_generation as vvg
     from app.worker import generation_worker

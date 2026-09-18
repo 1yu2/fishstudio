@@ -8,7 +8,7 @@ import './studio.css'
 function pendingStoryboardItems(storyboard: StoryboardData | null): Array<{ target_id: string; revision: number; label: string }> {
   if (!storyboard?.episodes) return []
   return storyboard.episodes
-    .filter((ep) => (ep.scenes || []).length > 0)
+    .filter((ep) => (ep.scenes || []).length > 0 && ep.revision_status !== 'approved')
     .map((ep) => ({
       target_id: ep.id,
       revision: ep.revision ?? 1,

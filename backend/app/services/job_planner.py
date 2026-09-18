@@ -83,6 +83,10 @@ async def _get_or_create_job(
     job = GenerationJob(idempotency_key=idempotency_key, status="pending", **fields)
     session.add(job)
     await session.flush()
+    from app.services import job_event_service
+
+    await job_event_service.emit(session, job, "job.queued")
+    await job_event_service.notify_ready(job.id)
     return job, True
 
 
@@ -195,6 +199,7 @@ def build_video_job_params(
     *, shot_id: str, step_id: str, run_id: str, prompt: str, duration_ms: int,
     aspect_ratio: str, policy: dict[str, Any], first_frame: Optional[str],
     routing: Optional[dict[str, Any]] = None,
+    compiled: Optional[Any] = None,
 ) -> dict[str, Any]:
     """视频 Job params 纯函数（P1-2）：有首帧 → first_frame 模式；无 → 降级 text 并记原因。
 
@@ -217,9 +222,31 @@ def build_video_job_params(
     if routing:
         params["routing_snapshot"] = routing
         params["resolution"] = routing.get("resolution", params["resolution"])
-    if first_frame:
+    if compiled:
+        params.update({
+            "prompt": compiled.prompt,
+            "prompt_version": compiled.prompt_version,
+            "prompt_input_hash": compiled.input_hash,
+            "reference_slots": compiled.reference_slots,
+            "reference_images": list(compiled.reference_images),
+            "reference_videos": list(compiled.reference_videos),
+            "reference_audios": list(compiled.reference_audios),
+        })
+        first_frame = compiled.first_frame or first_frame
+        if compiled.last_frame:
+            params["last_frame"] = compiled.last_frame
+        if compiled.source_video:
+            params["source_video"] = compiled.source_video
+    if params.get("source_video"):
+        params["mode"] = "regenerate"
+    elif first_frame and params.get("last_frame"):
+        params["mode"] = "first_last_frame"
+        params["first_frame"] = first_frame
+    elif first_frame:
         params["mode"] = "first_frame"
         params["first_frame"] = first_frame  # storage_key，provider adapter 转 data URL
+    elif params.get("reference_images") or params.get("reference_videos") or params.get("reference_audios"):
+        params["mode"] = "reference"
     else:
         params["mode"] = "text"
         params["fallback_reason"] = "first_frame_missing"
@@ -290,11 +317,42 @@ async def plan_shot_video_jobs(
                 explicit_provider=policy.get("explicit_provider", ""),
             )
         first_frame = await find_first_frame_storage_key(session, shot.id)
-        if not first_frame:
+        from app.services.prompt_compiler import compile_shot_input
+
+        compiled = await compile_shot_input(session, shot)
+        if not first_frame and not compiled.first_frame:
             fallback_count += 1
         key = make_job_idempotency_key(
             "video", run.id, step.node_key, shot.id, step.attempt
         )
+        params = build_video_job_params(
+            shot_id=shot.id, step_id=step.id, run_id=run.id,
+            prompt=shot.visual_prompt, duration_ms=shot.duration_ms,
+            aspect_ratio=shot.aspect_ratio, policy=policy, first_frame=first_frame,
+            routing={
+                "provider": plan["provider"], "model": plan["model"],
+                "resolution": plan["resolution"], "protocol": plan.get("protocol", ""),
+                "billable_duration": plan["billable_duration"],
+                "estimated_total_cost": plan.get("estimated_total_cost"),
+                "price_snapshot": plan.get("price_snapshot", {}),
+                "price_table_version": plan.get("price_table_version", PRICE_TABLE_VERSION),
+            }, compiled=compiled,
+        )
+        from app.model_runtime.media import get_media_runtime
+        from app.providers.base import VideoGenerationRequest
+
+        runtime = get_media_runtime()
+        runtime.video_router()
+        deployment = runtime.get("video", plan["provider"])
+        request_data = {k: v for k, v in params.items() if k in VideoGenerationRequest.model_fields}
+        request_data["duration"] = max(1, shot.duration_ms // 1000)
+        request = VideoGenerationRequest(**request_data)
+        if deployment is None or not deployment.provider.supports(request, model=plan["model"]):
+            step.status = "failed"
+            step.error_code = "reference_capability_unsupported"
+            step.error = f"{plan['provider']}/{plan['model']} 不支持当前 Reference Slots"
+            await session.flush()
+            return []
         job, _ = await _get_or_create_job(
             session,
             idempotency_key=key,
@@ -309,26 +367,7 @@ async def plan_shot_video_jobs(
             logical_job_key=make_logical_job_key(
                 "generate_video", run.id, step.node_key, shot.id
             ),
-            params=build_video_job_params(
-                shot_id=shot.id,
-                step_id=step.id,
-                run_id=run.id,
-                prompt=shot.visual_prompt,
-                duration_ms=shot.duration_ms,
-                aspect_ratio=shot.aspect_ratio,
-                policy=policy,
-                first_frame=first_frame,
-                routing={
-                    "provider": plan["provider"],
-                    "model": plan["model"],
-                    "resolution": plan["resolution"],
-                    "protocol": plan.get("protocol", ""),
-                    "billable_duration": plan["billable_duration"],
-                    "estimated_total_cost": plan.get("estimated_total_cost"),
-                    "price_snapshot": plan.get("price_snapshot", {}),
-                    "price_table_version": plan.get("price_table_version", PRICE_TABLE_VERSION),
-                },
-            ),
+            params=params,
         )
         jobs.append(job)
     if fallback_count:
@@ -363,6 +402,9 @@ async def plan_shot_image_jobs(
 
     jobs: list[GenerationJob] = []
     for shot in shots:
+        from app.services.prompt_compiler import compile_shot_input
+
+        compiled = await compile_shot_input(session, shot)
         key = make_job_idempotency_key(
             "image", run.id, step.node_key, shot.id, step.attempt
         )
@@ -382,7 +424,11 @@ async def plan_shot_image_jobs(
                 "shot_id": shot.id,
                 "step_id": step.id,
                 "run_id": run.id,
-                "prompt": shot.visual_prompt,
+                "prompt": compiled.prompt,
+                "prompt_version": compiled.prompt_version,
+                "prompt_input_hash": compiled.input_hash,
+                "reference_slots": compiled.reference_slots,
+                "source_image": (compiled.reference_images[0] if compiled.reference_images else None),
                 "resolution": policy.get("resolution", "768P"),
                 "aspect_ratio": shot.aspect_ratio,
                 "candidate_count": candidate_count,
@@ -507,7 +553,12 @@ async def plan_episode_render_job(
     render_mode（P1-11）：默认 final——用户显式合成就是要成片，任何镜头缺视频
     产物即失败；preview 由 API/工具经 step.input_snapshot.render_mode 显式传入。
     """
+    from app.services import timeline_service
+
     render_mode = (step.input_snapshot or {}).get("render_mode", "final")
+    timeline = await timeline_service.get_render_revision(session, episode_id)
+    if timeline is None:
+        raise ValueError("episode render requires an approved TimelineRevision")
     key = make_job_idempotency_key("render", run.id, step.node_key, episode_id, step.attempt)
     job, _ = await _get_or_create_job(
         session,
@@ -526,6 +577,9 @@ async def plan_episode_render_job(
             "run_id": run.id,
             "resolution": _run_policy(run).get("resolution", "768P"),
             "render_mode": render_mode,
+            "timeline_revision_id": timeline.id,
+            "timeline_content_hash": timeline.content_hash,
+            "export_profile": (step.input_snapshot or {}).get("export_profile", render_mode),
         },
     )
     await session.flush()

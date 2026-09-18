@@ -7,7 +7,11 @@
 
 import asyncio
 import logging
+import os
+import socket
 import time
+import uuid
+from decimal import Decimal
 from typing import Awaitable, Callable, Optional
 
 from sqlalchemy import select
@@ -15,17 +19,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import mock_providers_enabled
 from app.db.database import SessionLocal
-from app.db.models import GenerationJob, SeriesProject, WorkflowRun
+from app.db.models import GenerationJob, RegenerationRequest, SeriesProject, WorkflowRun
+from app.model_runtime.media import get_media_runtime
 from app.providers.base import VideoGenerationRequest, VideoProvider
 from app.providers.pricing import PRICE_TABLE_VERSION, estimate_video_cost
-from app.providers.video_router import NoProviderError, RouteDecision, VideoProviderRouter
-from app.services import asset_service, job_service, timeline_renderer, usage_service, workflow_service
+from app.providers.video_router import NoProviderError, RouteDecision
+from app.services import (
+    asset_service,
+    job_event_service,
+    job_service,
+    model_invocation_service,
+    provider_circuit_service,
+    timeline_renderer,
+    usage_service,
+    workflow_service,
+)
 
 logger = logging.getLogger(__name__)
 
 LEASE_SECONDS = 300
 POLL_DELAY_SECONDS = 10.0  # 外部任务未完成时的重查间隔（run_after）
 SUPPORTED_OPERATIONS = ["generate_video", "generate_image", "render_episode", "tts", "clone_voice"]
+OPERATION_WORKER_CLASS = {
+    "generate_video": "video", "generate_image": "image", "render_episode": "render",
+    "tts": "audio", "clone_voice": "audio",
+}
+WORKER_ID = os.getenv("WORKER_ID", f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}")
 
 # Provider 级并发上限（asyncio.Semaphore 限流）
 PROVIDER_CONCURRENCY = {"minimax": 3, "volcano": 2, "mock": 10}
@@ -38,20 +57,22 @@ def _provider_semaphore(name: str) -> asyncio.Semaphore:
     return _SEMAPHORES.setdefault(name, asyncio.Semaphore(2))
 
 
-_router = VideoProviderRouter()
+_media_runtime = get_media_runtime()
+_router = _media_runtime.video_router()
 
 
 def _resolve_locked_video_provider(provider_name: str) -> tuple[Optional[VideoProvider], bool]:
     """解析报价锁定 Provider；显式 Mock 模式下允许不可用真实 Provider 降级。"""
-    provider = next((item for item in _router.providers if item.name == provider_name), None)
+    deployment = _media_runtime.get("video", provider_name)
+    provider = deployment.provider if deployment else None
     if provider is not None and provider.name == "mock":
         return (provider, True) if mock_providers_enabled() else (None, False)
     if provider is not None and provider.is_available():
         return provider, False
     if mock_providers_enabled():
-        mock_provider = next((item for item in _router.providers if item.name == "mock"), None)
-        if mock_provider is not None:
-            return mock_provider, True
+        mock_deployment = _media_runtime.get("video", "mock")
+        if mock_deployment is not None:
+            return mock_deployment.provider, True
     return None, False
 
 
@@ -95,6 +116,7 @@ async def _record_job_usage(
     await usage_service.record_usage(
         session,
         job_id=job.id,
+        invocation_id=(job.params or {}).get("model_invocation_id"),
         project_id=job.project_id,
         user_id=await _job_user_id(session, job),
         operation=operation,
@@ -114,6 +136,38 @@ async def _record_job_usage(
         error_code=error_code,
         event_metadata={"price_table_version": PRICE_TABLE_VERSION, **(event_metadata or {})},
     )
+
+
+async def _ensure_media_invocation(
+    session: AsyncSession, job: GenerationJob, *, modality: str, purpose: str
+) -> str:
+    params = dict(job.params or {})
+    existing = params.get("model_invocation_id")
+    if existing:
+        return existing
+    snapshot = params.get("routing_snapshot") or {
+        "deployment_name": f"{job.provider}.{job.model or 'default'}",
+        "provider": job.provider,
+        "model": job.model,
+        "price_snapshot": params.get("price_snapshot") or params.get("quote_snapshot") or {},
+    }
+    invocation = await model_invocation_service.begin(
+        session,
+        request_id=job.id,
+        purpose=purpose,
+        modality=modality,
+        deployment_name=snapshot.get("deployment_name") or f"{job.provider}.default",
+        provider=job.provider,
+        model=job.model,
+        routing_snapshot=snapshot,
+        project_id=job.project_id,
+        workflow_run_id=job.workflow_run_id,
+        workflow_step_id=job.workflow_step_id,
+        job_id=job.id,
+    )
+    job.params = {**params, "model_invocation_id": invocation.id}
+    await session.flush()
+    return invocation.id
 
 
 async def finalize_job(
@@ -143,21 +197,58 @@ async def finalize_job(
     若执行期间已被用户取消（canceled），不写成功、不回推 workflow，
     只落 usage 记录；防止 canceled 后被 worker 覆盖回 succeeded。
     """
+    invocation_id = (job.params or {}).get("model_invocation_id")
     if usage_fields:
         await _record_job_usage(session, job, **usage_fields)
     if success:
         await session.refresh(job)
         if job.status == "canceled":
             # 已取消：不写成功、不回推（取消端点已按 canceled 聚合回推）
+            await model_invocation_service.finish_by_id(
+                session, invocation_id, status="canceled", latency_ms=0
+            )
             await session.commit()
             return
         await job_service.mark_succeeded(session, job, {**(result or {}), **(artifact or {})})
+        if job.provider:
+            await provider_circuit_service.record_success(session, job.provider, job.model)
     else:
         await job_service.mark_failed(
             session, job, error_code=error_code, error=error, retryable=retryable
         )
+        if job.provider and retryable:
+            await provider_circuit_service.record_failure(
+                session, job.provider, job.model, error=error
+            )
+    terminal_status = {
+        "succeeded": "succeeded",
+        "failed": "failed",
+        "canceled": "canceled",
+    }.get(job.status)
+    if terminal_status:
+        await model_invocation_service.finish_by_id(
+            session,
+            invocation_id,
+            status=terminal_status,
+            latency_ms=int((usage_fields or {}).get("latency_ms") or 0),
+            external_request_id=job.external_task_id or "",
+            error_code=job.error_code or "",
+            error=job.error or "",
+            result_metadata={"artifact": artifact or {}, "operation": job.operation},
+        )
     if job.status in job_service.TERMINAL_STATES:
         await workflow_service.on_job_finished(session, job)
+        await job_event_service.emit_batch_progress(session, job)
+    request_id = (job.params or {}).get("regeneration_request_id")
+    if request_id:
+        regen = await session.get(RegenerationRequest, request_id)
+        if regen:
+            regen.status = "succeeded" if job.status == "succeeded" else "failed"
+            if job.status == "succeeded" and regen.actual_cost is None:
+                cost = (usage_fields or {}).get("actual_cost")
+                if cost is None:
+                    cost = (usage_fields or {}).get("estimated_cost")
+                regen.actual_cost = Decimal(str(cost)) if cost is not None else regen.quoted_cost
     await session.commit()
 
 
@@ -303,6 +394,9 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             submit_model = decision.model
             sem = _provider_semaphore(provider.name)
 
+        await _ensure_media_invocation(
+            session, job, modality="video", purpose="shot_video"
+        )
         async with sem:
             result = await provider.submit(req, model=submit_model)
         latency_ms = int((time.monotonic() - started) * 1000)
@@ -386,6 +480,7 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
 
         sem = _provider_semaphore(provider.name)
 
+    await _ensure_media_invocation(session, job, modality="video", purpose="shot_video")
     # 2) 查询状态
     await job_service.mark_running(session, job)
     protocol = (job.params or {}).get("protocol_version", "v1")
@@ -462,6 +557,19 @@ async def _finish_job(
         )
         artifact_id = artifact.id
         url = asset_service.artifact_url(artifact)
+        shot_id = (job.params or {}).get("shot_id") or job.shot_id
+        if shot_id:
+            from app.services import candidate_service
+            await candidate_service.register_candidate(
+                session, artifact=artifact, shot_id=shot_id, candidate_index=0
+            )
+        request_id = (job.params or {}).get("regeneration_request_id")
+        if request_id:
+            from app.db.models import RegenerationRequest
+            regen = await session.get(RegenerationRequest, request_id)
+            if regen:
+                regen.result_artifact_id = artifact.id
+                regen.status = "succeeded"
         break  # MVP 单产物
 
     usage = result.usage or {}
@@ -494,13 +602,7 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
     （当前为火山图片 VolcanoImageProvider）；Mock 路径仅 ALLOW_MOCK_PROVIDERS=true
     时启用（测试/演示）。
     """
-    from app.config import mock_providers_enabled
-    from app.providers.image_base import (
-        ImageGenerationRequest,
-        ImageProvider,
-        MockImageProvider,
-        available_image_providers,
-    )
+    from app.providers.image_base import ImageGenerationRequest, ImageProvider
 
     if await _should_abort_before_submit(session, job):
         return
@@ -514,14 +616,9 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
         source_image=params.get("source_image") or None,
     )
 
-    real_providers = available_image_providers()
-    if real_providers:
-        provider: ImageProvider = real_providers[0]  # 选择顺序见 available_image_providers
-        mocked = False
-    elif mock_providers_enabled():
-        provider = MockImageProvider()
-        mocked = True
-    else:
+    try:
+        provider, mocked = _media_runtime.resolve_image()
+    except RuntimeError:
         await finalize_job(
             session, job, success=False, error_code="no_provider",
             error="无可用图片 provider 且未开启 ALLOW_MOCK_PROVIDERS",
@@ -529,6 +626,7 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
         return
 
     job.provider = provider.name
+    await _ensure_media_invocation(session, job, modality="image", purpose="shot_image")
     await session.flush()
     result = await provider.generate(req)
     job.model = result.model or job.model
@@ -569,6 +667,19 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
         )
         artifact_ids.append(artifact.id)
         storage_keys.append(sk)
+        shot_id = (job.params or {}).get("shot_id") or job.shot_id
+        if shot_id:
+            from app.services import candidate_service
+            await candidate_service.register_candidate(
+                session, artifact=artifact, shot_id=shot_id, candidate_index=len(artifact_ids) - 1
+            )
+        request_id = (job.params or {}).get("regeneration_request_id")
+        if request_id:
+            from app.db.models import RegenerationRequest
+            regen = await session.get(RegenerationRequest, request_id)
+            if regen:
+                regen.result_artifact_id = artifact.id
+                regen.status = "succeeded"
 
     # 按成功数量重新估算图片费用（partial 场景只计实际成功数）
     actual_cost = estimate_image_cost(
@@ -638,6 +749,8 @@ async def execute_render_episode(session: AsyncSession, job: GenerationJob) -> N
             bgm_storage_key=params.get("bgm_storage_key"),
             bgm_volume_db=params.get("bgm_volume_db", -18.0),
             render_mode=params.get("render_mode", "preview"),
+            timeline_revision_id=params.get("timeline_revision_id"),
+            export_profile=params.get("export_profile", params.get("render_mode", "preview")),
         )
     except ValueError as e:
         # final 模式缺镜头产物等确定性错误：终态失败不可重试（P1-11）
@@ -705,9 +818,8 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
     Provider 选择：有 DASHSCOPE_API_KEY 用 QwenTTSProvider；否则 mock 受
     ALLOW_MOCK_PROVIDERS 控制；都不允许 → no_provider 终态失败。
     """
-    from app.config import mock_providers_enabled
     from app.db.models import Shot
-    from app.providers.tts_base import MockTTSProvider, QwenTTSProvider, TTSRequest
+    from app.providers.tts_base import TTSRequest
 
     if await _should_abort_before_submit(session, job):
         return
@@ -721,14 +833,9 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
         )
         return
 
-    qwen = QwenTTSProvider()
-    if qwen.is_available():
-        provider = qwen
-        mocked = False
-    elif mock_providers_enabled():
-        provider = MockTTSProvider()
-        mocked = True
-    else:
+    try:
+        provider, mocked = _media_runtime.resolve_speech()
+    except RuntimeError:
         await finalize_job(
             session, job, success=False, error_code="no_provider",
             error="无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS",
@@ -772,6 +879,7 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
         filename_prefix=f"tts_{params.get('track_type', 'track')}",
     )
     job.provider = provider.name
+    await _ensure_media_invocation(session, job, modality="speech", purpose="tts")
     await session.flush()
     started = time.monotonic()
     result = await provider.synthesize(req)
@@ -847,9 +955,8 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
     Provider 选择：有 DASHSCOPE_API_KEY 用 QwenTTSProvider；否则 mock 受
     ALLOW_MOCK_PROVIDERS 控制；都不允许 → no_provider 终态失败。
     """
-    from app.config import mock_providers_enabled
     from app.db.models import AssetCard
-    from app.providers.tts_base import MockTTSProvider, QwenTTSProvider
+    from app.providers.tts_base import TTSProvider
 
     if await _should_abort_before_submit(session, job):
         return
@@ -874,10 +981,10 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
         )
         return
 
-    qwen = QwenTTSProvider()
     locked_provider = (job.provider or (params.get("quote_snapshot") or {}).get("provider") or "").strip()
     if locked_provider == "qwen_tts":
-        if not qwen.is_available():
+        deployment = _media_runtime.get("speech", locked_provider)
+        if deployment is None or not deployment.provider.is_available():
             await finalize_job(
                 session, job, success=False, error_code="provider_unavailable",
                 error="报价锁定的 qwen_tts 当前不可用，请重新获取报价",
@@ -889,7 +996,7 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
                 },
             )
             return
-        provider = qwen
+        provider = deployment.provider
         mocked = False
     elif locked_provider == "mock_tts":
         if not mock_providers_enabled():
@@ -898,28 +1005,16 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
                 error="报价锁定的 mock_tts 当前不可用",
             )
             return
-        provider = MockTTSProvider()
-        mocked = True
-    elif not locked_provider and qwen.is_available():
-        provider = qwen
-        mocked = False
-    elif not locked_provider and mock_providers_enabled():
-        provider = MockTTSProvider()
-        mocked = True
+        provider, mocked = _media_runtime.resolve_speech(explicit_name="mock_tts")
     else:
-        await finalize_job(
-            session, job, success=False, error_code="no_provider",
-            error="无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS",
-            usage_fields={
-                "operation": "clone_voice", "status": "failed",
-                "estimated_cost": usage_estimated_cost,
-                "unit_type": "request",
-                "error_code": "no_provider",
-            },
-        )
-        return
+        try:
+            provider, mocked = _media_runtime.resolve_speech()
+        except RuntimeError:
+            await finalize_job(session, job, success=False, error_code="no_provider", error="无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS", usage_fields={"operation": "clone_voice", "status": "failed", "estimated_cost": usage_estimated_cost, "unit_type": "request", "error_code": "no_provider"})
+            return
 
     job.provider = provider.name
+    await _ensure_media_invocation(session, job, modality="speech", purpose="voice_clone")
     await session.flush()
     started = time.monotonic()
     # R5.4：使用绝对 STORAGE_DIR + is_relative_to() 做路径 confinement
@@ -1028,6 +1123,12 @@ EXECUTORS: dict[str, Callable[[AsyncSession, GenerationJob], Awaitable[None]]] =
 
 
 async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
+    if job.provider and not await provider_circuit_service.allow_request(
+        session, job.provider, job.model
+    ):
+        await job_service.requeue_for_poll(session, job, delay_seconds=30)
+        await session.commit()
+        return
     executor = EXECUTORS.get(job.operation)
     if executor is None:
         await finalize_job(
@@ -1036,6 +1137,22 @@ async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
             error=f"暂不支持的 operation: {job.operation}",
         )
     else:
+        heartbeat_stop = asyncio.Event()
+
+        async def keep_lease_alive() -> None:
+            while not heartbeat_stop.is_set():
+                try:
+                    await asyncio.wait_for(heartbeat_stop.wait(), timeout=LEASE_SECONDS / 3)
+                    return
+                except TimeoutError:
+                    async with SessionLocal() as heartbeat_session:
+                        await job_service.heartbeat(
+                            heartbeat_session, job.id, WORKER_ID,
+                            lease_seconds=LEASE_SECONDS,
+                        )
+                        await heartbeat_session.commit()
+
+        heartbeat_task = asyncio.create_task(keep_lease_alive())
         try:
             await executor(session, job)
         except Exception as e:
@@ -1045,6 +1162,9 @@ async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
                 session, job, success=False,
                 error_code="executor_exception", error=str(e), retryable=True,
             )
+        finally:
+            heartbeat_stop.set()
+            await heartbeat_task
     # service 层大多只 flush 不 commit，由 worker 按 job 粒度提交（不能用
     # session.begin() 包整个循环：executor 内部的 commit 会关闭事务，后续操作报
     # "Can't operate on closed transaction inside context manager"）。
@@ -1054,14 +1174,26 @@ async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
 
 async def run_worker(poll_interval: float = 2.0, once: bool = False) -> None:
     """worker 主循环：recover 过期租约 → lease → 分发 executor。"""
-    logger.info(f"generation worker 启动 (poll_interval={poll_interval}s, once={once})")
+    capabilities = {
+        item.strip() for item in os.getenv("WORKER_CAPABILITIES", "video,image,audio,render").split(",")
+        if item.strip()
+    }
+    operations = [
+        operation for operation in SUPPORTED_OPERATIONS
+        if OPERATION_WORKER_CLASS[operation] in capabilities
+    ]
+    logger.info(
+        "generation worker 启动 (id=%s capabilities=%s poll_interval=%ss once=%s)",
+        WORKER_ID, sorted(capabilities), poll_interval, once,
+    )
     while True:
         try:
             async with SessionLocal() as session:
                 await job_service.recover_expired_leases(session)
                 jobs = await job_service.lease_jobs(
-                    session, operations=SUPPORTED_OPERATIONS, limit=5,
+                    session, operations=operations, limit=5,
                     lease_seconds=LEASE_SECONDS,
+                    worker_id=WORKER_ID, worker_classes=[*capabilities, "media"],
                 )
                 await session.commit()  # 租约落库后再执行
                 for job in jobs:
@@ -1073,7 +1205,7 @@ async def run_worker(poll_interval: float = 2.0, once: bool = False) -> None:
             logger.exception("generation worker 主循环异常，稍后重试")
         if once:
             return
-        await asyncio.sleep(poll_interval)
+        await job_event_service.wait_for_work(poll_interval)
 
 
 def main() -> None:

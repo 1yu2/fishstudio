@@ -12,11 +12,12 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
 from app.db.database import get_session
-from app.db.models import User
+from app.db.models import SeriesProject, User
 from app.services.agent_service import process_chat_stream
 from app.services.connection_manager import manager
 from app.services.execution_context import (
@@ -262,11 +263,19 @@ async def chat(
         # SSE 生成器真正执行时上下文已失效；这里显式捕获一份（含 request_id /
         # user_id / canvas_id），在生成器内部重新 set，结束 reset。
         base_ctx = get_execution_context()
+        project_id = None
+        if request.canvas_id and session is not None:
+            project_id = await session.scalar(
+                select(SeriesProject.id).where(SeriesProject.canvas_id == request.canvas_id)
+            )
         stream_ctx = ExecutionContext(
             request_id=base_ctx.request_id,
             run_id=base_ctx.run_id,
             user_id=str(user.id),
             canvas_id=request.canvas_id,
+            project_id=project_id,
+            creative_role="chat",
+            prompt_version="agent_system_v1",
         )
 
         async def stream_and_broadcast():
