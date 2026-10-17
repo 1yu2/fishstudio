@@ -150,12 +150,28 @@ async def _make_run_with_render_step(factory):
         return project.id, episode.id, run.id, step.id, job.id
 
 
-def test_step_retry_full_chain(pg):
+def test_step_retry_full_chain(pg, monkeypatch):
     """Job failed → Step/Run failed → retry_step → 新 Job succeeded → Step/Run succeeded。"""
     from sqlalchemy import select
 
     from app.db.models import GenerationJob, WorkflowRun, WorkflowStep
     from app.services import job_service, workflow_service
+
+    # episode.render 现需已审批 Timeline 才能展开；本用例只验证重试聚合语义，
+    # 审批 Gate 与 Timeline 查询都用桩替代。
+    async def _approved(session, run, step):
+        return True
+
+    monkeypatch.setattr(workflow_service, "_approval_passed", _approved)
+
+    from types import SimpleNamespace
+
+    from app.services import timeline_service
+
+    async def _render_revision(session, episode_id):
+        return SimpleNamespace(id="timeline-stub", content_hash="timeline-stub-hash")
+
+    monkeypatch.setattr(timeline_service, "get_render_revision", _render_revision)
 
     async def _run():
         project_id, episode_id, run_id, step_id, job_id = await _make_run_with_render_step(pg)

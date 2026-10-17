@@ -1050,6 +1050,25 @@ class TestLogicalJobKey:
 
         monkeypatch.setattr(cost_service, "reserve_budget", _reserve)
 
+        # 本用例只验证 step_attempt / logical_job_key；路由与 Provider 能力固定为桩，
+        # 不随本机 .env 中配置了哪些厂商而变化。
+        from app.model_runtime import media as media_module
+
+        def _fake_routing(provider_policy, resolution, *, duration=6, explicit_provider=""):
+            return {
+                "provider": "stub", "model": "stub-video", "resolution": resolution,
+                "protocol": "stub", "billable_duration": duration,
+                "estimated_total_cost": Decimal("0"), "price_snapshot": {},
+            }
+
+        stub_provider = SimpleNamespace(name="stub", supports=lambda req, model=None: True)
+        stub_runtime = SimpleNamespace(
+            video_router=lambda: None,
+            get=lambda modality, name: SimpleNamespace(provider=stub_provider),
+        )
+        monkeypatch.setattr(pricing, "resolve_video_routing", _fake_routing)
+        monkeypatch.setattr(media_module, "get_media_runtime", lambda: stub_runtime)
+
         class _PlanSession(_FakeSession):
             async def execute(self, stmt):
                 # _get_or_create_job 查 idempotency_key：一律不存在 → 新建
