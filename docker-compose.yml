@@ -1,7 +1,9 @@
 # 本地开发 Stack：postgres + backend + frontend
 #
-# 启动：    docker compose up -d
+# 最小开发（推荐，本机运行前后端）：docker compose up -d postgres
+# 完整容器化（仅做镜像验收时）：  docker compose up -d --build
 # 停止：    docker compose down
+# 只停基础设施：docker compose stop postgres
 # 看日志：  docker compose logs -f backend
 # 重新构建：docker compose up -d --build
 #
@@ -44,8 +46,10 @@ services:
         condition: service_healthy
     # 1) env_file 加载 LLM 厂商 key 等敏感配置
     # 2) environment 覆盖 DATABASE_URL / 认证 / CORS（compose 里 environment 优先级高于 env_file）
+    # 本地开发可能只维护根 .env；backend/.env 不存在时不阻断 Compose 解析。
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-fishstudio}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-in-prod-min-16-chars}
