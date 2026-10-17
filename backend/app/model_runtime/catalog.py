@@ -65,9 +65,7 @@ class ReloadFailure:
 
 
 def _row_payload(row: ModelDeployment) -> DeploymentInput:
-    return DeploymentInput.model_validate(
-        {key: getattr(row, key) for key in DeploymentInput.model_fields}
-    )
+    return DeploymentInput.model_validate({key: getattr(row, key) for key in DeploymentInput.model_fields})
 
 
 def _revision(rows: Iterable[ModelDeployment]) -> str:
@@ -128,9 +126,7 @@ class CatalogManager:
                     datetime.now(timezone.utc),
                 )
             except Exception as error:
-                self._last_failure = ReloadFailure(
-                    str(error), attempted_revision, datetime.now(timezone.utc)
-                )
+                self._last_failure = ReloadFailure(str(error), attempted_revision, datetime.now(timezone.utc))
                 logger.exception("model catalog reload failed; keeping previous snapshot")
                 raise
             # 唯一写点：完整 Snapshot 构造成功后才替换引用。

@@ -38,9 +38,7 @@ def test_pricing_h3_768p_output():
 
 def test_pricing_h3_input_images_overage():
     # 前 5 张输入图免费，6 张超 1 张 ×0.20 → 3.00 + 0.20
-    cost = estimate_video_cost(
-        "minimax", "MiniMax-H3", "768P", output_seconds=6, input_image_count=6
-    )
+    cost = estimate_video_cost("minimax", "MiniMax-H3", "768P", output_seconds=6, input_image_count=6)
     assert cost == Decimal("3.200000")
 
 
@@ -53,12 +51,12 @@ def test_pricing_h3_regeneration():
 
 
 def test_pricing_per_piece_and_per_second():
-    assert estimate_video_cost(
-        "minimax", "MiniMax-Hailuo-2.3", "768P", output_seconds=10
-    ) == Decimal("4.000000")
-    assert estimate_video_cost(
-        "minimax", "MiniMax-Hailuo-2.3-Fast", "768P", output_seconds=6
-    ) == Decimal("1.350000")
+    assert estimate_video_cost("minimax", "MiniMax-Hailuo-2.3", "768P", output_seconds=10) == Decimal(
+        "4.000000"
+    )
+    assert estimate_video_cost("minimax", "MiniMax-Hailuo-2.3-Fast", "768P", output_seconds=6) == Decimal(
+        "1.350000"
+    )
     # 按条计费模型不支持其它时长
     assert estimate_video_cost("minimax", "MiniMax-Hailuo-2.3", "768P", output_seconds=8) is None
 
@@ -83,7 +81,9 @@ def test_resolve_video_routing_rejects_unexecutable_long_duration(monkeypatch, p
     monkeypatch.setenv("MINIMAX_H3_EXPERIMENTAL", "true")
     with pytest.raises(ValueError, match="无可执行 Provider"):
         resolve_video_routing(policy, "768P", duration=16)
-    assert estimate_video_cost("volcano", "doubao-seedance-1-5-pro", "720p", output_seconds=6) == Decimal("3.000000")
+    assert estimate_video_cost("volcano", "doubao-seedance-1-5-pro", "720p", output_seconds=6) == Decimal(
+        "3.000000"
+    )
 
 
 def test_snapshot_price():
@@ -131,13 +131,9 @@ def test_router_explicit():
 
 def test_router_explicit_unavailable_raises():
     with pytest.raises(ValueError):
-        _router(minimax_key="").select(
-            _req(provider_policy="explicit", explicit_provider="minimax")
-        )
+        _router(minimax_key="").select(_req(provider_policy="explicit", explicit_provider="minimax"))
     with pytest.raises(ValueError):
-        _router(minimax_key="k").select(
-            _req(provider_policy="explicit", explicit_provider="no-such")
-        )
+        _router(minimax_key="k").select(_req(provider_policy="explicit", explicit_provider="no-such"))
 
 
 def test_router_balanced_prefers_volcano_by_default(monkeypatch):
@@ -228,9 +224,7 @@ def test_locked_video_provider_falls_back_to_mock_only_when_enabled(monkeypatch)
 def test_router_reference_mode_filters_volcano(monkeypatch):
     # reference 仅 H3 支持；minimax 无 key 时火山被 supports 过滤 → mock 兜底
     monkeypatch.setattr("app.tools.volcano_video_generation.VOLCANO_API_KEY", "k")
-    d = _router(minimax_key="").select(
-        _req(mode="reference", reference_images=["/storage/images/a.jpg"])
-    )
+    d = _router(minimax_key="").select(_req(mode="reference", reference_images=["/storage/images/a.jpg"]))
     assert d.provider.name == "mock" and d.mocked
 
 
@@ -317,9 +311,7 @@ async def test_minimax_submit_v1_first_frame(monkeypatch):
 
     _patch_httpx(monkeypatch, handler)
     p = MiniMaxVideoProvider(api_key="k")
-    r = await p.submit(
-        _req(mode="first_frame", first_frame="data:image/png;base64,AA==", duration=6)
-    )
+    r = await p.submit(_req(mode="first_frame", first_frame="data:image/png;base64,AA==", duration=6))
     assert r.success and r.external_request_id == "t_i2v"
 
 
@@ -438,9 +430,7 @@ async def test_minimax_submit_fast_uses_official_v1(monkeypatch):
 
     _patch_httpx(monkeypatch, handler)
     p = MiniMaxVideoProvider(api_key="k")
-    r = await p.submit(
-        _req(mode="first_frame", first_frame="data:image/png;base64,AA==", quality="preview")
-    )
+    r = await p.submit(_req(mode="first_frame", first_frame="data:image/png;base64,AA==", quality="preview"))
     assert r.success
     assert captured["url"] == "https://api.minimaxi.com/v1/video_generation"
     assert captured["model"] == "MiniMax-Hailuo-2.3-Fast"
@@ -487,7 +477,7 @@ async def test_minimax_submit_content_rejected(monkeypatch):
 async def test_minimax_submit_biz_error_mapping(monkeypatch):
     """官方公开业务错误码（base_resp.status_code）映射。"""
     cases = [
-        (1002, "rate_limited", True),   # 限流可重试
+        (1002, "rate_limited", True),  # 限流可重试
         (1026, "content_rejected", False),  # 审核拒绝不可重试
         (1008, "insufficient_balance", False),
         (1004, "auth_failed", False),
@@ -514,8 +504,11 @@ async def test_minimax_get_status_shapes(monkeypatch):
         [
             {"task_id": "t", "status": "Processing", "base_resp": {"status_code": 0}},
             {
-                "task_id": "t", "status": "Success", "file_id": "f123",
-                "video_width": 1920, "video_height": 1080,
+                "task_id": "t",
+                "status": "Success",
+                "file_id": "f123",
+                "video_width": 1920,
+                "video_height": 1080,
                 "base_resp": {"status_code": 0},
             },
             {"task_id": "t", "status": "Fail", "base_resp": {"status_code": 0}},
@@ -545,9 +538,7 @@ async def test_minimax_get_status_h3_experimental(monkeypatch):
 
     def handler(method, url, **kw):
         assert url == "https://api.minimaxi.com/v2/query/video_generation/t"
-        return _FakeResponse(
-            200, {"task": {"status": "succeeded", "content": {"url": "http://cdn/x.mp4"}}}
-        )
+        return _FakeResponse(200, {"task": {"status": "succeeded", "content": {"url": "http://cdn/x.mp4"}}})
 
     _patch_httpx(monkeypatch, handler)
     p = MiniMaxVideoProvider(api_key="k")
@@ -566,15 +557,13 @@ async def test_minimax_fetch_result(monkeypatch, tmp_path):
             assert kw["params"] == {"task_id": "task_9"}
             return _FakeResponse(
                 200,
-                {"task_id": "task_9", "status": "Success", "file_id": "f9",
-                 "base_resp": {"status_code": 0}},
+                {"task_id": "task_9", "status": "Success", "file_id": "f9", "base_resp": {"status_code": 0}},
             )
         if "files/retrieve" in url:
             assert kw["params"] == {"file_id": "f9"}
             return _FakeResponse(
                 200,
-                {"file": {"file_id": 9, "download_url": "http://cdn/x.mp4"},
-                 "base_resp": {"status_code": 0}},
+                {"file": {"file_id": 9, "download_url": "http://cdn/x.mp4"}, "base_resp": {"status_code": 0}},
             )
         return _FakeResponse(200, content=b"\x00\x01fake-mp4")
 
@@ -659,9 +648,7 @@ async def test_volcano_submit_passes_locked_model(monkeypatch):
         return "task-1", False
 
     monkeypatch.setattr(vvg, "submit_video_generation_task", fake_submit)
-    result = await VolcanoVideoProvider().submit(
-        _req(duration=5), model="doubao-seedance-1-5-pro-responses"
-    )
+    result = await VolcanoVideoProvider().submit(_req(duration=5), model="doubao-seedance-1-5-pro-responses")
     assert result.success
     assert captured["model"] == "doubao-seedance-1-5-pro-responses"
     assert result.model == captured["model"]
@@ -727,9 +714,7 @@ async def test_mark_failed_retryable_backoff():
 
     job = _make_job(attempt=1)
     before = datetime.now(timezone.utc)
-    await job_service.mark_failed(
-        _FakeSession(), job, error_code="rate_limited", error="x", retryable=True
-    )
+    await job_service.mark_failed(_FakeSession(), job, error_code="rate_limited", error="x", retryable=True)
     assert job.status == "pending"
     # 指数退避 2**attempt 分钟（attempt=1 → 2 分钟），lease_until 复用为 run_after
     assert job.lease_until >= before + timedelta(minutes=2)
@@ -740,9 +725,7 @@ async def test_mark_failed_terminal_when_attempts_exhausted():
     from app.services import job_service
 
     job = _make_job(attempt=3, max_attempts=3)
-    await job_service.mark_failed(
-        _FakeSession(), job, error_code="server_error", error="x", retryable=True
-    )
+    await job_service.mark_failed(_FakeSession(), job, error_code="server_error", error="x", retryable=True)
     assert job.status == "failed" and job.finished_at is not None
 
 
@@ -840,12 +823,18 @@ def _volcano_result_json(**over):
 def test_volcano_image_availability(monkeypatch):
     from app.providers.volcano_image import VolcanoImageProvider
 
-    assert VolcanoImageProvider(
-        api_key="", base_url="https://image.test/v1", model_name="seedream"
-    ).is_available() is False
-    assert VolcanoImageProvider(
-        api_key="k", base_url="https://image.test/v1", model_name="seedream"
-    ).is_available() is True
+    assert (
+        VolcanoImageProvider(
+            api_key="", base_url="https://image.test/v1", model_name="seedream"
+        ).is_available()
+        is False
+    )
+    assert (
+        VolcanoImageProvider(
+            api_key="k", base_url="https://image.test/v1", model_name="seedream"
+        ).is_available()
+        is True
+    )
 
 
 def test_available_image_providers_registers_volcano(monkeypatch):
@@ -866,13 +855,9 @@ async def test_volcano_image_generate_text2image(monkeypatch):
         calls.update({"prompt": req.prompt, "size": req.aspect_ratio})
         return {"local_path": "/storage/images/volcano_x.jpg"}
 
-    provider = VolcanoImageProvider(
-        api_key="k", base_url="https://image.test/v1", model_name="seedream"
-    )
+    provider = VolcanoImageProvider(api_key="k", base_url="https://image.test/v1", model_name="seedream")
     monkeypatch.setattr(provider, "_generate_sync", fake_generate)
-    r = await provider.generate(
-        ImageGenerationRequest(prompt="角色图", aspect_ratio="9:16")
-    )
+    r = await provider.generate(ImageGenerationRequest(prompt="角色图", aspect_ratio="9:16"))
     assert r.success and r.provider == "volcano_image"
     assert r.artifacts[0]["storage_key"] == "images/volcano_x.jpg" and r.artifacts[0]["type"] == "image"
     assert r.usage["output_image_count"] == 1
@@ -887,24 +872,22 @@ async def test_volcano_image_generate_edit_with_source(monkeypatch):
     calls = {}
 
     def fake_edit(req):
-        calls.update({
-            "prompt": req.prompt,
-            "image_url": req.source_image,
-            "size": req.aspect_ratio,
-        })
+        calls.update(
+            {
+                "prompt": req.prompt,
+                "image_url": req.source_image,
+                "size": req.aspect_ratio,
+            }
+        )
         return {
             "local_path": "/storage/images/volcano_x.jpg",
             "source_image": req.source_image,
         }
 
-    provider = VolcanoImageProvider(
-        api_key="k", base_url="https://image.test/v1", model_name="seedream-edit"
-    )
+    provider = VolcanoImageProvider(api_key="k", base_url="https://image.test/v1", model_name="seedream-edit")
     monkeypatch.setattr(provider, "_generate_sync", fake_edit)
     r = await provider.generate(
-        ImageGenerationRequest(
-            prompt="换成夜景", source_image="/storage/images/ref.png", aspect_ratio="9:16"
-        )
+        ImageGenerationRequest(prompt="换成夜景", source_image="/storage/images/ref.png", aspect_ratio="9:16")
     )
     assert r.success and r.raw_metadata["edited"] is True
     assert calls["image_url"] == "/storage/images/ref.png"
@@ -914,12 +897,8 @@ async def test_volcano_image_generate_error(monkeypatch):
     from app.providers.image_base import ImageGenerationRequest
     from app.providers.volcano_image import VolcanoImageProvider
 
-    provider = VolcanoImageProvider(
-        api_key="k", base_url="https://image.test/v1", model_name="seedream"
-    )
-    monkeypatch.setattr(
-        provider, "_generate_sync", lambda req: (_ for _ in ()).throw(RuntimeError("boom"))
-    )
+    provider = VolcanoImageProvider(api_key="k", base_url="https://image.test/v1", model_name="seedream")
+    monkeypatch.setattr(provider, "_generate_sync", lambda req: (_ for _ in ()).throw(RuntimeError("boom")))
     r = await provider.generate(ImageGenerationRequest(prompt="x"))
     assert not r.success and r.error_code == "generate_failed" and r.retryable
 

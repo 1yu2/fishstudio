@@ -41,9 +41,7 @@ class VideoProviderRouter:
         if providers is None:
             providers = []
         self.providers = providers
-        self._mock = next(
-            (p for p in providers if isinstance(p, MockVideoProvider)), MockVideoProvider()
-        )
+        self._mock = next((p for p in providers if isinstance(p, MockVideoProvider)), MockVideoProvider())
 
     def _model_and_resolution(self, provider: VideoProvider, req) -> tuple[str, str]:
         provider_name = getattr(provider, "name", "")
@@ -80,9 +78,7 @@ class VideoProviderRouter:
                 raise ValueError(f"显式指定的 provider 不存在: {name}")
             if isinstance(chosen, MockVideoProvider):
                 if not mock_providers_enabled():
-                    raise NoProviderError(
-                        "显式指定 mock provider，但未开启 ALLOW_MOCK_PROVIDERS"
-                    )
+                    raise NoProviderError("显式指定 mock provider，但未开启 ALLOW_MOCK_PROVIDERS")
                 if not chosen.supports(req):
                     raise ValueError(f"显式指定的 provider 不支持该请求: {name}")
                 return self._decide(chosen, req, True, "explicit mock provider")
@@ -99,20 +95,24 @@ class VideoProviderRouter:
 
         # 3) policy 排序
         if req.provider_policy == "cheapest":
+
             def _cost(p: VideoProvider) -> float:
                 model, resolution = self._model_and_resolution(p, req)
-                cost = estimate_video_cost(
-                    p.name, model, resolution, output_seconds=req.duration
-                )
+                cost = estimate_video_cost(p.name, model, resolution, output_seconds=req.duration)
                 return float(cost) if cost is not None else float("inf")
 
             candidates.sort(key=_cost)
             reason = "cheapest: 按估算成本升序"
         elif req.provider_policy == "quality":
-            candidates.sort(key=lambda p: (
-                0 if getattr(p, "name", "") == "local_h3" else
-                1 if getattr(p, "name", "") == "volcano" else 2
-            ))
+            candidates.sort(
+                key=lambda p: (
+                    0
+                    if getattr(p, "name", "") == "local_h3"
+                    else 1
+                    if getattr(p, "name", "") == "volcano"
+                    else 2
+                )
+            )
             reason = "quality: 可用的 local_h3 优先，其次 volcano/minimax"
         else:  # balanced（默认）
             has_local_h3 = any(getattr(p, "name", "") == "local_h3" for p in candidates)
@@ -137,8 +137,8 @@ class VideoProviderRouter:
                 )
                 reason = (
                     "balanced: local_h3 优先，其次 minimax(H3)/volcano"
-                    if has_local_h3 else
-                    "balanced: minimax(H3, MINIMAX_H3_EXPERIMENTAL=true) 优先，其次 volcano"
+                    if has_local_h3
+                    else "balanced: minimax(H3, MINIMAX_H3_EXPERIMENTAL=true) 优先，其次 volcano"
                 )
             else:
                 candidates.sort(
@@ -154,8 +154,8 @@ class VideoProviderRouter:
                 )
                 reason = (
                     "balanced: local_h3 优先，其次 volcano/minimax"
-                    if has_local_h3 else
-                    "balanced: volcano 优先，其次 minimax（仅已核验的 Hailuo V1 系列）"
+                    if has_local_h3
+                    else "balanced: volcano 优先，其次 minimax（仅已核验的 Hailuo V1 系列）"
                 )
 
         # 4) 无可用真实 provider：仅 ALLOW_MOCK_PROVIDERS=true 才允许 mock 兜底；

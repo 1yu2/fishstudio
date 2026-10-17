@@ -67,17 +67,13 @@ async def generate_volcano_image_tool(prompt: str, size: str = "1:1") -> str:
 
 
 @tool("edit_volcano_image", args_schema=EditImageInput)
-async def edit_volcano_image_tool(
-    prompt: str, image_url: str, size: str = "1:1"
-) -> str:
+async def edit_volcano_image_tool(prompt: str, image_url: str, size: str = "1:1") -> str:
     """按 image_edit Route 编辑图片。"""
     try:
         async with SessionLocal() as session:
             execution = await _resolve_tool_image(
                 session,
-                ImageGenerationRequest(
-                    prompt=prompt, source_image=image_url, aspect_ratio=size
-                ),
+                ImageGenerationRequest(prompt=prompt, source_image=image_url, aspect_ratio=size),
                 purpose="image_edit",
             )
         return _tool_payload(execution)

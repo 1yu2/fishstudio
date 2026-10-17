@@ -101,7 +101,8 @@ async def test_qwen_clone_voice_error_retryable(monkeypatch):
     from app.tools import qwen_tts
 
     monkeypatch.setattr(
-        qwen_tts, "qwen_voice_cloning_tool",
+        qwen_tts,
+        "qwen_voice_cloning_tool",
         _FakeTool(lambda ref, text, language="zh": "Error: 创建音色失败"),
     )
     r = await QwenTTSProvider(api_key="k").clone_voice("/storage/audios/ref.wav", "x")
@@ -201,9 +202,7 @@ async def test_clone_voice_quote_confirm_is_persistent_and_one_time(monkeypatch,
 
     monkeypatch.setattr(series_router, "_owned_project", owned_project)
     asset = SimpleNamespace(id="a1", project_id="p1", type="voice", version=2, name="角色音色")
-    artifact = SimpleNamespace(
-        id="ref1", project_id="p1", type="audio", storage_key="audios/ref.wav"
-    )
+    artifact = SimpleNamespace(id="ref1", project_id="p1", type="audio", storage_key="audios/ref.wav")
     session = _CloneQuoteSession(
         {
             ("AssetCard", "a1"): asset,
@@ -219,9 +218,7 @@ async def test_clone_voice_quote_confirm_is_persistent_and_one_time(monkeypatch,
 
     monkeypatch.setattr(cost_service, "reserve_budget", reserve_budget)
 
-    issued = await series_router.get_clone_voice_quote(
-        "p1", "a1", "ref1", session=session, user=user
-    )
+    issued = await series_router.get_clone_voice_quote("p1", "a1", "ref1", session=session, user=user)
     result = await series_router.create_clone_voice_job(
         "p1",
         "a1",
@@ -328,12 +325,24 @@ def test_clone_voice_quote_token_rejects_tampering():
 
 def _clone_job(**params):
     return SimpleNamespace(
-        id="j1", project_id="p1", shot_id=None,
-        workflow_run_id=None, workflow_step_id=None,
-        operation="clone_voice", provider="", model="",
-        params=params, status="pending", progress=0,
-        attempt=1, max_attempts=3, error_code="", error="",
-        external_task_id="", result={}, finished_at=None,
+        id="j1",
+        project_id="p1",
+        shot_id=None,
+        workflow_run_id=None,
+        workflow_step_id=None,
+        operation="clone_voice",
+        provider="",
+        model="",
+        params=params,
+        status="pending",
+        progress=0,
+        attempt=1,
+        max_attempts=3,
+        error_code="",
+        error="",
+        external_task_id="",
+        result={},
+        finished_at=None,
     )
 
 
@@ -342,14 +351,14 @@ async def test_execute_clone_voice_updates_asset_and_binds(monkeypatch):
     from app.worker import generation_worker as gw
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
-    asset = SimpleNamespace(
-        id="asset1", type="voice", name="角色音色", status="draft", provider_meta={}
-    )
+    asset = SimpleNamespace(id="asset1", type="voice", name="角色音色", status="draft", provider_meta={})
     session = _FakeSession(get_map={("AssetCard", "asset1"): asset})
 
     async def fake_clone(self, reference_audio_path, voice_name):
         return ProviderResult(
-            success=True, provider="qwen_tts", model="qwen-tts-voice-cloning",
+            success=True,
+            provider="qwen_tts",
+            model="qwen-tts-voice-cloning",
             external_request_id="req-1",
             artifacts=[{"storage_key": "audios/sample.wav", "type": "audio"}],
             raw_metadata={"voice_id": "vc-abc123", "voice_name": voice_name},
@@ -396,9 +405,7 @@ async def test_execute_clone_voice_no_provider(monkeypatch):
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "")
     monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "false")
-    asset = SimpleNamespace(
-        id="asset1", type="voice", name="x", status="draft", provider_meta={}
-    )
+    asset = SimpleNamespace(id="asset1", type="voice", name="x", status="draft", provider_meta={})
     session = _FakeSession(get_map={("AssetCard", "asset1"): asset})
     job = _clone_job(
         asset_id="asset1",
@@ -416,9 +423,7 @@ async def test_execute_clone_voice_mock_allowed(monkeypatch, tmp_path):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "")
     monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "true")
     monkeypatch.setattr("app.providers.tts_base.AUDIOS_DIR", tmp_path)
-    asset = SimpleNamespace(
-        id="asset1", type="voice", name="x", status="draft", provider_meta={}
-    )
+    asset = SimpleNamespace(id="asset1", type="voice", name="x", status="draft", provider_meta={})
     session = _FakeSession(get_map={("AssetCard", "asset1"): asset})
 
     async def fake_create_artifact(session, **kw):
@@ -536,9 +541,7 @@ class _PickSession(_FakeSession):
 
     async def execute(self, stmt):
         latest = self.latest
-        return SimpleNamespace(
-            scalars=lambda: SimpleNamespace(first=lambda: latest)
-        )
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: latest))
 
 
 async def test_pick_shot_video_selected():

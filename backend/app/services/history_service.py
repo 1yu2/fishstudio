@@ -26,9 +26,7 @@ def _row_to_dict(row: Canvas) -> dict[str, Any]:
 
 
 class HistoryService:
-    async def get_canvases(
-        self, session: AsyncSession, owner_id: int | None = None
-    ) -> list[dict[str, Any]]:
+    async def get_canvases(self, session: AsyncSession, owner_id: int | None = None) -> list[dict[str, Any]]:
         # 按更新时间倒序，与原"新的在前"一致
         stmt = select(Canvas).order_by(desc(Canvas.updated_at))
         if owner_id is not None:
@@ -56,11 +54,7 @@ class HistoryService:
             session.add(row)
         else:
             # 已存在的画布：owner 不匹配则拒绝（owner_id 为 None 的历史数据允许回填）
-            if (
-                owner_id is not None
-                and existing.owner_id is not None
-                and existing.owner_id != owner_id
-            ):
+            if owner_id is not None and existing.owner_id is not None and existing.owner_id != owner_id:
                 raise PermissionError("canvas belongs to another user")
             existing.name = str(canvas_data.get("name", existing.name))
             if "createdAt" in canvas_data:
@@ -83,9 +77,7 @@ class HistoryService:
         row = await session.get(Canvas, canvas_id)
         return row.owner_id if row is not None else None
 
-    async def delete_canvas(
-        self, session: AsyncSession, canvas_id: str, owner_id: int | None = None
-    ) -> bool:
+    async def delete_canvas(self, session: AsyncSession, canvas_id: str, owner_id: int | None = None) -> bool:
         row = await session.get(Canvas, canvas_id)
         if row is None:
             return False

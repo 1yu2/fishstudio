@@ -64,9 +64,7 @@ async def test_failed_reload_keeps_previous_snapshot(monkeypatch):
     first = await manager.reload_rows([_row()])
 
     with pytest.raises(ValueError, match="未知 Driver"):
-        await manager.reload_rows(
-            [_row(driver="missing", revision=2, config_hash="b" * 64)]
-        )
+        await manager.reload_rows([_row(driver="missing", revision=2, config_hash="b" * 64)])
 
     assert manager.snapshot is first
     assert manager.snapshot.get("local-h3") is not None
@@ -115,8 +113,6 @@ async def test_probe_failure_does_not_remove_current_catalog(monkeypatch):
 
     monkeypatch.setattr(manager.registry, "probe", failed_probe)
     with pytest.raises(RuntimeError, match="gateway offline"):
-        await manager.reload_rows(
-            [_row(revision=2, config_hash="d" * 64)], probe=True
-        )
+        await manager.reload_rows([_row(revision=2, config_hash="d" * 64)], probe=True)
 
     assert manager.snapshot is first

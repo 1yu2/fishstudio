@@ -88,11 +88,7 @@ async def record_feedback(
     if action == "selected":
         if step is not None:
             step.selected_artifact_id = artifact.id
-        if (
-            job is not None
-            and job.shot_id
-            and job.project_id == artifact.project_id
-        ):
+        if job is not None and job.shot_id and job.project_id == artifact.project_id:
             shot = await session.get(Shot, job.shot_id)
             if shot is not None:
                 # 复审 0.8：按产物类型写入独立选择槽，图片/视频不互相覆盖
@@ -105,9 +101,7 @@ async def record_feedback(
     return feedback
 
 
-async def list_feedback(
-    session: AsyncSession, project_id: str, limit: int = 200
-) -> list[ArtifactFeedback]:
+async def list_feedback(session: AsyncSession, project_id: str, limit: int = 200) -> list[ArtifactFeedback]:
     stmt = (
         select(ArtifactFeedback)
         .where(ArtifactFeedback.project_id == project_id)
@@ -117,9 +111,7 @@ async def list_feedback(
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def aggregate_provider_scores(
-    session: AsyncSession, project_id: Optional[str] = None
-) -> list[dict]:
+async def aggregate_provider_scores(session: AsyncSession, project_id: Optional[str] = None) -> list[dict]:
     """按 provider/model 聚合：平均 score（rated）、选择率（selected/总反馈数）。
 
     离线报表用途；不做在线路由学习（见模块 docstring）。

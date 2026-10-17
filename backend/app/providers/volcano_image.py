@@ -21,6 +21,7 @@ from app.tools.volcano_image_generation import (
 
 logger = logging.getLogger(__name__)
 
+
 class VolcanoImageProvider(ImageProvider):
     """火山 Seedream 图片生成/编辑；每个 Deployment 是独立实例。"""
 
@@ -54,9 +55,7 @@ class VolcanoImageProvider(ImageProvider):
         )
         return cls(
             api_key=os.getenv("VOLCANO_API_KEY", ""),
-            base_url=os.getenv(
-                "VOLCANO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"
-            ),
+            base_url=os.getenv("VOLCANO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
             model_name=model_name,
             deployment_name=f"legacy-volcano-{purpose}",
         )
@@ -90,8 +89,7 @@ class VolcanoImageProvider(ImageProvider):
         if response.status_code != 200:
             operation = "editing" if req.source_image else "generating"
             raise RuntimeError(
-                f"Error {operation} image: API调用失败: "
-                f"status={response.status_code}, body={response.text}"
+                f"Error {operation} image: API调用失败: status={response.status_code}, body={response.text}"
             )
 
         data = response.json()
@@ -123,8 +121,11 @@ class VolcanoImageProvider(ImageProvider):
         model = self.model_name
         if not self.is_available():
             return ProviderResult(
-                success=False, provider=self.name, model=model,
-                error_code="no_provider", error_message="图片 Deployment 配置不完整",
+                success=False,
+                provider=self.name,
+                model=model,
+                error_code="no_provider",
+                error_message="图片 Deployment 配置不完整",
             )
         loop = asyncio.get_running_loop()
         # R0.11：限制 candidate_count 1~4
@@ -160,19 +161,24 @@ class VolcanoImageProvider(ImageProvider):
                     first_error = f"生成返回但产物缺失: {local_path}"
                     first_error_code = "generate_failed"
                 continue
-            artifacts.append({
-                "storage_key": storage_key,
-                "type": "image",
-                "_candidate_index": i,
-            })
+            artifacts.append(
+                {
+                    "storage_key": storage_key,
+                    "type": "image",
+                    "_candidate_index": i,
+                }
+            )
             success_count += 1
 
         if success_count == 0 and failed_count > 0:
             return ProviderResult(
-                success=False, provider=self.name, model=model,
+                success=False,
+                provider=self.name,
+                model=model,
                 error_code=first_error_code or "generate_failed",
                 error_message=first_error or "全部候选图片生成失败",
-                retryable=True, raw_metadata={
+                retryable=True,
+                raw_metadata={
                     "candidate_count": candidate_count,
                     "success_count": 0,
                     "failed_count": failed_count,

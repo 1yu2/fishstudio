@@ -10,9 +10,11 @@ from app.services.job_service import _utcnow
 
 
 async def allow_request(session: AsyncSession, provider: str, deployment: str = "") -> bool:
-    row = await session.scalar(select(ProviderCircuit).where(
-        ProviderCircuit.provider == provider, ProviderCircuit.deployment == deployment
-    ))
+    row = await session.scalar(
+        select(ProviderCircuit).where(
+            ProviderCircuit.provider == provider, ProviderCircuit.deployment == deployment
+        )
+    )
     if row is None or row.state == "closed":
         return True
     if row.probe_after and row.probe_after <= _utcnow():
@@ -23,9 +25,11 @@ async def allow_request(session: AsyncSession, provider: str, deployment: str = 
 
 
 async def record_success(session: AsyncSession, provider: str, deployment: str = "") -> None:
-    row = await session.scalar(select(ProviderCircuit).where(
-        ProviderCircuit.provider == provider, ProviderCircuit.deployment == deployment
-    ))
+    row = await session.scalar(
+        select(ProviderCircuit).where(
+            ProviderCircuit.provider == provider, ProviderCircuit.deployment == deployment
+        )
+    )
     if row:
         row.state, row.failure_count, row.last_error = "closed", 0, ""
         row.opened_at = row.probe_after = None
@@ -33,12 +37,19 @@ async def record_success(session: AsyncSession, provider: str, deployment: str =
 
 
 async def record_failure(
-    session: AsyncSession, provider: str, deployment: str = "", *, error: str = "",
-    threshold: int = 5, recovery_seconds: int = 60,
+    session: AsyncSession,
+    provider: str,
+    deployment: str = "",
+    *,
+    error: str = "",
+    threshold: int = 5,
+    recovery_seconds: int = 60,
 ) -> ProviderCircuit:
-    row = await session.scalar(select(ProviderCircuit).where(
-        ProviderCircuit.provider == provider, ProviderCircuit.deployment == deployment
-    ))
+    row = await session.scalar(
+        select(ProviderCircuit).where(
+            ProviderCircuit.provider == provider, ProviderCircuit.deployment == deployment
+        )
+    )
     if row is None:
         row = ProviderCircuit(provider=provider, deployment=deployment)
         session.add(row)

@@ -1,4 +1,5 @@
 """Model Runtime 管理面：统一 Catalog、健康状态与调用审计。"""
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -79,7 +80,8 @@ async def reload_catalog(
 
 @router.get("/model-runtime/deployments/{deployment_name}/health")
 async def deployment_health(
-    deployment_name: str, admin: User = Depends(require_admin),
+    deployment_name: str,
+    admin: User = Depends(require_admin),
 ):
     """主动探测媒体 Deployment；用于部署分层联调，不返回密钥。"""
     item = get_catalog().snapshot.get(deployment_name)
@@ -93,8 +95,10 @@ async def deployment_health(
             detail={"deployment": deployment_name, "available": False, "error": str(error)},
         )
     return {
-        "deployment": deployment_name, "available": True,
-        "active_probe": payload.get("active_probe", False), "details": payload,
+        "deployment": deployment_name,
+        "available": True,
+        "active_probe": payload.get("active_probe", False),
+        "details": payload,
     }
 
 

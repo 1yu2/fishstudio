@@ -46,35 +46,32 @@ class LocalH3Provider(VideoProvider):
         capabilities = capabilities or {}
         self.enabled = local_h3_enabled() if enabled is None else enabled
         self.base_url = (
-            base_url if base_url is not None else os.getenv("LOCAL_H3_BASE_URL", "")
-        ).strip().rstrip("/")
-        self.api_key = (
-            api_key if api_key is not None else os.getenv("LOCAL_H3_API_KEY", "")
-        ).strip()
+            (base_url if base_url is not None else os.getenv("LOCAL_H3_BASE_URL", "")).strip().rstrip("/")
+        )
+        self.api_key = (api_key if api_key is not None else os.getenv("LOCAL_H3_API_KEY", "")).strip()
         self.model_name = (model_name or os.getenv("LOCAL_H3_MODEL", "MiniMax-H3")).strip()
         self.deployment_name = (
-            deployment_name
-            or os.getenv("LOCAL_H3_DEPLOYMENT", "h3-fl2va-int8-convrot")
+            deployment_name or os.getenv("LOCAL_H3_DEPLOYMENT", "h3-fl2va-int8-convrot")
         ).strip()
         configured_modes = capabilities.get("modes")
-        self.modes = set(configured_modes) if configured_modes else {
-            item.strip()
-            for item in os.getenv("LOCAL_H3_MODES", "text").split(",")
-            if item.strip()
-        }
+        self.modes = (
+            set(configured_modes)
+            if configured_modes
+            else {item.strip() for item in os.getenv("LOCAL_H3_MODES", "text").split(",") if item.strip()}
+        )
         self.min_duration = int(config.get("min_duration", os.getenv("LOCAL_H3_MIN_DURATION", "4")))
         self.max_duration = int(config.get("max_duration", os.getenv("LOCAL_H3_MAX_DURATION", "6")))
         self.timeout = float(config.get("timeout_seconds", os.getenv("LOCAL_H3_TIMEOUT_SECONDS", "30")))
         self.artifact_timeout = float(
             config.get("artifact_timeout_seconds", os.getenv("LOCAL_H3_ARTIFACT_TIMEOUT_SECONDS", "900"))
         )
-        self.max_artifact_bytes = int(config.get(
-            "max_artifact_bytes",
-            os.getenv("LOCAL_H3_MAX_ARTIFACT_BYTES", str(512 * 1024 * 1024)),
-        ))
-        self._max_concurrency = int(
-            config.get("max_concurrency", os.getenv("LOCAL_H3_MAX_CONCURRENCY", "1"))
+        self.max_artifact_bytes = int(
+            config.get(
+                "max_artifact_bytes",
+                os.getenv("LOCAL_H3_MAX_ARTIFACT_BYTES", str(512 * 1024 * 1024)),
+            )
         )
+        self._max_concurrency = int(config.get("max_concurrency", os.getenv("LOCAL_H3_MAX_CONCURRENCY", "1")))
 
     @property
     def max_concurrency(self) -> int:
@@ -150,8 +147,11 @@ class LocalH3Provider(VideoProvider):
     def _http_error(error: Exception) -> ProviderResult:
         if isinstance(error, httpx.TimeoutException):
             return ProviderResult(
-                success=False, provider="local_h3", error_code="timeout",
-                error_message=str(error), retryable=True,
+                success=False,
+                provider="local_h3",
+                error_code="timeout",
+                error_message=str(error),
+                retryable=True,
             )
         if isinstance(error, httpx.HTTPStatusError):
             status = error.response.status_code
@@ -164,13 +164,19 @@ class LocalH3Provider(VideoProvider):
             else:
                 code, retryable = "invalid_request", False
             return ProviderResult(
-                success=False, provider="local_h3", error_code=code,
-                error_message=str(error), retryable=retryable,
+                success=False,
+                provider="local_h3",
+                error_code=code,
+                error_message=str(error),
+                retryable=retryable,
                 raw_metadata={"status_code": status},
             )
         return ProviderResult(
-            success=False, provider="local_h3", error_code="gateway_unavailable",
-            error_message=str(error), retryable=True,
+            success=False,
+            provider="local_h3",
+            error_code="gateway_unavailable",
+            error_message=str(error),
+            retryable=True,
         )
 
     async def health(self) -> dict[str, Any]:
@@ -180,12 +186,17 @@ class LocalH3Provider(VideoProvider):
             return response.json()
 
     async def submit(
-        self, req: VideoGenerationRequest, *, model: Optional[str] = None,
+        self,
+        req: VideoGenerationRequest,
+        *,
+        model: Optional[str] = None,
     ) -> ProviderResult:
         locked_model = model or self.model_name
         if not self.supports(req, model=locked_model):
             return ProviderResult(
-                success=False, provider=self.name, model=locked_model,
+                success=False,
+                provider=self.name,
+                model=locked_model,
                 error_code="unsupported_request",
                 error_message="当前 Local H3 Deployment 不支持该模式、时长或参考素材",
             )
@@ -195,7 +206,8 @@ class LocalH3Provider(VideoProvider):
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
                     f"{self.base_url}/v1/generations",
-                    headers=self._headers(idempotency_key=request_key), json=payload,
+                    headers=self._headers(idempotency_key=request_key),
+                    json=payload,
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -209,12 +221,18 @@ class LocalH3Provider(VideoProvider):
         task_id = str(data.get("task_id") or "")
         if not task_id:
             return ProviderResult(
-                success=False, provider=self.name, model=locked_model,
-                error_code="invalid_gateway_response", error_message="Gateway 响应缺少 task_id",
-                retryable=True, raw_metadata=data,
+                success=False,
+                provider=self.name,
+                model=locked_model,
+                error_code="invalid_gateway_response",
+                error_message="Gateway 响应缺少 task_id",
+                retryable=True,
+                raw_metadata=data,
             )
         return ProviderResult(
-            success=True, provider=self.name, model=locked_model,
+            success=True,
+            provider=self.name,
+            model=locked_model,
             external_request_id=task_id,
             usage={"output_video_seconds": float(req.duration)},
             raw_metadata={"protocol": "local_h3_v1", "deployment": self.deployment_name},
@@ -223,13 +241,17 @@ class LocalH3Provider(VideoProvider):
     async def _task(self, task_id: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
-                f"{self.base_url}/v1/generations/{task_id}", headers=self._headers(),
+                f"{self.base_url}/v1/generations/{task_id}",
+                headers=self._headers(),
             )
             response.raise_for_status()
             return response.json()
 
     async def get_status(
-        self, external_task_id: str, *, protocol: str | None = None,
+        self,
+        external_task_id: str,
+        *,
+        protocol: str | None = None,
     ) -> ProviderResult:
         try:
             data = await self._task(external_task_id)
@@ -240,23 +262,34 @@ class LocalH3Provider(VideoProvider):
         status = str(data.get("status") or "").lower()
         if status == "succeeded":
             return ProviderResult(
-                success=True, provider=self.name, model=self.model_name,
-                external_request_id=external_task_id, raw_metadata=data,
+                success=True,
+                provider=self.name,
+                model=self.model_name,
+                external_request_id=external_task_id,
+                raw_metadata=data,
             )
         if status in {"queued", "running", "processing"}:
             return ProviderResult(
-                success=False, provider=self.name, model=self.model_name,
-                external_request_id=external_task_id, error_code="pending",
-                error_message=f"Local H3 任务进行中: {status}", retryable=True,
+                success=False,
+                provider=self.name,
+                model=self.model_name,
+                external_request_id=external_task_id,
+                error_code="pending",
+                error_message=f"Local H3 任务进行中: {status}",
+                retryable=True,
                 raw_metadata=data,
             )
         error = data.get("error") or {}
         code = str(error.get("code") if isinstance(error, dict) else "task_failed")
         message = str(error.get("message") if isinstance(error, dict) else error)
         return ProviderResult(
-            success=False, provider=self.name, model=self.model_name,
-            external_request_id=external_task_id, error_code=code or "task_failed",
-            error_message=message[:500], retryable=code in {"queue_full", "timeout"},
+            success=False,
+            provider=self.name,
+            model=self.model_name,
+            external_request_id=external_task_id,
+            error_code=code or "task_failed",
+            error_message=message[:500],
+            retryable=code in {"queue_full", "timeout"},
             raw_metadata=data,
         )
 
@@ -270,7 +303,10 @@ class LocalH3Provider(VideoProvider):
         }
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("视频 Artifact URL 协议或主机无效")
-        if parsed.hostname.lower() != (base.hostname or "").lower() and parsed.hostname.lower() not in allowed:
+        if (
+            parsed.hostname.lower() != (base.hostname or "").lower()
+            and parsed.hostname.lower() not in allowed
+        ):
             raise ValueError("视频 Artifact URL 主机不在允许列表")
 
     async def cancel(self, external_task_id: str) -> bool:
@@ -285,15 +321,22 @@ class LocalH3Provider(VideoProvider):
             return False
 
     async def fetch_result(
-        self, external_task_id: str, *, protocol: str | None = None,
+        self,
+        external_task_id: str,
+        *,
+        protocol: str | None = None,
     ) -> ProviderResult:
         try:
             data = await self._task(external_task_id)
             if str(data.get("status") or "").lower() != "succeeded":
                 return ProviderResult(
-                    success=False, provider=self.name, model=self.model_name,
-                    external_request_id=external_task_id, error_code="pending",
-                    error_message="Local H3 任务尚未完成", retryable=True,
+                    success=False,
+                    provider=self.name,
+                    model=self.model_name,
+                    external_request_id=external_task_id,
+                    error_code="pending",
+                    error_message="Local H3 任务尚未完成",
+                    retryable=True,
                 )
             artifacts = data.get("artifacts") or []
             video = next((item for item in artifacts if item.get("type") == "video"), None)
@@ -327,12 +370,20 @@ class LocalH3Provider(VideoProvider):
         path = VIDEOS_DIR / filename
         path.write_bytes(content)
         return ProviderResult(
-            success=True, provider=self.name, model=self.model_name,
+            success=True,
+            provider=self.name,
+            model=self.model_name,
             external_request_id=external_task_id,
-            artifacts=[{
-                "type": "video", "storage_key": f"videos/{filename}",
-                "duration_ms": video.get("duration_ms"), "width": video.get("width"),
-                "height": video.get("height"), "sha256": actual_sha,
-            }],
-            usage=data.get("usage") or {}, raw_metadata=data,
+            artifacts=[
+                {
+                    "type": "video",
+                    "storage_key": f"videos/{filename}",
+                    "duration_ms": video.get("duration_ms"),
+                    "width": video.get("width"),
+                    "height": video.get("height"),
+                    "sha256": actual_sha,
+                }
+            ],
+            usage=data.get("usage") or {},
+            raw_metadata=data,
         )

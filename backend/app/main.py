@@ -160,7 +160,7 @@ else:
         if not token:
             auth = request.headers.get("Authorization", "")
             if auth.startswith("Bearer "):
-                token = auth[len("Bearer "):]
+                token = auth[len("Bearer ") :]
         payload = decode_token(token) if token else None
         if not payload or "sub" not in payload:
             return JSONResponse(status_code=401, content={"detail": "unauthorized"})
@@ -181,9 +181,7 @@ else:
                 return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
             artifact = (
-                await session.execute(
-                    select(Artifact).where(Artifact.storage_key == path).limit(1)
-                )
+                await session.execute(select(Artifact).where(Artifact.storage_key == path).limit(1))
             ).scalar_one_or_none()
             if artifact is None:
                 # 无 artifact 记录的老文件（历史聊天上传）：默认拒绝；legacy 开关打开时
@@ -208,6 +206,7 @@ else:
         if full is None:
             return JSONResponse(status_code=404, content={"detail": "not found"})
         return FileResponse(str(full))
+
 
 # 注册路由
 app.include_router(artifacts_router.router, prefix="/api", tags=["artifacts"])

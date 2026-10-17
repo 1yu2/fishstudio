@@ -43,9 +43,7 @@ class LocalH3Capabilities(StrictConfigModel):
     modes: list[Literal["text", "first_frame", "first_last_frame"]] = Field(
         default_factory=lambda: ["text"], min_length=1
     )
-    aspect_ratios: list[str] = Field(
-        default_factory=lambda: ["16:9", "9:16", "1:1"], min_length=1
-    )
+    aspect_ratios: list[str] = Field(default_factory=lambda: ["16:9", "9:16", "1:1"], min_length=1)
 
 
 class OpenAICompatibleConfig(StrictConfigModel):
@@ -70,9 +68,7 @@ class VolcanoImageConfig(StrictConfigModel):
 
 
 class VolcanoImageCapabilities(StrictConfigModel):
-    operations: list[Literal["generate", "edit"]] = Field(
-        default_factory=lambda: ["generate"], min_length=1
-    )
+    operations: list[Literal["generate", "edit"]] = Field(default_factory=lambda: ["generate"], min_length=1)
     max_images: int = Field(default=4, ge=1, le=16)
 
 
@@ -100,12 +96,8 @@ class SpeechCapabilities(StrictConfigModel):
 
 
 class Model3DCapabilities(StrictConfigModel):
-    modes: list[Literal["text", "image"]] = Field(
-        default_factory=lambda: ["text", "image"], min_length=1
-    )
-    formats: list[Literal["glb", "obj"]] = Field(
-        default_factory=lambda: ["glb", "obj"], min_length=1
-    )
+    modes: list[Literal["text", "image"]] = Field(default_factory=lambda: ["text", "image"], min_length=1)
+    formats: list[Literal["glb", "obj"]] = Field(default_factory=lambda: ["glb", "obj"], min_length=1)
 
 
 class DriverSpec(BaseModel):
@@ -249,9 +241,7 @@ class DeploymentInput(BaseModel):
         if _contains_secret(self.config) or _contains_secret(self.capabilities):
             raise ValueError("config/capabilities 禁止包含密钥字段")
         self.config = spec.config_schema.model_validate(self.config).model_dump(mode="json")
-        self.capabilities = spec.capabilities_schema.model_validate(
-            self.capabilities
-        ).model_dump(mode="json")
+        self.capabilities = spec.capabilities_schema.model_validate(self.capabilities).model_dump(mode="json")
         self.pricing = _validate_pricing(self.pricing)
         return self
 

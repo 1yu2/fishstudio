@@ -402,7 +402,8 @@ def get_model_runtime() -> ModelRuntime:
     snapshot = get_catalog().snapshot
     if snapshot.deployments and getattr(_RUNTIME, "catalog_revision", "") != snapshot.catalog_revision:
         deployments = [
-            item.instance for item in snapshot.list("chat")
+            item.instance
+            for item in snapshot.list("chat")
             if isinstance(item.instance, ChatDeployment) and item.enabled
         ]
         _RUNTIME.replace_chat(deployments)

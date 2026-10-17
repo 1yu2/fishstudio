@@ -63,17 +63,12 @@ class TestStoryboardPayload:
         assert p.episodes[0].scenes[0].shots[0].duration_ms == 60000
 
     def test_subtitle_time_inverted_rejected(self):
-        payload = _payload(
-            subtitle_tracks=[{"text": "字幕", "start_ms": 3000, "end_ms": 1000}]
-        )
+        payload = _payload(subtitle_tracks=[{"text": "字幕", "start_ms": 3000, "end_ms": 1000}])
         with pytest.raises(ValidationError):
             StoryboardPayload.model_validate(payload)
 
-
     def test_dialogue_time_inverted_rejected(self):
-        payload = _payload(
-            dialogue_tracks=[{"text": "台词", "start_ms": 2000, "end_ms": 2000}]
-        )
+        payload = _payload(dialogue_tracks=[{"text": "台词", "start_ms": 2000, "end_ms": 2000}])
         with pytest.raises(ValidationError):
             StoryboardPayload.model_validate(payload)
 
@@ -175,6 +170,7 @@ class TestBiblePayload:
     def test_style_bible_requires_visual_style(self):
         with pytest.raises(ValidationError):
             StyleBiblePayload.model_validate({"visual_style": ""})
+
 
 # ─────────────────────────────────────────
 # 旧文本分镜解析（纯函数）
@@ -309,9 +305,7 @@ class TestRouterErrorMapping:
             return False, ["分镜 revision 1 未审批（当前状态 draft）"]
 
         monkeypatch.setattr("app.routers.series._owned_episode_project", fake_ctx)
-        monkeypatch.setattr(
-            "app.routers.series.approval_service.check_generation_gate", fake_gate
-        )
+        monkeypatch.setattr("app.routers.series.approval_service.check_generation_gate", fake_gate)
         resp = client.get("/api/series/episodes/ep-1/generation-gate")
         assert resp.status_code == 200
         body = resp.json()

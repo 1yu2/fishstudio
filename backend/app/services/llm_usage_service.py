@@ -33,7 +33,9 @@ def _normalize_usage(raw: dict[str, Any]) -> dict[str, int]:
         ),
         "output_tokens": _number(raw.get("output_tokens", raw.get("completion_tokens"))),
         "reasoning_tokens": _number(
-            raw.get("reasoning_tokens", output_details.get("reasoning", output_details.get("reasoning_tokens")))
+            raw.get(
+                "reasoning_tokens", output_details.get("reasoning", output_details.get("reasoning_tokens"))
+            )
         ),
     }
 
@@ -92,9 +94,7 @@ def calculate_llm_cost(usage: dict[str, int]) -> tuple[Optional[Decimal], dict[s
     output_price = _price("LLM_OUTPUT_PRICE_CNY_PER_MILLION")
     snapshot = {
         "input_price_cny_per_million": str(input_price) if input_price is not None else None,
-        "cached_input_price_cny_per_million": (
-            str(cached_price) if cached_price is not None else None
-        ),
+        "cached_input_price_cny_per_million": (str(cached_price) if cached_price is not None else None),
         "output_price_cny_per_million": str(output_price) if output_price is not None else None,
     }
     if input_price is None or output_price is None:
@@ -142,9 +142,7 @@ class LLMUsageCallback(AsyncCallbackHandler):
         self._started[str(run_id)] = (time.monotonic(), context_snapshot)
 
     async def on_llm_end(self, response: Any, *, run_id: Any, **kwargs: Any) -> None:
-        started_at, metadata = self._started.pop(
-            str(run_id), (time.monotonic(), {"creative_role": "chat"})
-        )
+        started_at, metadata = self._started.pop(str(run_id), (time.monotonic(), {"creative_role": "chat"}))
         usage = extract_llm_usage(response)
         usage_status = "recorded" if usage is not None else "usage_unavailable"
         usage = usage or {
@@ -194,9 +192,7 @@ class LLMUsageCallback(AsyncCallbackHandler):
             await session.commit()
 
     async def on_llm_error(self, error: BaseException, *, run_id: Any, **kwargs: Any) -> None:
-        started_at, metadata = self._started.pop(
-            str(run_id), (time.monotonic(), {"creative_role": "chat"})
-        )
+        started_at, metadata = self._started.pop(str(run_id), (time.monotonic(), {"creative_role": "chat"}))
         async with SessionLocal() as session:
             await usage_service.record_usage(
                 session,

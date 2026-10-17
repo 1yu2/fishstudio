@@ -43,7 +43,10 @@ def test_local_h3_capability_and_route_plan(monkeypatch):
     assert decision.resolution == "preview"
 
     plan = resolve_video_routing(
-        "explicit", "preview", duration=4, explicit_provider="local_h3",
+        "explicit",
+        "preview",
+        duration=4,
+        explicit_provider="local_h3",
     )
     assert plan["provider"] == "local_h3"
     assert plan["model"] == decision.model
@@ -65,7 +68,9 @@ async def test_local_h3_submit_uses_gateway_contract_and_idempotency(monkeypatch
     _client(monkeypatch, handler)
     provider = LocalH3Provider()
     request = VideoGenerationRequest(
-        prompt="cat", duration=4, idempotency_key="job-123",
+        prompt="cat",
+        duration=4,
+        idempotency_key="job-123",
     )
     result = await provider.submit(request, model="MiniMax-H3")
 
@@ -73,7 +78,9 @@ async def test_local_h3_submit_uses_gateway_contract_and_idempotency(monkeypatch
     assert result.external_request_id == "h3-task-1"
     assert result.raw_metadata["protocol"] == "local_h3_v1"
     assert captured == {
-        "path": "/v1/generations", "key": "job-123", "auth": "Bearer secret",
+        "path": "/v1/generations",
+        "key": "job-123",
+        "auth": "Bearer secret",
     }
 
 
@@ -85,14 +92,24 @@ async def test_local_h3_poll_download_and_hash(monkeypatch, tmp_path):
 
     def handler(request: httpx.Request):
         if request.url.path == "/v1/generations/h3-task-1":
-            return httpx.Response(200, json={
-                "task_id": "h3-task-1", "status": "succeeded",
-                "artifacts": [{
-                    "type": "video", "url": "http://h3.test/files/video.mp4",
-                    "sha256": digest, "duration_ms": 4000, "width": 672, "height": 384,
-                }],
-                "usage": {"gpu_seconds": 120, "output_video_seconds": 4},
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "task_id": "h3-task-1",
+                    "status": "succeeded",
+                    "artifacts": [
+                        {
+                            "type": "video",
+                            "url": "http://h3.test/files/video.mp4",
+                            "sha256": digest,
+                            "duration_ms": 4000,
+                            "width": 672,
+                            "height": 384,
+                        }
+                    ],
+                    "usage": {"gpu_seconds": 120, "output_video_seconds": 4},
+                },
+            )
         if request.url.path == "/files/video.mp4":
             return httpx.Response(200, content=content, headers={"content-type": "video/mp4"})
         return httpx.Response(404)
@@ -120,9 +137,13 @@ async def test_local_h3_pending_oom_and_cancel(monkeypatch):
             return httpx.Response(202)
         if state["status"] == "running":
             return httpx.Response(200, json={"status": "running", "progress": 25})
-        return httpx.Response(200, json={
-            "status": "failed", "error": {"code": "oom", "message": "CUDA OOM"},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "status": "failed",
+                "error": {"code": "oom", "message": "CUDA OOM"},
+            },
+        )
 
     _client(monkeypatch, handler)
     provider = LocalH3Provider()

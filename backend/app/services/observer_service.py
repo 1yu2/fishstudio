@@ -1,4 +1,5 @@
 """通过 Model Runtime 执行结构化剧本/连续性 Observer。"""
+
 from __future__ import annotations
 
 import json
@@ -18,8 +19,7 @@ def _json_content(response: Any) -> dict[str, Any]:
     content = getattr(response, "content", response)
     if isinstance(content, list):
         content = "".join(
-            str(item.get("text", "")) if isinstance(item, dict) else str(item)
-            for item in content
+            str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content
         )
     text = str(content).strip()
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)

@@ -41,15 +41,20 @@ LEASE_SECONDS = 300
 POLL_DELAY_SECONDS = 10.0  # 外部任务未完成时的重查间隔（run_after）
 SUPPORTED_OPERATIONS = ["generate_video", "generate_image", "render_episode", "tts", "clone_voice"]
 OPERATION_WORKER_CLASS = {
-    "generate_video": "video", "generate_image": "image", "render_episode": "render",
-    "tts": "audio", "clone_voice": "audio",
+    "generate_video": "video",
+    "generate_image": "image",
+    "render_episode": "render",
+    "tts": "audio",
+    "clone_voice": "audio",
 }
 WORKER_ID = os.getenv("WORKER_ID", f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}")
 
 # Provider 级并发上限（asyncio.Semaphore 限流）
 PROVIDER_CONCURRENCY = {
     "local_h3": max(1, int(os.getenv("LOCAL_H3_MAX_CONCURRENCY", "1"))),
-    "minimax": 3, "volcano": 2, "mock": 10,
+    "minimax": 3,
+    "volcano": 2,
+    "mock": 10,
 }
 _SEMAPHORES: dict[str, asyncio.Semaphore] = {
     name: asyncio.Semaphore(n) for name, n in PROVIDER_CONCURRENCY.items()
@@ -102,9 +107,7 @@ async def _job_user_id(session: AsyncSession, job: GenerationJob) -> Optional[in
     """worker 进程没有 ExecutionContext，从项目归属补 user_id（usage/summary 按用户隔离）。"""
     if not job.project_id:
         return None
-    return await session.scalar(
-        select(SeriesProject.user_id).where(SeriesProject.id == job.project_id)
-    )
+    return await session.scalar(select(SeriesProject.user_id).where(SeriesProject.id == job.project_id))
 
 
 async def _record_job_usage(
@@ -223,13 +226,9 @@ async def finalize_job(
         if job.provider:
             await provider_circuit_service.record_success(session, job.provider, job.model)
     else:
-        await job_service.mark_failed(
-            session, job, error_code=error_code, error=error, retryable=retryable
-        )
+        await job_service.mark_failed(session, job, error_code=error_code, error=error, retryable=retryable)
         if job.provider and retryable:
-            await provider_circuit_service.record_failure(
-                session, job.provider, job.model, error=error
-            )
+            await provider_circuit_service.record_failure(session, job.provider, job.model, error=error)
     terminal_status = {
         "succeeded": "succeeded",
         "failed": "failed",
@@ -315,11 +314,14 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             decision_prov, mocked = _resolve_locked_video_provider(locked_prov_name)
             if decision_prov is None:
                 await finalize_job(
-                    session, job, success=False,
+                    session,
+                    job,
+                    success=False,
                     error_code="provider_unavailable",
                     error=f"报价锁定的 Provider {locked_prov_name} 当前不可用，请重新确认费用",
                     usage_fields={
-                        "operation": "generate_video", "status": "failed",
+                        "operation": "generate_video",
+                        "status": "failed",
                         "error_code": "provider_unavailable",
                     },
                 )
@@ -332,14 +334,17 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             locked_model = routing_snapshot.get("model", "")
             if not mocked and not provider.supports(req, model=locked_model):
                 await finalize_job(
-                    session, job, success=False,
+                    session,
+                    job,
+                    success=False,
                     error_code="routing_snapshot_invalid",
                     error=(
                         f"锁定模型 {routing_snapshot.get('model')} 不支持当前请求 "
                         f"(duration={req.duration}, mode={req.mode})"
                     ),
                     usage_fields={
-                        "operation": "generate_video", "status": "failed",
+                        "operation": "generate_video",
+                        "status": "failed",
                         "error_code": "routing_snapshot_invalid",
                     },
                 )
@@ -363,7 +368,8 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
                 submit_model = locked_model
             await session.flush()
             estimated = routing_snapshot.get("estimated_total_cost") or estimate_video_cost(
-                locked_prov_name, locked_model,
+                locked_prov_name,
+                locked_model,
                 routing_snapshot.get("resolution", "768P"),
                 output_seconds=req.duration,
                 input_image_count=len(req.reference_images) + (1 if req.first_frame else 0),
@@ -405,43 +411,52 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             submit_model = decision.model
             sem = _provider_semaphore(provider.name)
 
-        await _ensure_media_invocation(
-            session, job, modality="video", purpose="shot_video"
-        )
+        await _ensure_media_invocation(session, job, modality="video", purpose="shot_video")
         async with sem:
             result = await provider.submit(req, model=submit_model)
         latency_ms = int((time.monotonic() - started) * 1000)
         if not result.success:
             await finalize_job(
-                session, job, success=False,
+                session,
+                job,
+                success=False,
                 error_code=result.error_code or "submit_failed",
-                error=result.error_message, retryable=result.retryable,
+                error=result.error_message,
+                retryable=result.retryable,
                 usage_fields={
-                    "operation": "generate_video.submit", "status": "failed",
-                    "latency_ms": latency_ms, "estimated_cost": estimated,
+                    "operation": "generate_video.submit",
+                    "status": "failed",
+                    "latency_ms": latency_ms,
+                    "estimated_cost": estimated,
                     "error_code": result.error_code,
                 },
             )
             return
         job.external_task_id = result.external_request_id
-        protocol_version = "mock" if mocked else (
-            (routing_snapshot or {}).get("protocol")
-            or (result.raw_metadata or {}).get("protocol")
-            or "v1"
+        protocol_version = (
+            "mock"
+            if mocked
+            else (
+                (routing_snapshot or {}).get("protocol")
+                or (result.raw_metadata or {}).get("protocol")
+                or "v1"
+            )
         )
         job.params = {**(job.params or {}), "protocol_version": protocol_version}
         # R5.5：验证 Provider 实际使用的模型与锁定快照一致，不一致时标失败
         expected_model = job.model
         if expected_model and result.model and result.model != expected_model:
             await finalize_job(
-                session, job, success=False,
+                session,
+                job,
+                success=False,
                 error_code="model_mismatch",
-                error=(
-                    f"Provider 返回模型 {result.model} 与执行模型 {expected_model} 不一致"
-                ),
+                error=(f"Provider 返回模型 {result.model} 与执行模型 {expected_model} 不一致"),
                 usage_fields={
-                    "operation": "generate_video.submit", "status": "failed",
-                    "latency_ms": latency_ms, "estimated_cost": estimated,
+                    "operation": "generate_video.submit",
+                    "status": "failed",
+                    "latency_ms": latency_ms,
+                    "estimated_cost": estimated,
                     "error_code": "model_mismatch",
                 },
             )
@@ -451,7 +466,10 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
         await session.commit()
         await session.refresh(job)
         await _record_job_usage(
-            session, job, operation="generate_video.submit", status="submitted",
+            session,
+            job,
+            operation="generate_video.submit",
+            status="submitted",
             latency_ms=latency_ms,
             provider_request_id=result.external_request_id,
             event_metadata={
@@ -467,20 +485,21 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
         provider = next((p for p in _router.providers if p.name == job.provider), None)
         if provider is None:
             await finalize_job(
-                session, job, success=False,
+                session,
+                job,
+                success=False,
                 error_code="provider_adapter_missing",
                 error=f"job 记录的 provider {job.provider} 在当前 Router 中不可用，任务无法恢复",
                 usage_fields={
-                    "operation": "generate_video", "status": "failed",
+                    "operation": "generate_video",
+                    "status": "failed",
                     "error_code": "provider_adapter_missing",
                 },
             )
             return
         from app.providers.pricing import estimate_video_cost as evc
 
-        estimated = ((job.params or {}).get("routing_snapshot") or {}).get(
-            "estimated_total_cost"
-        ) or evc(
+        estimated = ((job.params or {}).get("routing_snapshot") or {}).get("estimated_total_cost") or evc(
             job.provider or "minimax",
             job.model or "MiniMax-H3",
             (job.params or {}).get("resolution", "768P"),
@@ -503,11 +522,15 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             await job_service.requeue_for_poll(session, job, delay_seconds=POLL_DELAY_SECONDS)
             return
         await finalize_job(
-            session, job, success=False,
+            session,
+            job,
+            success=False,
             error_code=status.error_code or "task_failed",
-            error=status.error_message, retryable=status.retryable,
+            error=status.error_message,
+            retryable=status.retryable,
             usage_fields={
-                "operation": "generate_video", "status": "failed",
+                "operation": "generate_video",
+                "status": "failed",
                 "estimated_cost": estimated,
                 "error_code": status.error_code or "query_error",
             },
@@ -520,11 +543,15 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
         fetched = await provider.fetch_result(job.external_task_id, protocol=protocol)
     if not fetched.success:
         await finalize_job(
-            session, job, success=False,
+            session,
+            job,
+            success=False,
             error_code=fetched.error_code or "fetch_failed",
-            error=fetched.error_message, retryable=fetched.retryable,
+            error=fetched.error_message,
+            retryable=fetched.retryable,
             usage_fields={
-                "operation": "generate_video", "status": "failed",
+                "operation": "generate_video",
+                "status": "failed",
                 "estimated_cost": estimated,
                 "error_code": fetched.error_code or "fetch_failed",
             },
@@ -571,12 +598,14 @@ async def _finish_job(
         shot_id = (job.params or {}).get("shot_id") or job.shot_id
         if shot_id:
             from app.services import candidate_service
+
             await candidate_service.register_candidate(
                 session, artifact=artifact, shot_id=shot_id, candidate_index=0
             )
         request_id = (job.params or {}).get("regeneration_request_id")
         if request_id:
             from app.db.models import RegenerationRequest
+
             regen = await session.get(RegenerationRequest, request_id)
             if regen:
                 regen.result_artifact_id = artifact.id
@@ -585,7 +614,9 @@ async def _finish_job(
 
     usage = result.usage or {}
     await finalize_job(
-        session, job, success=True,
+        session,
+        job,
+        success=True,
         result={
             "provider": result.provider,
             "model": result.model,
@@ -594,7 +625,8 @@ async def _finish_job(
         },
         artifact={"artifact_id": artifact_id, "storage_key": storage_key, "url": url},
         usage_fields={
-            "operation": "generate_video", "status": "success",
+            "operation": "generate_video",
+            "status": "success",
             "latency_ms": int((time.monotonic() - started) * 1000),
             "estimated_cost": estimated,
             "cost_source": "estimate",
@@ -629,12 +661,13 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
 
     purpose = "image_edit" if req.source_image else "image_generation"
     try:
-        execution = await _resolve_worker_image(
-            session, req, purpose=purpose
-        )
+        execution = await _resolve_worker_image(session, req, purpose=purpose)
     except RuntimeError as error:
         await finalize_job(
-            session, job, success=False, error_code="no_provider",
+            session,
+            job,
+            success=False,
+            error_code="no_provider",
             error=str(error),
         )
         return
@@ -655,16 +688,22 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
     # 图片计费（pricing 图片单价表；无条目按 None，不按 0 入账）
     from app.providers.pricing import estimate_image_cost
 
-    image_cost = None if mocked else estimate_image_cost(
-        provider.name, result.model or "", count=max(1, req.candidate_count)
+    image_cost = (
+        None
+        if mocked
+        else estimate_image_cost(provider.name, result.model or "", count=max(1, req.candidate_count))
     )
     if not result.success:
         await finalize_job(
-            session, job, success=False,
+            session,
+            job,
+            success=False,
             error_code=result.error_code or "generate_failed",
-            error=result.error_message, retryable=result.retryable,
+            error=result.error_message,
+            retryable=result.retryable,
             usage_fields={
-                "operation": "generate_image", "status": "failed",
+                "operation": "generate_image",
+                "status": "failed",
                 "estimated_cost": image_cost,
                 "error_code": result.error_code or "generate_failed",
             },
@@ -692,21 +731,25 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
         shot_id = (job.params or {}).get("shot_id") or job.shot_id
         if shot_id:
             from app.services import candidate_service
+
             await candidate_service.register_candidate(
                 session, artifact=artifact, shot_id=shot_id, candidate_index=len(artifact_ids) - 1
             )
         request_id = (job.params or {}).get("regeneration_request_id")
         if request_id:
             from app.db.models import RegenerationRequest
+
             regen = await session.get(RegenerationRequest, request_id)
             if regen:
                 regen.result_artifact_id = artifact.id
                 regen.status = "succeeded"
 
     # 按成功数量重新估算图片费用（partial 场景只计实际成功数）
-    actual_cost = estimate_image_cost(
-        provider.name, result.model or "", count=len(artifact_ids)
-    ) if not mocked else None
+    actual_cost = (
+        estimate_image_cost(provider.name, result.model or "", count=len(artifact_ids))
+        if not mocked
+        else None
+    )
 
     usage_meta = {
         "mocked": mocked,
@@ -717,16 +760,20 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
         **(result.raw_metadata or {}),
     }
     await finalize_job(
-        session, job, success=True,
+        session,
+        job,
+        success=True,
         result={
             "mocked": mocked,
             "candidate_count": req.candidate_count,
             "artifact_ids": artifact_ids,
             "success_count": len(artifact_ids),
             "partial": usage_meta.get("partial", False),
-            **{k: v for k, v in result.raw_metadata.items() if k not in (
-                "mocked", "candidate_count", "success_count", "failed_count", "partial"
-            )},
+            **{
+                k: v
+                for k, v in result.raw_metadata.items()
+                if k not in ("mocked", "candidate_count", "success_count", "failed_count", "partial")
+            },
         },
         artifact={
             "artifact_id": artifact_ids[0] if artifact_ids else "",
@@ -734,10 +781,13 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
             "url": f"/api/artifacts/{artifact_ids[0]}/download" if artifact_ids else "",
         },
         usage_fields={
-            "operation": "generate_image", "status": "success",
+            "operation": "generate_image",
+            "status": "success",
             "estimated_cost": actual_cost,
             "cost_source": "estimate",
-            "output_units": float((result.usage or {}).get("output_image_count", len(artifact_ids)) or len(artifact_ids)),
+            "output_units": float(
+                (result.usage or {}).get("output_image_count", len(artifact_ids)) or len(artifact_ids)
+            ),
             "provider_request_id": result.external_request_id,
             "event_metadata": usage_meta,
         },
@@ -755,7 +805,10 @@ async def execute_render_episode(session: AsyncSession, job: GenerationJob) -> N
     episode_id = params.get("episode_id")
     if not episode_id:
         await finalize_job(
-            session, job, success=False, error_code="invalid_params",
+            session,
+            job,
+            success=False,
+            error_code="invalid_params",
             error="render_episode 缺少 params.episode_id",
         )
         return
@@ -778,10 +831,15 @@ async def execute_render_episode(session: AsyncSession, job: GenerationJob) -> N
         # final 模式缺镜头产物等确定性错误：终态失败不可重试（P1-11）
         logger.warning(f"render_episode 校验失败 (episode={episode_id}): {e}")
         await finalize_job(
-            session, job, success=False,
-            error_code="missing_shot_video", error=str(e), retryable=False,
+            session,
+            job,
+            success=False,
+            error_code="missing_shot_video",
+            error=str(e),
+            retryable=False,
             usage_fields={
-                "operation": "render_episode", "status": "failed",
+                "operation": "render_episode",
+                "status": "failed",
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "error_code": "missing_shot_video",
             },
@@ -790,10 +848,15 @@ async def execute_render_episode(session: AsyncSession, job: GenerationJob) -> N
     except Exception as e:
         logger.exception(f"render_episode 渲染失败 (episode={episode_id})")
         await finalize_job(
-            session, job, success=False,
-            error_code="render_failed", error=str(e), retryable=True,
+            session,
+            job,
+            success=False,
+            error_code="render_failed",
+            error=str(e),
+            retryable=True,
             usage_fields={
-                "operation": "render_episode", "status": "failed",
+                "operation": "render_episode",
+                "status": "failed",
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "error_code": "render_failed",
             },
@@ -824,7 +887,9 @@ async def execute_render_episode(session: AsyncSession, job: GenerationJob) -> N
         },
     )
     await finalize_job(
-        session, job, success=True,
+        session,
+        job,
+        success=True,
         result={},
         artifact={
             "artifact_id": result["artifact_id"],
@@ -850,7 +915,10 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
     text = (params.get("text") or "").strip()
     if not text:
         await finalize_job(
-            session, job, success=False, error_code="invalid_params",
+            session,
+            job,
+            success=False,
+            error_code="invalid_params",
             error="tts 缺少 params.text",
         )
         return
@@ -859,7 +927,10 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
         provider, mocked = _media_runtime.resolve_speech()
     except RuntimeError:
         await finalize_job(
-            session, job, success=False, error_code="no_provider",
+            session,
+            job,
+            success=False,
+            error_code="no_provider",
             error="无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS",
         )
         return
@@ -881,13 +952,19 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
             voice_reference = provider_meta.get("reference_audio")
         if voice_asset_id and (card is None or card.status != "approved"):
             await finalize_job(
-                session, job, success=False, error_code="invalid_params",
+                session,
+                job,
+                success=False,
+                error_code="invalid_params",
                 error="TTS 需要已批准的 voice 资产；请先完成 clone-voice → 试听 → 审批",
             )
             return
         if not voice_id and not voice_reference:
             await finalize_job(
-                session, job, success=False, error_code="invalid_params",
+                session,
+                job,
+                success=False,
+                error_code="invalid_params",
                 error="已批准的 voice 资产缺少 voice_id/reference_audio，请重新复刻音色",
             )
             return
@@ -907,11 +984,15 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
     result = await provider.synthesize(req)
     if not result.success:
         await finalize_job(
-            session, job, success=False,
+            session,
+            job,
+            success=False,
             error_code=result.error_code or "tts_failed",
-            error=result.error_message, retryable=result.retryable,
+            error=result.error_message,
+            retryable=result.retryable,
             usage_fields={
-                "operation": "tts", "status": "failed",
+                "operation": "tts",
+                "status": "failed",
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "error_code": result.error_code or "tts_failed",
             },
@@ -951,7 +1032,9 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
         logger.warning(f"tts job {job.id}: shot {params.get('shot_id')} 不存在，跳过 track 回写")
 
     await finalize_job(
-        session, job, success=True,
+        session,
+        job,
+        success=True,
         result={
             "provider": result.provider,
             "model": result.model,
@@ -959,7 +1042,8 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
         },
         artifact={"artifact_id": artifact.id, "storage_key": storage_key},
         usage_fields={
-            "operation": "tts", "status": "success",
+            "operation": "tts",
+            "status": "success",
             "latency_ms": int((time.monotonic() - started) * 1000),
             "output_units": float(result.usage.get("output_audio_seconds", 0) or 0),
             "provider_request_id": result.external_request_id,
@@ -991,14 +1075,20 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
     voice_name = (params.get("voice_name") or "").strip()
     if not asset_id or not storage_key:
         await finalize_job(
-            session, job, success=False, error_code="invalid_params",
+            session,
+            job,
+            success=False,
+            error_code="invalid_params",
             error="clone_voice 缺少 params.asset_id / reference_audio_storage_key",
         )
         return
     asset = await session.get(AssetCard, asset_id)
     if asset is None or asset.type != "voice":
         await finalize_job(
-            session, job, success=False, error_code="invalid_params",
+            session,
+            job,
+            success=False,
+            error_code="invalid_params",
             error=f"voice 资产不存在或类型不符: {asset_id}",
         )
         return
@@ -1008,10 +1098,14 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
         deployment = _media_runtime.get("speech", locked_provider)
         if deployment is None or not deployment.provider.is_available():
             await finalize_job(
-                session, job, success=False, error_code="provider_unavailable",
+                session,
+                job,
+                success=False,
+                error_code="provider_unavailable",
                 error="报价锁定的 qwen_tts 当前不可用，请重新获取报价",
                 usage_fields={
-                    "operation": "clone_voice", "status": "failed",
+                    "operation": "clone_voice",
+                    "status": "failed",
                     "estimated_cost": usage_estimated_cost,
                     "unit_type": "request",
                     "error_code": "provider_unavailable",
@@ -1023,7 +1117,10 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
     elif locked_provider == "mock_tts":
         if not mock_providers_enabled():
             await finalize_job(
-                session, job, success=False, error_code="provider_unavailable",
+                session,
+                job,
+                success=False,
+                error_code="provider_unavailable",
                 error="报价锁定的 mock_tts 当前不可用",
             )
             return
@@ -1032,7 +1129,20 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
         try:
             provider, mocked = _media_runtime.resolve_speech()
         except RuntimeError:
-            await finalize_job(session, job, success=False, error_code="no_provider", error="无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS", usage_fields={"operation": "clone_voice", "status": "failed", "estimated_cost": usage_estimated_cost, "unit_type": "request", "error_code": "no_provider"})
+            await finalize_job(
+                session,
+                job,
+                success=False,
+                error_code="no_provider",
+                error="无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS",
+                usage_fields={
+                    "operation": "clone_voice",
+                    "status": "failed",
+                    "estimated_cost": usage_estimated_cost,
+                    "unit_type": "request",
+                    "error_code": "no_provider",
+                },
+            )
             return
 
     job.provider = provider.name
@@ -1046,18 +1156,25 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
     ref_path = (storage_root / storage_key).resolve()
     if not ref_path.is_relative_to(storage_root):
         await finalize_job(
-            session, job, success=False, error_code="invalid_params",
+            session,
+            job,
+            success=False,
+            error_code="invalid_params",
             error="参考音频路径非法（超出 storage 目录范围）",
         )
         return
     result = await provider.clone_voice(f"/storage/{storage_key}", voice_name or asset.name)
     if not result.success:
         await finalize_job(
-            session, job, success=False,
+            session,
+            job,
+            success=False,
             error_code=result.error_code or "clone_failed",
-            error=result.error_message, retryable=result.retryable,
+            error=result.error_message,
+            retryable=result.retryable,
             usage_fields={
-                "operation": "clone_voice", "status": "failed",
+                "operation": "clone_voice",
+                "status": "failed",
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "estimated_cost": usage_estimated_cost,
                 "unit_type": "request",
@@ -1103,7 +1220,9 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
         }
 
     await finalize_job(
-        session, job, success=True,
+        session,
+        job,
+        success=True,
         result={
             "provider": result.provider,
             "model": result.model,
@@ -1116,7 +1235,8 @@ async def execute_clone_voice(session: AsyncSession, job: GenerationJob) -> None
             "url": f"/api/artifacts/{artifact_id}/download" if artifact_id else "",
         },
         usage_fields={
-            "operation": "clone_voice", "status": "success",
+            "operation": "clone_voice",
+            "status": "success",
             "latency_ms": int((time.monotonic() - started) * 1000),
             "estimated_cost": usage_estimated_cost,
             "actual_cost": 0 if mocked else quoted_cost,
@@ -1145,16 +1265,16 @@ EXECUTORS: dict[str, Callable[[AsyncSession, GenerationJob], Awaitable[None]]] =
 
 
 async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
-    if job.provider and not await provider_circuit_service.allow_request(
-        session, job.provider, job.model
-    ):
+    if job.provider and not await provider_circuit_service.allow_request(session, job.provider, job.model):
         await job_service.requeue_for_poll(session, job, delay_seconds=30)
         await session.commit()
         return
     executor = EXECUTORS.get(job.operation)
     if executor is None:
         await finalize_job(
-            session, job, success=False,
+            session,
+            job,
+            success=False,
             error_code="unsupported_operation",
             error=f"暂不支持的 operation: {job.operation}",
         )
@@ -1169,7 +1289,9 @@ async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
                 except TimeoutError:
                     async with SessionLocal() as heartbeat_session:
                         await job_service.heartbeat(
-                            heartbeat_session, job.id, WORKER_ID,
+                            heartbeat_session,
+                            job.id,
+                            WORKER_ID,
                             lease_seconds=LEASE_SECONDS,
                         )
                         await heartbeat_session.commit()
@@ -1181,8 +1303,12 @@ async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
             logger.exception(f"job {job.id} ({job.operation}) 执行异常")
             await session.rollback()  # executor 可能把事务置于失败态，先回滚再标失败
             await finalize_job(
-                session, job, success=False,
-                error_code="executor_exception", error=str(e), retryable=True,
+                session,
+                job,
+                success=False,
+                error_code="executor_exception",
+                error=str(e),
+                retryable=True,
             )
         finally:
             heartbeat_stop.set()
@@ -1197,16 +1323,19 @@ async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
 async def run_worker(poll_interval: float = 2.0, once: bool = False) -> None:
     """worker 主循环：recover 过期租约 → lease → 分发 executor。"""
     capabilities = {
-        item.strip() for item in os.getenv("WORKER_CAPABILITIES", "video,image,audio,render").split(",")
+        item.strip()
+        for item in os.getenv("WORKER_CAPABILITIES", "video,image,audio,render").split(",")
         if item.strip()
     }
     operations = [
-        operation for operation in SUPPORTED_OPERATIONS
-        if OPERATION_WORKER_CLASS[operation] in capabilities
+        operation for operation in SUPPORTED_OPERATIONS if OPERATION_WORKER_CLASS[operation] in capabilities
     ]
     logger.info(
         "generation worker 启动 (id=%s capabilities=%s poll_interval=%ss once=%s)",
-        WORKER_ID, sorted(capabilities), poll_interval, once,
+        WORKER_ID,
+        sorted(capabilities),
+        poll_interval,
+        once,
     )
     while True:
         try:
@@ -1221,9 +1350,12 @@ async def run_worker(poll_interval: float = 2.0, once: bool = False) -> None:
                     logger.exception("model catalog 刷新失败，继续使用上一版快照")
                 await job_service.recover_expired_leases(session)
                 jobs = await job_service.lease_jobs(
-                    session, operations=operations, limit=5,
+                    session,
+                    operations=operations,
+                    limit=5,
                     lease_seconds=LEASE_SECONDS,
-                    worker_id=WORKER_ID, worker_classes=[*capabilities, "media"],
+                    worker_id=WORKER_ID,
+                    worker_classes=[*capabilities, "media"],
                 )
                 await session.commit()  # 租约落库后再执行
                 for job in jobs:

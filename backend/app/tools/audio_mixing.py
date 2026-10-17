@@ -92,9 +92,7 @@ class ConcatenateAudioInput(BaseModel):
     crossfade_duration: int = Field(
         default=200, description="交叉淡入淡出时长（毫秒），默认200ms，设为0则无过渡"
     )
-    silence_duration: int = Field(
-        default=1200, description="音频片段之间的静音时长（毫秒），默认1200ms"
-    )
+    silence_duration: int = Field(default=1200, description="音频片段之间的静音时长（毫秒），默认1200ms")
 
 
 @tool("concatenate_audio", args_schema=ConcatenateAudioInput)
@@ -131,8 +129,7 @@ def concatenate_audio_tool(
                 )
                 output_label = "out" if index == len(paths) - 1 else f"xf{index}"
                 filters.append(
-                    f"[{current}][a{index}]acrossfade=d={fade_seconds:.3f}:c1=tri:c2=tri"
-                    f"[{output_label}]"
+                    f"[{current}][a{index}]acrossfade=d={fade_seconds:.3f}:c1=tri:c2=tri[{output_label}]"
                 )
                 current = output_label
                 current_duration += durations[index] - fade_seconds
@@ -205,10 +202,7 @@ def select_bgm_tool(scene_description: str, duration_seconds: Optional[float] = 
             return f"Error: BGM目录为空，请在 {BGM_DIR} 添加背景音乐文件"
 
         keywords = [word for word in scene_description.lower().split() if word]
-        scored = [
-            (sum(1 for word in keywords if word in path.stem.lower()), path)
-            for path in bgm_files
-        ]
+        scored = [(sum(1 for word in keywords if word in path.stem.lower()), path) for path in bgm_files]
         best_score, best_match = max(scored, key=lambda item: (item[0], item[1].name))
         original_duration = probe_audio_duration(best_match)
         adjusted_duration = original_duration

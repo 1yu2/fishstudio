@@ -140,10 +140,12 @@ async def lease_jobs(
     eligible = (
         select(
             GenerationJob.id.label("job_id"),
-            func.row_number().over(
+            func.row_number()
+            .over(
                 partition_by=SeriesProject.user_id,
                 order_by=(GenerationJob.priority.desc(), GenerationJob.created_at),
-            ).label("user_rank"),
+            )
+            .label("user_rank"),
             GenerationJob.priority.label("priority"),
             GenerationJob.created_at.label("created_at"),
         )
@@ -308,9 +310,7 @@ async def recover_expired_leases(session: AsyncSession) -> int:
     return len(jobs)
 
 
-async def heartbeat(
-    session: AsyncSession, job_id: str, worker_id: str, *, lease_seconds: int = 300
-) -> bool:
+async def heartbeat(session: AsyncSession, job_id: str, worker_id: str, *, lease_seconds: int = 300) -> bool:
     """只有当前 lease owner 能续租，防止旧 Worker 复活覆盖新租约。"""
     now = _utcnow()
     result = await session.execute(

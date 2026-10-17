@@ -19,10 +19,16 @@ _local_waiters: set[asyncio.Future[None]] = set()
 
 def event_payload(row: JobEvent) -> dict[str, Any]:
     return {
-        "sequence": row.id, "event": row.event, "project_id": row.project_id,
-        "run_id": row.run_id, "step_id": row.step_id, "job_id": row.job_id,
-        "entity_type": row.entity_type, "entity_id": row.entity_id,
-        "status": row.status, "progress": row.progress,
+        "sequence": row.id,
+        "event": row.event,
+        "project_id": row.project_id,
+        "run_id": row.run_id,
+        "step_id": row.step_id,
+        "job_id": row.job_id,
+        "entity_type": row.entity_type,
+        "entity_id": row.entity_id,
+        "status": row.status,
+        "progress": row.progress,
         "payload": row.payload or {},
         "occurred_at": row.occurred_at.isoformat() if row.occurred_at else None,
     }
@@ -48,13 +54,20 @@ async def _publish(channel: str, payload: dict[str, Any]) -> None:
         return
 
 
-async def emit(session: AsyncSession, job: GenerationJob, event: str, *, payload: Optional[dict[str, Any]] = None) -> JobEvent:
+async def emit(
+    session: AsyncSession, job: GenerationJob, event: str, *, payload: Optional[dict[str, Any]] = None
+) -> JobEvent:
     row = JobEvent(
-        event=event, project_id=job.project_id, run_id=job.workflow_run_id or "",
-        step_id=job.workflow_step_id or "", job_id=job.id,
+        event=event,
+        project_id=job.project_id,
+        run_id=job.workflow_run_id or "",
+        step_id=job.workflow_step_id or "",
+        job_id=job.id,
         entity_type="shot" if job.shot_id else "project",
-        entity_id=job.shot_id or job.project_id, status=job.status,
-        progress=job.progress, payload=payload or {},
+        entity_id=job.shot_id or job.project_id,
+        status=job.status,
+        progress=job.progress,
+        payload=payload or {},
     )
     if not hasattr(session, "add"):
         return row
@@ -97,10 +110,14 @@ async def wait_for_work(timeout: float) -> None:
         _local_waiters.discard(waiter)
 
 
-async def list_events(session: AsyncSession, project_id: str, *, after: int = 0, limit: int = 200) -> list[JobEvent]:
+async def list_events(
+    session: AsyncSession, project_id: str, *, after: int = 0, limit: int = 200
+) -> list[JobEvent]:
     rows = await session.execute(
-        select(JobEvent).where(JobEvent.project_id == project_id, JobEvent.id > after)
-        .order_by(JobEvent.id).limit(min(limit, 500))
+        select(JobEvent)
+        .where(JobEvent.project_id == project_id, JobEvent.id > after)
+        .order_by(JobEvent.id)
+        .limit(min(limit, 500))
     )
     return list(rows.scalars())
 
@@ -114,12 +131,18 @@ async def emit_batch_progress(session: AsyncSession, job: GenerationJob) -> JobE
     if not hasattr(session, "execute"):
         counts = {job.status: 1}
         return await emit(
-            session, job, "batch.progress",
-            payload={"completed": int(job.status in {"succeeded", "failed", "canceled"}),
-                     "total": 1, "counts": counts},
+            session,
+            job,
+            "batch.progress",
+            payload={
+                "completed": int(job.status in {"succeeded", "failed", "canceled"}),
+                "total": 1,
+                "counts": counts,
+            },
         )
     rows = await session.execute(
-        select(GenerationJob.status, func.count(GenerationJob.id)).where(*filters)
+        select(GenerationJob.status, func.count(GenerationJob.id))
+        .where(*filters)
         .group_by(GenerationJob.status)
     )
     try:
@@ -129,6 +152,8 @@ async def emit_batch_progress(session: AsyncSession, job: GenerationJob) -> JobE
     total = sum(counts.values())
     completed = sum(counts.get(status, 0) for status in ("succeeded", "failed", "canceled"))
     return await emit(
-        session, job, "batch.progress",
+        session,
+        job,
+        "batch.progress",
         payload={"completed": completed, "total": total, "counts": counts},
     )

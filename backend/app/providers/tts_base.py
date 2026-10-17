@@ -57,16 +57,16 @@ class TTSProvider(ABC):
     async def synthesize(self, req: TTSRequest) -> ProviderResult:
         """合成语音并落盘到 backend/storage/audios/，返回含 storage_key 的 artifacts。"""
 
-    async def clone_voice(
-        self, reference_audio_path: str, voice_name: str
-    ) -> ProviderResult:
+    async def clone_voice(self, reference_audio_path: str, voice_name: str) -> ProviderResult:
         """用参考音频复刻音色，返回 voice_id（raw_metadata.voice_id）+ 试听样本 artifact。
 
         可选实现：不支持的 provider 返回 success=False + error_code="unsupported"。
         """
         return ProviderResult(
-            success=False, provider=self.name,
-            error_code="unsupported", error_message=f"{self.name} 不支持 clone_voice",
+            success=False,
+            provider=self.name,
+            error_code="unsupported",
+            error_message=f"{self.name} 不支持 clone_voice",
         )
 
 
@@ -93,12 +93,19 @@ class MockTTSProvider(TTSProvider):
 
             subprocess.run(
                 [
-                    imageio_ffmpeg.get_ffmpeg_exe(), "-y",
-                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=24000",
-                    "-t", f"{duration_ms / 1000:.3f}",
+                    imageio_ffmpeg.get_ffmpeg_exe(),
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=24000",
+                    "-t",
+                    f"{duration_ms / 1000:.3f}",
                     str(file_path),
                 ],
-                check=True, capture_output=True, timeout=30,
+                check=True,
+                capture_output=True,
+                timeout=30,
             )
             generated = True
         except Exception as e:
@@ -108,16 +115,12 @@ class MockTTSProvider(TTSProvider):
             success=True,
             provider=self.name,
             model="mock-tts",
-            artifacts=[
-                {"storage_key": f"audios/{filename}", "type": "audio", "duration_ms": duration_ms}
-            ],
+            artifacts=[{"storage_key": f"audios/{filename}", "type": "audio", "duration_ms": duration_ms}],
             usage={"output_audio_seconds": duration_ms / 1000.0},
             raw_metadata={"mocked": True, "generated": generated},
         )
 
-    async def clone_voice(
-        self, reference_audio_path: str, voice_name: str
-    ) -> ProviderResult:
+    async def clone_voice(self, reference_audio_path: str, voice_name: str) -> ProviderResult:
         """mock 音色复刻：返回假 voice_id（标 mocked=True）+ 一条正弦波试听样本。"""
         voice_id = f"mock_voice_{uuid.uuid4().hex[:8]}"
         sample = await self.synthesize(
@@ -146,9 +149,7 @@ class QwenTTSProvider(TTSProvider):
     DEFAULT_VOICE_DESCRIPTION = "自然清晰的中文旁白声，语速适中"
 
     def __init__(self, api_key: str | None = None):
-        self.api_key = (
-            api_key if api_key is not None else os.getenv("DASHSCOPE_API_KEY", "")
-        ).strip()
+        self.api_key = (api_key if api_key is not None else os.getenv("DASHSCOPE_API_KEY", "")).strip()
 
     def is_available(self) -> bool:
         return bool(self.api_key)
@@ -199,26 +200,33 @@ class QwenTTSProvider(TTSProvider):
     async def synthesize(self, req: TTSRequest) -> ProviderResult:
         if not self.is_available():
             return ProviderResult(
-                success=False, provider=self.name,
-                error_code="no_provider", error_message="未配置 DASHSCOPE_API_KEY",
+                success=False,
+                provider=self.name,
+                error_code="no_provider",
+                error_message="未配置 DASHSCOPE_API_KEY",
             )
         loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(None, self._synthesize_sync, req)
         except Exception as e:
             return ProviderResult(
-                success=False, provider=self.name,
-                error_code="tts_failed", error_message=str(e)[:500], retryable=True,
+                success=False,
+                provider=self.name,
+                error_code="tts_failed",
+                error_message=str(e)[:500],
+                retryable=True,
             )
         # qwen_tts 落盘后返回 /storage/audios/xxx.wav 形式的 http 路径 → storage_key
         audio_url = result.get("audio_url") or result.get("local_path") or ""
         storage_key = audio_url.removeprefix("/storage/").lstrip("/")
         if not storage_key or not (BASE_DIR / "storage" / storage_key).is_file():
             return ProviderResult(
-                success=False, provider=self.name,
+                success=False,
+                provider=self.name,
                 error_code="tts_failed",
                 error_message=f"合成返回但产物缺失: {audio_url}",
-                retryable=True, raw_metadata=result,
+                retryable=True,
+                raw_metadata=result,
             )
         duration_ms = estimate_duration_ms(req.text)
         return ProviderResult(
@@ -262,31 +270,35 @@ class QwenTTSProvider(TTSProvider):
             raise RuntimeError(raw)
         return json.loads(raw)
 
-    async def clone_voice(
-        self, reference_audio_path: str, voice_name: str
-    ) -> ProviderResult:
+    async def clone_voice(self, reference_audio_path: str, voice_name: str) -> ProviderResult:
         """真实音色复刻：raw_metadata.voice_id 为百炼返回的音色标识，artifacts 为试听样本。"""
         if not self.is_available():
             return ProviderResult(
-                success=False, provider=self.name,
-                error_code="no_provider", error_message="未配置 DASHSCOPE_API_KEY",
+                success=False,
+                provider=self.name,
+                error_code="no_provider",
+                error_message="未配置 DASHSCOPE_API_KEY",
             )
         loop = asyncio.get_running_loop()
         try:
-            result = await loop.run_in_executor(
-                None, self._clone_voice_sync, reference_audio_path
-            )
+            result = await loop.run_in_executor(None, self._clone_voice_sync, reference_audio_path)
         except Exception as e:
             return ProviderResult(
-                success=False, provider=self.name,
-                error_code="clone_failed", error_message=str(e)[:500], retryable=True,
+                success=False,
+                provider=self.name,
+                error_code="clone_failed",
+                error_message=str(e)[:500],
+                retryable=True,
             )
         voice_id = result.get("voice_name", "")
         if not voice_id:
             return ProviderResult(
-                success=False, provider=self.name,
-                error_code="clone_failed", error_message="复刻返回但无音色标识",
-                retryable=True, raw_metadata=result,
+                success=False,
+                provider=self.name,
+                error_code="clone_failed",
+                error_message="复刻返回但无音色标识",
+                retryable=True,
+                raw_metadata=result,
             )
         audio_url = result.get("audio_url") or result.get("local_path") or ""
         storage_key = audio_url.removeprefix("/storage/").lstrip("/")

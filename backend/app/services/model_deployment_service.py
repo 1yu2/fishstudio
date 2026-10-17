@@ -53,9 +53,7 @@ async def list_deployments(session: AsyncSession) -> list[ModelDeployment]:
 
 
 async def get_deployment(session: AsyncSession, slug: str) -> ModelDeployment | None:
-    result = await session.execute(
-        select(ModelDeployment).where(ModelDeployment.slug == slug)
-    )
+    result = await session.execute(select(ModelDeployment).where(ModelDeployment.slug == slug))
     return result.scalar_one_or_none()
 
 
@@ -73,10 +71,7 @@ async def create_deployment(session: AsyncSession, payload: DeploymentInput) -> 
 async def update_deployment(
     session: AsyncSession, row: ModelDeployment, patch: DeploymentPatch
 ) -> ModelDeployment:
-    current: dict[str, Any] = {
-        key: getattr(row, key)
-        for key in DeploymentInput.model_fields
-    }
+    current: dict[str, Any] = {key: getattr(row, key) for key in DeploymentInput.model_fields}
     current.update(patch.model_dump(exclude_unset=True, exclude_none=True))
     payload = DeploymentInput.model_validate(current)
     if payload.slug != row.slug:

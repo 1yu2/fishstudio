@@ -2,6 +2,7 @@
 
 Worker 只依赖本模块；具体供应商和协议在这里集中注册，后续可通过插件或配置扩展。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -70,7 +71,8 @@ class MediaRuntime:
     def get(self, modality: str, name: str) -> Optional[MediaDeployment]:
         return next(
             (
-                item for item in self.list(modality)
+                item
+                for item in self.list(modality)
                 if item.name == name or getattr(item.provider, "name", "") == name
             ),
             None,
@@ -121,9 +123,7 @@ class MediaRuntime:
             from app.providers.mock_video import MockVideoProvider
             from app.providers.video_router import VideoProviderRouter
 
-            providers = [
-                item.provider for item in self.list("video") if not item.mocked
-            ]
+            providers = [item.provider for item in self.list("video") if not item.mocked]
             if mock_providers_enabled():
                 mock = MockVideoProvider()
                 providers.append(mock)

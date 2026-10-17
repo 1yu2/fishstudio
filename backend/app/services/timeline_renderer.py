@@ -98,9 +98,7 @@ def build_srt(shots_with_offsets: Sequence[tuple[Any, int]]) -> str:
             if not text or end <= start:
                 continue
             idx += 1
-            entries.append(
-                f"{idx}\n{_fmt_srt_ts(start)} --> {_fmt_srt_ts(end)}\n{text}\n"
-            )
+            entries.append(f"{idx}\n{_fmt_srt_ts(start)} --> {_fmt_srt_ts(end)}\n{text}\n")
     return "\n".join(entries)
 
 
@@ -127,14 +125,14 @@ def build_normalize_filter(width: int, height: int, fps: int) -> str:
     )
 
 
-def build_black_placeholder_args(
-    duration_ms: int, width: int, height: int, fps: int
-) -> list[str]:
+def build_black_placeholder_args(duration_ms: int, width: int, height: int, fps: int) -> list[str]:
     """黑场占位镜头的 lavfi 输入参数（无视频产物的镜头用，不阻塞整集渲染）。"""
     dur = max(1, int(duration_ms)) / 1000.0
     return [
-        "-f", "lavfi",
-        "-i", f"color=c=black:size={width}x{height}:rate={fps}:duration={dur:.3f}",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=black:size={width}x{height}:rate={fps}:duration={dur:.3f}",
     ]
 
 
@@ -143,9 +141,7 @@ def build_concat_file_list(paths: Sequence[str]) -> str:
     return "".join(f"file '{p}'\n" for p in paths)
 
 
-def build_audio_mix_filter(
-    audio_inputs: Sequence[dict[str, Any]], bgm_volume_db: float
-) -> tuple[str, str]:
+def build_audio_mix_filter(audio_inputs: Sequence[dict[str, Any]], bgm_volume_db: float) -> tuple[str, str]:
     """构造音频混音 filter_complex。
 
     audio_inputs: [{"input_index": int, "delay_ms": int, "is_bgm": bool}]
@@ -224,9 +220,7 @@ async def _load_shots(session: AsyncSession, episode_id: str) -> list[Shot]:
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def _latest_video_artifact(
-    session: AsyncSession, shot_id: str
-) -> Optional[Artifact]:
+async def _latest_video_artifact(session: AsyncSession, shot_id: str) -> Optional[Artifact]:
     """该 shot 最新 succeeded generate_video 任务的视频产物。"""
     stmt = (
         select(Artifact)
@@ -243,9 +237,7 @@ async def _latest_video_artifact(
     return (await session.execute(stmt)).scalars().first()
 
 
-async def _pick_shot_video(
-    session: AsyncSession, shot_id: str
-) -> tuple[Optional[Artifact], str]:
+async def _pick_shot_video(session: AsyncSession, shot_id: str) -> tuple[Optional[Artifact], str]:
     """该 shot 的视频产物选择（P2-2 消费侧）：返回 (artifact, selection)。
 
     selection ∈ selected | latest | placeholder：
@@ -305,9 +297,11 @@ async def render_episode(
     """
     if render_mode not in ("preview", "final"):
         raise ValueError(f"非法 render_mode: {render_mode}")
-    timeline = await timeline_service.get_render_revision(
-        session, episode_id, timeline_revision_id
-    ) if timeline_revision_id else None
+    timeline = (
+        await timeline_service.get_render_revision(session, episode_id, timeline_revision_id)
+        if timeline_revision_id
+        else None
+    )
     shots = await _load_shots(session, episode_id)
     if not shots:
         raise ValueError(f"episode {episode_id} 没有可渲染的镜头")
@@ -324,11 +318,17 @@ async def render_episode(
                 raise ValueError(f"timeline clip artifact hash changed: {clip.artifact_id}")
             source = shot_map.get(clip.shot_id or "")
             duration = max(1, round((clip.source_out_ms - clip.source_in_ms) / clip.speed))
-            rendered_shots.append(SimpleNamespace(
-                id=clip.shot_id or clip.id, shot_no=getattr(source, "shot_no", index + 1),
-                duration_ms=duration, aspect_ratio=getattr(source, "aspect_ratio", "9:16"),
-                dialogue_tracks=[], narration_tracks=[], subtitle_tracks=[],
-            ))
+            rendered_shots.append(
+                SimpleNamespace(
+                    id=clip.shot_id or clip.id,
+                    shot_no=getattr(source, "shot_no", index + 1),
+                    duration_ms=duration,
+                    aspect_ratio=getattr(source, "aspect_ratio", "9:16"),
+                    dialogue_tracks=[],
+                    narration_tracks=[],
+                    subtitle_tracks=[],
+                )
+            )
             timeline_artifacts.append(artifact)
         shots = rendered_shots
         if not shots:
@@ -339,9 +339,7 @@ async def render_episode(
     width, height = ASPECT_SPECS.get(aspect, ASPECT_SPECS[DEFAULT_ASPECT])
     fps = DEFAULT_FPS
     offsets = [clip.timeline_start_ms for clip in timeline_clips] if timeline else compute_shot_offsets(shots)
-    total_ms = max(
-        offset + max(0, int(shot.duration_ms or 0)) for shot, offset in zip(shots, offsets)
-    )
+    total_ms = max(offset + max(0, int(shot.duration_ms or 0)) for shot, offset in zip(shots, offsets))
 
     # 收集每个镜头的视频产物（选定产物优先，回退最新；来源记入 manifest）
     shot_videos: list[Optional[Artifact]] = []
@@ -358,9 +356,7 @@ async def render_episode(
     if render_mode == "final":
         missing = find_missing_shot_videos(shots, shot_videos, STORAGE_DIR)
         if missing:
-            raise ValueError(
-                f"final 渲染要求所有镜头都有视频产物，缺失 {len(missing)} 个: {missing}"
-            )
+            raise ValueError(f"final 渲染要求所有镜头都有视频产物，缺失 {len(missing)} 个: {missing}")
 
     placeholder_shots: list[str] = []
     input_keys: list[Optional[str]] = []
@@ -380,15 +376,24 @@ async def render_episode(
                 speed_filter = f",setpts=PTS/{clip.speed:.8f}" if clip and clip.speed != 1 else ""
                 args = [
                     # -stream_loop -1：素材短于镜头时长时循环补足（-t 只截不补）
-                    "-stream_loop", "-1",
+                    "-stream_loop",
+                    "-1",
                     *(["-ss", f"{clip.source_in_ms / 1000:.3f}"] if clip else []),
-                    "-i", str(STORAGE_DIR / artifact.storage_key),
-                    "-t", (
+                    "-i",
+                    str(STORAGE_DIR / artifact.storage_key),
+                    "-t",
+                    (
                         f"{(clip.source_out_ms - clip.source_in_ms) / 1000:.3f}"
-                        if clip else f"{max(1, shot.duration_ms) / 1000:.3f}"
+                        if clip
+                        else f"{max(1, shot.duration_ms) / 1000:.3f}"
                     ),
-                    "-vf", norm_filter + speed_filter,
-                    "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-vf",
+                    norm_filter + speed_filter,
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
                     str(out),
                 ]
             else:
@@ -396,7 +401,11 @@ async def render_episode(
                 input_keys.append(None)
                 args = [
                     *build_black_placeholder_args(shot.duration_ms, width, height, fps),
-                    "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
                     str(out),
                 ]
             await asyncio.to_thread(_run_ffmpeg, args)
@@ -442,24 +451,24 @@ async def render_episode(
                         raise ValueError(f"timeline audio file missing: {artifact.id}")
                     audio_files.append(path)
                     keyframes = clip.get("volume_keyframes") or []
-                    audio_specs.append({
-                        "input_index": len(audio_files),
-                        "delay_ms": int(clip.get("timeline_start_ms") or 0),
-                        "source_in_ms": int(clip.get("source_in_ms") or 0),
-                        "source_out_ms": clip.get("source_out_ms"),
-                        "volume_db": keyframes[0].get("volume_db", 0) if keyframes else 0,
-                        "is_bgm": clip.get("kind") == "bgm",
-                        "ducking": clip.get("ducking") or {},
-                        "edit": clip.get("edit", "normal"),
-                    })
+                    audio_specs.append(
+                        {
+                            "input_index": len(audio_files),
+                            "delay_ms": int(clip.get("timeline_start_ms") or 0),
+                            "source_in_ms": int(clip.get("source_in_ms") or 0),
+                            "source_out_ms": clip.get("source_out_ms"),
+                            "volume_db": keyframes[0].get("volume_db", 0) if keyframes else 0,
+                            "is_bgm": clip.get("kind") == "bgm",
+                            "ducking": clip.get("ducking") or {},
+                            "edit": clip.get("edit", "normal"),
+                        }
+                    )
         bgm_used = False
         if bgm_storage_key:
             bgm_path = STORAGE_DIR / bgm_storage_key
             if bgm_path.is_file():
                 audio_files.append(bgm_path)
-                audio_specs.append(
-                    {"input_index": len(audio_files), "delay_ms": 0, "is_bgm": True}
-                )
+                audio_specs.append({"input_index": len(audio_files), "delay_ms": 0, "is_bgm": True})
                 bgm_used = True
             else:
                 logger.warning(f"BGM 文件不存在，跳过: {bgm_storage_key}")
@@ -501,7 +510,7 @@ async def render_episode(
             args += [str(final_path)]
             return args
 
-        profile = (timeline.spec.get("export_profiles", {}).get(export_profile, {}) if timeline else {})
+        profile = timeline.spec.get("export_profiles", {}).get(export_profile, {}) if timeline else {}
         burn_subtitles = bool(profile.get("burn_subtitles", burn_subtitles))
         want_burn = burn_subtitles and bool(srt_text.strip())
         if want_burn:
@@ -554,16 +563,19 @@ async def render_episode(
         "timeline_revision": timeline.revision if timeline else None,
         "timeline_content_hash": timeline.content_hash if timeline else None,
         "export_profile": export_profile,
-        "render_fingerprint": timeline_service.canonical_hash({
-            "timeline_content_hash": timeline.content_hash if timeline else "legacy",
-            "artifacts": [
-                {"id": artifact.id, "hash": artifact.content_hash}
-                for artifact in shot_videos if artifact is not None
-            ],
-            "profile": export_profile,
-            "aspect": aspect,
-            "fps": fps,
-        }),
+        "render_fingerprint": timeline_service.canonical_hash(
+            {
+                "timeline_content_hash": timeline.content_hash if timeline else "legacy",
+                "artifacts": [
+                    {"id": artifact.id, "hash": artifact.content_hash}
+                    for artifact in shot_videos
+                    if artifact is not None
+                ],
+                "profile": export_profile,
+                "aspect": aspect,
+                "fps": fps,
+            }
+        ),
         "render_mode": render_mode,
         "is_publishable": is_publishable,
         "output_aspect": aspect,

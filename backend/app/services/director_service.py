@@ -1,4 +1,5 @@
 """DirectorPlan 版本链与 Observer 结构化复审。"""
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -33,7 +34,14 @@ async def create_plan(
     if episode is None or script is None or script.episode_id != episode_id:
         raise ValueError("episode 或 based_on_script_revision 不存在/不匹配")
     validated = DirectorPlanPayload.model_validate(payload).model_dump(mode="json")
-    revision = (await session.scalar(select(func.max(DirectorPlanRevision.revision)).where(DirectorPlanRevision.episode_id == episode_id)) or 0) + 1
+    revision = (
+        await session.scalar(
+            select(func.max(DirectorPlanRevision.revision)).where(
+                DirectorPlanRevision.episode_id == episode_id
+            )
+        )
+        or 0
+    ) + 1
     row = DirectorPlanRevision(
         episode_id=episode_id,
         revision=revision,
@@ -52,20 +60,57 @@ async def create_plan(
 
 
 async def list_plans(session: AsyncSession, episode_id: str) -> list[DirectorPlanRevision]:
-    return list((await session.execute(select(DirectorPlanRevision).where(DirectorPlanRevision.episode_id == episode_id).order_by(DirectorPlanRevision.revision.desc()))).scalars().all())
+    return list(
+        (
+            await session.execute(
+                select(DirectorPlanRevision)
+                .where(DirectorPlanRevision.episode_id == episode_id)
+                .order_by(DirectorPlanRevision.revision.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 def deterministic_script_findings(payload: dict[str, Any]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for field in ("episode_objective", "hook", "conflict", "cliffhanger"):
         if not str(payload.get(field) or "").strip():
-            findings.append({"code": f"script.missing_{field}", "category": "story", "severity": "critical", "evidence": f"{field} 为空", "location": {"field": field}, "suggested_fix": f"补充 {field}"})
+            findings.append(
+                {
+                    "code": f"script.missing_{field}",
+                    "category": "story",
+                    "severity": "critical",
+                    "evidence": f"{field} 为空",
+                    "location": {"field": field},
+                    "suggested_fix": f"补充 {field}",
+                }
+            )
     scenes = payload.get("scenes") or []
     if len(scenes) > 20:
-        findings.append({"code": "script.scene_load", "category": "shootability", "severity": "major", "evidence": f"共 {len(scenes)} 场", "location": {}, "suggested_fix": "合并场景或拆分集数"})
+        findings.append(
+            {
+                "code": "script.scene_load",
+                "category": "shootability",
+                "severity": "major",
+                "evidence": f"共 {len(scenes)} 场",
+                "location": {},
+                "suggested_fix": "合并场景或拆分集数",
+            }
+        )
     for scene in scenes:
         if not str(scene.get("objective") or "").strip():
-            findings.append({"code": "script.scene_objective", "category": "motivation", "severity": "warning", "evidence": "场景缺少目标", "location": {"scene_number": scene.get("number")}, "suggested_fix": "明确本场人物目标和阻力"})
+            findings.append(
+                {
+                    "code": "script.scene_objective",
+                    "category": "motivation",
+                    "severity": "warning",
+                    "evidence": "场景缺少目标",
+                    "location": {"scene_number": scene.get("number")},
+                    "suggested_fix": "明确本场人物目标和阻力",
+                }
+            )
     return findings
 
 
@@ -78,11 +123,29 @@ def deterministic_continuity_findings(payload: dict[str, Any], intent_keys: set[
                 location = {"scene_number": scene.get("number"), "shot_number": shot.get("number")}
                 intent_key = str(shot.get("director_intent_key") or "")
                 if not intent_key or intent_key not in intent_keys:
-                    findings.append({"code": "continuity.director_intent", "category": "directing", "severity": "major", "evidence": f"导演意图 {intent_key or '未填写'} 无法追溯", "location": location, "suggested_fix": "绑定当前 DirectorPlan 中的 intent key"})
+                    findings.append(
+                        {
+                            "code": "continuity.director_intent",
+                            "category": "directing",
+                            "severity": "major",
+                            "evidence": f"导演意图 {intent_key or '未填写'} 无法追溯",
+                            "location": location,
+                            "suggested_fix": "绑定当前 DirectorPlan 中的 intent key",
+                        }
+                    )
                 constraints = shot.get("continuity_constraints") or {}
                 missing = sorted(required - set(constraints))
                 if missing:
-                    findings.append({"code": "continuity.constraints_missing", "category": "continuity", "severity": "warning", "evidence": f"缺少约束: {', '.join(missing)}", "location": location, "suggested_fix": "补充人物方向、位置、服装、动作、视线和光线约束"})
+                    findings.append(
+                        {
+                            "code": "continuity.constraints_missing",
+                            "category": "continuity",
+                            "severity": "warning",
+                            "evidence": f"缺少约束: {', '.join(missing)}",
+                            "location": location,
+                            "suggested_fix": "补充人物方向、位置、服装、动作、视线和光线约束",
+                        }
+                    )
     return findings
 
 
@@ -116,7 +179,9 @@ async def create_review(
         if invocation is None or invocation.project_id != episode.project_id:
             raise ValueError("model invocation 不存在或不属于当前项目")
     groups = [deterministic_findings, specialist_findings, llm_findings]
-    normalized = [[ObserverFinding.model_validate(item).model_dump(mode="json") for item in group] for group in groups]
+    normalized = [
+        [ObserverFinding.model_validate(item).model_dump(mode="json") for item in group] for group in groups
+    ]
     blocking = any(item["severity"] in {"major", "critical"} for group in normalized for item in group)
     row = ObserverReview(
         project_id=episode.project_id,
@@ -140,7 +205,9 @@ async def create_review(
     return row
 
 
-async def list_reviews(session: AsyncSession, episode_id: str, review_type: Optional[str] = None) -> list[ObserverReview]:
+async def list_reviews(
+    session: AsyncSession, episode_id: str, review_type: Optional[str] = None
+) -> list[ObserverReview]:
     stmt = select(ObserverReview).where(ObserverReview.episode_id == episode_id)
     if review_type:
         stmt = stmt.where(ObserverReview.review_type == review_type)

@@ -117,21 +117,25 @@ def resolve_route(
     *,
     explicit_deployment: str | None = None,
 ) -> PurposeRoutingSnapshot:
-    payload = ModelRouteInput.model_validate({
-        "purpose": route.purpose,
-        "modality": route.modality,
-        "primary_deployment": route.primary_deployment,
-        "fallback_deployments": route.fallback_deployments,
-        "enabled": route.enabled,
-    })
+    payload = ModelRouteInput.model_validate(
+        {
+            "purpose": route.purpose,
+            "modality": route.modality,
+            "primary_deployment": route.primary_deployment,
+            "fallback_deployments": route.fallback_deployments,
+            "enabled": route.enabled,
+        }
+    )
     if not payload.enabled:
         raise ValueError(f"用途路由已停用: {payload.purpose}")
     if explicit_deployment:
         slugs = [explicit_deployment]
-        explicit_payload = payload.model_copy(update={
-            "primary_deployment": explicit_deployment,
-            "fallback_deployments": [],
-        })
+        explicit_payload = payload.model_copy(
+            update={
+                "primary_deployment": explicit_deployment,
+                "fallback_deployments": [],
+            }
+        )
         validate_route(explicit_payload, catalog)
     else:
         validate_route(payload, catalog)

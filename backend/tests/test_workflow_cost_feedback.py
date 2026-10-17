@@ -80,10 +80,7 @@ class _FakeSession:
             for (name, _key), obj in self.get_map.items():
                 if name == "WorkflowStep":
                     attempt = getattr(obj, "attempt", 0)
-            rows = [
-                j for j in self.job_rows
-                if getattr(j, "step_attempt", 0) == attempt
-            ]
+            rows = [j for j in self.job_rows if getattr(j, "step_attempt", 0) == attempt]
             return SimpleNamespace(
                 scalars=lambda: SimpleNamespace(all=lambda: rows, first=lambda: rows[0] if rows else None),
                 scalar_one=lambda: len(rows),
@@ -94,16 +91,32 @@ class _FakeSession:
 
 def _fake_job(**over):
     base = dict(
-        id="j1", project_id="p1", shot_id="sh1",
-        workflow_run_id="r1", workflow_step_id="st1",
-        operation="generate_video", provider="minimax", model="MiniMax-H3",
+        id="j1",
+        project_id="p1",
+        shot_id="sh1",
+        workflow_run_id="r1",
+        workflow_step_id="st1",
+        operation="generate_video",
+        provider="minimax",
+        model="MiniMax-H3",
         params={"step_id": "st1", "run_id": "r1"},
         idempotency_key="video:r1:node:sh1:attempt0",
-        external_task_id="", status="pending", progress=0,
-        attempt=1, max_attempts=3, error_code="", error="",
-        step_attempt=0, logical_job_key="generate_video:r1:node:sh1", superseded_by="",
-        lease_until=None, result={}, started_at=None, finished_at=None,
-        created_at=None, updated_at=None,
+        external_task_id="",
+        status="pending",
+        progress=0,
+        attempt=1,
+        max_attempts=3,
+        error_code="",
+        error="",
+        step_attempt=0,
+        logical_job_key="generate_video:r1:node:sh1",
+        superseded_by="",
+        lease_until=None,
+        result={},
+        started_at=None,
+        finished_at=None,
+        created_at=None,
+        updated_at=None,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -124,11 +137,7 @@ class TestFinalizeJob:
         monkeypatch.setattr(workflow_service, "on_job_finished", _fake_on_finished)
         session = _FakeSession()
         job = _fake_job()
-        asyncio.run(
-            worker_mod.finalize_job(
-                session, job, success=False, error_code="no_provider", error="x"
-            )
-        )
+        asyncio.run(worker_mod.finalize_job(session, job, success=False, error_code="no_provider", error="x"))
         assert job.status == "failed"
         assert job.error_code == "no_provider"
         assert calls == ["j1"]  # 终态回推
@@ -145,7 +154,10 @@ class TestFinalizeJob:
         job = _fake_job()
         asyncio.run(
             worker_mod.finalize_job(
-                session, job, success=True, result={"model": "m"},
+                session,
+                job,
+                success=True,
+                result={"model": "m"},
                 artifact={"artifact_id": "a1", "url": "/api/artifacts/a1/download"},
             )
         )
@@ -165,8 +177,12 @@ class TestFinalizeJob:
         job = _fake_job(attempt=1, max_attempts=3)
         asyncio.run(
             worker_mod.finalize_job(
-                session, job, success=False, error_code="submit_failed",
-                error="boom", retryable=True,
+                session,
+                job,
+                success=False,
+                error_code="submit_failed",
+                error="boom",
+                retryable=True,
             )
         )
         assert job.status == "pending"  # 重置回 pending 等退避重试
@@ -200,9 +216,7 @@ class TestCancelAndAggregation:
         monkeypatch.setattr(jobs_router.workflow_service, "on_job_finished", _fake_on_finished)
 
         session = _FakeSession()
-        res = asyncio.run(
-            jobs_router.cancel_job("j1", session=session, user=SimpleNamespace(id=1))
-        )
+        res = asyncio.run(jobs_router.cancel_job("j1", session=session, user=SimpleNamespace(id=1)))
         assert res["status"] == "canceled"
         assert pushed == ["j1"]
 
@@ -226,9 +240,7 @@ class TestCancelAndAggregation:
 
     def _run_aggregation(self, monkeypatch, jobs):
         """jobs：当前 attempt 代际的 job 列表（SimpleNamespace，带 status/superseded_by）。"""
-        step = SimpleNamespace(
-            id="st1", run_id="r1", status="running", attempt=0, error_code="", error=""
-        )
+        step = SimpleNamespace(id="st1", run_id="r1", status="running", attempt=0, error_code="", error="")
         session = _FakeSession(get_map={("WorkflowStep", "st1"): step})
         session.job_rows = jobs  # on_job_finished 查询的 GenerationJob 行
 
@@ -242,32 +254,24 @@ class TestCancelAndAggregation:
 
     @staticmethod
     def _row(status, superseded_by="", step_attempt=0):
-        return SimpleNamespace(
-            status=status, superseded_by=superseded_by, step_attempt=step_attempt
-        )
+        return SimpleNamespace(status=status, superseded_by=superseded_by, step_attempt=step_attempt)
 
     def test_all_succeeded(self, monkeypatch):
         step = self._run_aggregation(monkeypatch, [self._row("succeeded")])
         assert step.status == "succeeded"
 
     def test_partially_canceled(self, monkeypatch):
-        step = self._run_aggregation(
-            monkeypatch, [self._row("succeeded"), self._row("canceled")]
-        )
+        step = self._run_aggregation(monkeypatch, [self._row("succeeded"), self._row("canceled")])
         assert step.status == "failed"
         assert step.error_code == "partially_canceled"
 
     def test_job_failed(self, monkeypatch):
-        step = self._run_aggregation(
-            monkeypatch, [self._row("failed"), self._row("canceled")]
-        )
+        step = self._run_aggregation(monkeypatch, [self._row("failed"), self._row("canceled")])
         assert step.status == "failed"
         assert step.error_code == "job_failed"
 
     def test_remaining_jobs_no_change(self, monkeypatch):
-        step = self._run_aggregation(
-            monkeypatch, [self._row("running"), self._row("succeeded")]
-        )
+        step = self._run_aggregation(monkeypatch, [self._row("running"), self._row("succeeded")])
         assert step.status == "running"
 
     def test_superseded_failed_job_ignored(self, monkeypatch):
@@ -280,9 +284,7 @@ class TestCancelAndAggregation:
 
     def test_old_attempt_jobs_ignored(self, monkeypatch):
         """step retry 后（attempt=1）：旧 attempt=0 的 failed 不影响当前聚合。"""
-        step = SimpleNamespace(
-            id="st1", run_id="r1", status="running", attempt=1, error_code="", error=""
-        )
+        step = SimpleNamespace(id="st1", run_id="r1", status="running", attempt=1, error_code="", error="")
         session = _FakeSession(get_map={("WorkflowStep", "st1"): step})
         # _FakeSession 按 step.attempt 过滤 job_rows（模拟 SQL WHERE step_attempt == attempt）
         session.job_rows = [
@@ -306,13 +308,15 @@ class TestCancelAndAggregation:
 class TestRetryStep:
     def _setup(self, monkeypatch, step_status, run_status):
         step = SimpleNamespace(
-            id="st1", run_id="r1", status=step_status, attempt=1,
-            error="e", error_code="job_failed",
+            id="st1",
+            run_id="r1",
+            status=step_status,
+            attempt=1,
+            error="e",
+            error_code="job_failed",
         )
         run = SimpleNamespace(id="r1", status=run_status, finished_at="2026-08-04")
-        session = _FakeSession(
-            get_map={("WorkflowStep", "st1"): step, ("WorkflowRun", "r1"): run}
-        )
+        session = _FakeSession(get_map={("WorkflowStep", "st1"): step, ("WorkflowRun", "r1"): run})
 
         async def _noop_advance(session, run_id):
             return None
@@ -380,9 +384,7 @@ class TestRetryJobCreatesNew:
 
         monkeypatch.setattr(cost_service, "reserve_budget", _deny)
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(
-                jobs_router.retry_job("j1", session=_FakeSession(), user=SimpleNamespace(id=1))
-            )
+            asyncio.run(jobs_router.retry_job("j1", session=_FakeSession(), user=SimpleNamespace(id=1)))
         assert exc.value.status_code == 409
         assert "budget_exceeded" in exc.value.detail
 
@@ -391,9 +393,7 @@ class TestRetryJobCreatesNew:
         jobs_router = self._setup(monkeypatch, old)
         session = _FakeSession()
         session.scalars = [None]  # retry:{key} 不存在
-        res = asyncio.run(
-            jobs_router.retry_job("j1", session=session, user=SimpleNamespace(id=1))
-        )
+        res = asyncio.run(jobs_router.retry_job("j1", session=session, user=SimpleNamespace(id=1)))
         new_job = session.added[0]
         assert new_job.id != old.id
         assert new_job.idempotency_key == f"retry:{old.idempotency_key}"
@@ -437,15 +437,19 @@ class TestCostQuoteAndBudget:
     def test_estimate_run_cost_items(self, monkeypatch):
         steps = [
             SimpleNamespace(
-                node_key="shot.video.generate:ep_e1", node_type="shot.video.generate",
+                node_key="shot.video.generate:ep_e1",
+                node_type="shot.video.generate",
                 entity_id="e1",
             ),
             SimpleNamespace(
-                node_key="shot.image.generate:ep_e1", node_type="shot.image.generate",
+                node_key="shot.image.generate:ep_e1",
+                node_type="shot.image.generate",
                 entity_id="e1",
             ),
             SimpleNamespace(
-                node_key="episode.render:ep_e1", node_type="episode.render", entity_id="e1",
+                node_key="episode.render:ep_e1",
+                node_type="episode.render",
+                entity_id="e1",
             ),
         ]
         shots = [
@@ -484,9 +488,7 @@ class TestCostQuoteAndBudget:
 
         monkeypatch.setattr(cost_service, "reserve_budget", _deny)
         session = _FakeSession()
-        ok = asyncio.run(
-            job_planner._reserve_budget_or_fail(session, run, step, Decimal("3"))
-        )
+        ok = asyncio.run(job_planner._reserve_budget_or_fail(session, run, step, Decimal("3")))
         assert ok is False
         assert step.status == "failed"
         assert step.error_code == "cost_limit_exceeded"
@@ -503,9 +505,7 @@ class TestCostQuoteAndBudget:
         ok, _ = asyncio.run(cost_service.validate_cost_quote(session, run, "q1"))
         assert ok is False  # 无 quote
 
-        run = SimpleNamespace(
-            input_snapshot={"cost_quote": {"quote_id": "q1", "expires_at": future}}
-        )
+        run = SimpleNamespace(input_snapshot={"cost_quote": {"quote_id": "q1", "expires_at": future}})
         ok, reason = asyncio.run(cost_service.validate_cost_quote(session, run, "q1"))
         assert ok is False and "过期" in reason  # 价格表版本不一致
 
@@ -550,6 +550,7 @@ class TestCostQuoteAndBudget:
         run2 = SimpleNamespace(input_snapshot={"cost_quote": expired})
         ok, reason = asyncio.run(cost_service.validate_cost_quote(session, run2, "q1"))
         assert ok is False and "过期" in reason
+
         # input_hash 变化（报价后分镜/参数变化）
         async def _hash_changed(session, run):
             return "h2"
@@ -586,9 +587,7 @@ class TestCostGate:
             return False, "报价已过期"
 
         monkeypatch.setattr(cost_service, "validate_cost_quote", _deny)
-        run = SimpleNamespace(
-            input_snapshot={"cost_confirmed": True, "cost_quote": {"quote_id": "q1"}}
-        )
+        run = SimpleNamespace(input_snapshot={"cost_confirmed": True, "cost_quote": {"quote_id": "q1"}})
         ok = asyncio.run(workflow_service._cost_gate_passed(_FakeSession(), run))
         assert ok is False
 
@@ -597,9 +596,7 @@ class TestCostGate:
             return True, ""
 
         monkeypatch.setattr(cost_service, "validate_cost_quote", _allow)
-        run = SimpleNamespace(
-            input_snapshot={"cost_confirmed": True, "cost_quote": {"quote_id": "q1"}}
-        )
+        run = SimpleNamespace(input_snapshot={"cost_confirmed": True, "cost_quote": {"quote_id": "q1"}})
         ok = asyncio.run(workflow_service._cost_gate_passed(_FakeSession(), run))
         assert ok is True
 
@@ -613,9 +610,7 @@ class _ReserveSession(_FakeSession):
 
     async def execute(self, stmt):
         run = self._run
-        return SimpleNamespace(
-            scalars=lambda: SimpleNamespace(first=lambda: run, all=lambda: [run])
-        )
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: run, all=lambda: [run]))
 
 
 class TestReserveBudget:
@@ -639,12 +634,16 @@ class TestReserveBudget:
 
     def test_retry_cost_estimation(self):
         job = SimpleNamespace(
-            operation="generate_video", provider="minimax", model="MiniMax-H3",
+            operation="generate_video",
+            provider="minimax",
+            model="MiniMax-H3",
             params={"duration_ms": 6000, "resolution": "768P"},
         )
         assert cost_service.estimate_job_retry_cost(job) == Decimal("3.000000")
         img = SimpleNamespace(
-            operation="generate_image", provider="", model="",
+            operation="generate_image",
+            provider="",
+            model="",
             params={"candidate_count": 2},
         )
         assert cost_service.estimate_job_retry_cost(img) == Decimal("0.400000")
@@ -674,9 +673,7 @@ class TestRenderMode:
     def test_invalid_render_mode_rejected(self):
         with pytest.raises(ValueError):
             asyncio.run(
-                timeline_renderer.render_episode(
-                    None, project_id="p", episode_id="e", render_mode="bogus"
-                )
+                timeline_renderer.render_episode(None, project_id="p", episode_id="e", render_mode="bogus")
             )
 
 
@@ -702,15 +699,17 @@ class TestFeedback:
     def test_selected_updates_step(self):
         step = SimpleNamespace(id="st1", run_id="r1", selected_artifact_id=None)
         run = SimpleNamespace(id="r1", project_id="p1")
-        job = SimpleNamespace(
-            id="j1", workflow_step_id="st1", shot_id=None, project_id="p1"
-        )
+        job = SimpleNamespace(id="j1", workflow_step_id="st1", shot_id=None, project_id="p1")
         session = self._session(step=step, run=run, job=job)
         artifact = SimpleNamespace(id="a1", project_id="p1", job_id="j1")
         feedback = asyncio.run(
             feedback_service.record_feedback(
-                session, artifact=artifact, user_id=1,
-                action="selected", step_id="st1", reason="最好的一条",
+                session,
+                artifact=artifact,
+                user_id=1,
+                action="selected",
+                step_id="st1",
+                reason="最好的一条",
             )
         )
         assert step.selected_artifact_id == "a1"
@@ -721,9 +720,7 @@ class TestFeedback:
         # 简单语义：直接覆盖（注释在 service docstring）
         step = SimpleNamespace(id="st1", run_id="r1", selected_artifact_id="old")
         run = SimpleNamespace(id="r1", project_id="p1")
-        job = SimpleNamespace(
-            id="j1", workflow_step_id="st1", shot_id=None, project_id="p1"
-        )
+        job = SimpleNamespace(id="j1", workflow_step_id="st1", shot_id=None, project_id="p1")
         session = self._session(step=step, run=run, job=job)
         artifact = SimpleNamespace(id="a2", project_id="p1", job_id="j1")
         asyncio.run(
@@ -738,9 +735,7 @@ class TestFeedback:
         artifact = SimpleNamespace(id="a1", project_id="p1", job_id=None)
         with pytest.raises(ValueError):
             asyncio.run(
-                feedback_service.record_feedback(
-                    session, artifact=artifact, user_id=1, action="liked"
-                )
+                feedback_service.record_feedback(session, artifact=artifact, user_id=1, action="liked")
             )
 
     # ── review 0.3：step_id 跨项目/伪造/不匹配校验 ──
@@ -748,9 +743,7 @@ class TestFeedback:
     def test_cross_project_step_rejected(self):
         step = SimpleNamespace(id="st1", run_id="r1", selected_artifact_id=None)
         run = SimpleNamespace(id="r1", project_id="p2")  # 属于别的项目
-        job = SimpleNamespace(
-            id="j1", workflow_step_id="st1", shot_id=None, project_id="p1"
-        )
+        job = SimpleNamespace(id="j1", workflow_step_id="st1", shot_id=None, project_id="p1")
         session = self._session(step=step, run=run, job=job)
         artifact = SimpleNamespace(id="a1", project_id="p1", job_id="j1")
         with pytest.raises(PermissionError):
@@ -766,8 +759,11 @@ class TestFeedback:
         with pytest.raises(ValueError):
             asyncio.run(
                 feedback_service.record_feedback(
-                    session, artifact=artifact, user_id=1,
-                    action="selected", step_id="st-ghost",
+                    session,
+                    artifact=artifact,
+                    user_id=1,
+                    action="selected",
+                    step_id="st-ghost",
                 )
             )
 
@@ -775,7 +771,10 @@ class TestFeedback:
         step = SimpleNamespace(id="st1", run_id="r1", selected_artifact_id=None)
         run = SimpleNamespace(id="r1", project_id="p1")
         job = SimpleNamespace(
-            id="j1", workflow_step_id="st2", shot_id=None, project_id="p1"  # 别的 step 的 job
+            id="j1",
+            workflow_step_id="st2",
+            shot_id=None,
+            project_id="p1",  # 别的 step 的 job
         )
         session = self._session(step=step, run=run, job=job)
         artifact = SimpleNamespace(id="a1", project_id="p1", job_id="j1")
@@ -791,9 +790,7 @@ class TestFeedback:
     def test_shot_level_selection_with_step_writes_both(self):
         step = SimpleNamespace(id="st1", run_id="r1", selected_artifact_id=None)
         run = SimpleNamespace(id="r1", project_id="p1")
-        job = SimpleNamespace(
-            id="j1", workflow_step_id="st1", shot_id="sh1", project_id="p1"
-        )
+        job = SimpleNamespace(id="j1", workflow_step_id="st1", shot_id="sh1", project_id="p1")
         shot = SimpleNamespace(id="sh1", selected_image_artifact_id=None, selected_video_artifact_id=None)
         session = self._session(step=step, run=run, job=job, shot=shot)
         artifact = SimpleNamespace(id="a1", project_id="p1", job_id="j1", type="video")
@@ -807,32 +804,24 @@ class TestFeedback:
 
     def test_shot_level_selection_without_step(self):
         # 前端按 shot 选择时 step_id 可空：仅写 Shot 级
-        job = SimpleNamespace(
-            id="j1", workflow_step_id=None, shot_id="sh1", project_id="p1"
-        )
+        job = SimpleNamespace(id="j1", workflow_step_id=None, shot_id="sh1", project_id="p1")
         shot = SimpleNamespace(id="sh1", selected_image_artifact_id=None, selected_video_artifact_id=None)
         session = self._session(job=job, shot=shot)
         artifact = SimpleNamespace(id="a1", project_id="p1", job_id="j1", type="video")
         feedback = asyncio.run(
-            feedback_service.record_feedback(
-                session, artifact=artifact, user_id=1, action="selected"
-            )
+            feedback_service.record_feedback(session, artifact=artifact, user_id=1, action="selected")
         )
         assert shot.selected_video_artifact_id == "a1"
         assert feedback.step_id is None
 
     def test_shot_not_written_when_job_project_mismatch(self):
         # artifact 的 job 属于别的项目：不写 shot 级选择
-        job = SimpleNamespace(
-            id="j1", workflow_step_id=None, shot_id="sh1", project_id="p2"
-        )
+        job = SimpleNamespace(id="j1", workflow_step_id=None, shot_id="sh1", project_id="p2")
         shot = SimpleNamespace(id="sh1", selected_image_artifact_id=None, selected_video_artifact_id=None)
         session = self._session(job=job, shot=shot)
         artifact = SimpleNamespace(id="a1", project_id="p1", job_id="j1", type="video")
         asyncio.run(
-            feedback_service.record_feedback(
-                session, artifact=artifact, user_id=1, action="selected"
-            )
+            feedback_service.record_feedback(session, artifact=artifact, user_id=1, action="selected")
         )
         assert shot.selected_video_artifact_id is None
 
@@ -846,9 +835,7 @@ class TestPersonalAsset:
     def test_personal_asset_allows_null_project(self):
         session = _FakeSession()
         card = asyncio.run(
-            asset_service.create_asset_card(
-                session, None, 1, type="character", name="主角", scope="personal"
-            )
+            asset_service.create_asset_card(session, None, 1, type="character", name="主角", scope="personal")
         )
         assert card.project_id is None
         assert card.scope == "personal"
@@ -871,13 +858,17 @@ class TestPersonalAsset:
 
     def test_copy_personal_asset_to_project(self):
         src = AssetCard(
-            id="a1", project_id=None, user_id=1, scope="personal",
-            type="character", name="主角", version=3, description="d",
+            id="a1",
+            project_id=None,
+            user_id=1,
+            scope="personal",
+            type="character",
+            name="主角",
+            version=3,
+            description="d",
         )
         session = _FakeSession(get_map={("AssetCard", "a1"): src})
-        card = asyncio.run(
-            asset_service.copy_personal_asset_to_project(session, "a1", "proj1", 1)
-        )
+        card = asyncio.run(asset_service.copy_personal_asset_to_project(session, "a1", "proj1", 1))
         assert card.scope == "project"
         assert card.project_id == "proj1"
         assert card.version == 1  # 锁定版本语义：项目内从 v1 重新演进
@@ -935,9 +926,7 @@ class TestLLMPlanner:
         assert plan["planner_fallback"] is True
 
     def test_unknown_extra_node_falls_back(self):
-        llm = _MockLLM(
-            '{"episodes": 2, "shots_per_episode": 4, "extra_nodes": ["evil.node"]}'
-        )
+        llm = _MockLLM('{"episodes": 2, "shots_per_episode": 4, "extra_nodes": ["evil.node"]}')
         plan = asyncio.run(planner_service.plan_with_llm("", {}, llm=llm))
         assert plan["planner_fallback"] is True
 
@@ -960,6 +949,7 @@ class TestMigration0004:
         def _rec(name):
             def _fn(*args, **kwargs):
                 calls.append((name, args, kwargs))
+
             return _fn
 
         return SimpleNamespace(
@@ -989,9 +979,7 @@ class TestMigration0004:
         assert len(fks) == 2
         assert all(c[2].get("ondelete") == "SET NULL" for c in fks)
         alters = [c for c in calls if c[0] == "alter_column"]
-        assert any(
-            c[1][0] == "asset_cards" and c[2].get("nullable") is True for c in alters
-        )
+        assert any(c[1][0] == "asset_cards" and c[2].get("nullable") is True for c in alters)
 
     def test_downgrade(self, monkeypatch):
         mod = _load_migration_0004()
@@ -1012,9 +1000,7 @@ class TestMigration0004:
             "ix_generation_jobs_workflow_step_id",
         }
         alters = [c for c in calls if c[0] == "alter_column"]
-        assert any(
-            c[1][0] == "asset_cards" and c[2].get("nullable") is False for c in alters
-        )
+        assert any(c[1][0] == "asset_cards" and c[2].get("nullable") is False for c in alters)
 
 
 # ─────────────────────────────────────────
@@ -1056,9 +1042,13 @@ class TestLogicalJobKey:
 
         def _fake_routing(provider_policy, resolution, *, duration=6, explicit_provider=""):
             return {
-                "provider": "stub", "model": "stub-video", "resolution": resolution,
-                "protocol": "stub", "billable_duration": duration,
-                "estimated_total_cost": Decimal("0"), "price_snapshot": {},
+                "provider": "stub",
+                "model": "stub-video",
+                "resolution": resolution,
+                "protocol": "stub",
+                "billable_duration": duration,
+                "estimated_total_cost": Decimal("0"),
+                "price_snapshot": {},
             }
 
         stub_provider = SimpleNamespace(name="stub", supports=lambda req, model=None: True)
@@ -1072,9 +1062,7 @@ class TestLogicalJobKey:
         class _PlanSession(_FakeSession):
             async def execute(self, stmt):
                 # _get_or_create_job 查 idempotency_key：一律不存在 → 新建
-                return SimpleNamespace(
-                    scalars=lambda: SimpleNamespace(first=lambda: None, all=lambda: [])
-                )
+                return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: None, all=lambda: []))
 
         from app.db.models import WorkflowRun, WorkflowStep
 
@@ -1084,9 +1072,7 @@ class TestLogicalJobKey:
 
         async def _go(attempt):
             step.attempt = attempt
-            return await job_planner.plan_shot_video_jobs(
-                session, run=run, step=step, episode_id="e1"
-            )
+            return await job_planner.plan_shot_video_jobs(session, run=run, step=step, episode_id="e1")
 
         jobs0 = asyncio.run(_go(0))
         assert jobs0[0].step_attempt == 0
@@ -1115,6 +1101,7 @@ class TestMigration0005:
         def _rec(name):
             def _fn(*args, **kwargs):
                 calls.append((name, args, kwargs))
+
             return _fn
 
         return SimpleNamespace(

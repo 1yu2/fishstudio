@@ -11,9 +11,14 @@ from app.services.model_deployment_bootstrap import (
 
 def _clear_model_env(monkeypatch):
     for name in (
-        "OPENAI_API_KEY", "VOLCANO_API_KEY", "MINIMAX_API_KEY",
-        "LOCAL_H3_ENABLED", "LOCAL_H3_BASE_URL", "LOCAL_H3_API_KEY",
-        "DASHSCOPE_API_KEY", "TENCENT_AI3D_API_KEY",
+        "OPENAI_API_KEY",
+        "VOLCANO_API_KEY",
+        "MINIMAX_API_KEY",
+        "LOCAL_H3_ENABLED",
+        "LOCAL_H3_BASE_URL",
+        "LOCAL_H3_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "TENCENT_AI3D_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -29,10 +34,7 @@ def test_legacy_local_h3_mapping_is_complete(monkeypatch):
     monkeypatch.setenv("LOCAL_H3_MAX_DURATION", "6")
     monkeypatch.setenv("LOCAL_H3_COST_CNY_PER_SECOND", "0.12")
 
-    spec = next(
-        item for item in legacy_deployment_specs()
-        if item.payload.driver == "local_h3_gateway"
-    )
+    spec = next(item for item in legacy_deployment_specs() if item.payload.driver == "local_h3_gateway")
     payload = spec.payload
     assert payload.slug == "h3-fl2va-int8-convrot"
     assert payload.driver == "local_h3_gateway"

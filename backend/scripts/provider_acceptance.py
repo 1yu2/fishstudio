@@ -79,9 +79,7 @@ def build_preflight(durations: list[int], resolution: str) -> dict:
         capabilities.append(
             {
                 "duration": duration,
-                "supports_h3": capability_provider.supports(
-                    request, model=capability_provider.h3_model
-                ),
+                "supports_h3": capability_provider.supports(request, model=capability_provider.h3_model),
                 "estimated_cost": str(
                     estimate_video_cost(
                         "minimax",
@@ -227,10 +225,7 @@ async def run_h3_case(
 
 async def execute_benchmark(args) -> dict:
     if args.confirm_paid_calls != PAID_CONFIRMATION:
-        raise RuntimeError(
-            "真实基准会产生费用；必须显式传入 "
-            f"--confirm-paid-calls {PAID_CONFIRMATION}"
-        )
+        raise RuntimeError(f"真实基准会产生费用；必须显式传入 --confirm-paid-calls {PAID_CONFIRMATION}")
     if not os.getenv("MINIMAX_API_KEY", "").strip():
         raise RuntimeError("MINIMAX_API_KEY 未配置")
     if not h3_experimental_enabled():
@@ -280,10 +275,7 @@ async def execute_benchmark(args) -> dict:
 
 async def execute_hailuo_02_benchmark(args) -> dict:
     if args.confirm_paid_calls != PAID_CONFIRMATION:
-        raise RuntimeError(
-            "真实基准会产生费用；必须显式传入 "
-            f"--confirm-paid-calls {PAID_CONFIRMATION}"
-        )
+        raise RuntimeError(f"真实基准会产生费用；必须显式传入 --confirm-paid-calls {PAID_CONFIRMATION}")
     if not os.getenv("MINIMAX_API_KEY", "").strip():
         raise RuntimeError("MINIMAX_API_KEY 未配置")
     if args.first_frame is None:

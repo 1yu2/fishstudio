@@ -2,9 +2,7 @@ def test_system_environment_page_excludes_model_configuration():
     from app.routers.settings import ENV_GROUPS
 
     keys = {item["key"] for group in ENV_GROUPS for item in group["keys"]}
-    forbidden_prefixes = (
-        "OPENAI_", "VOLCANO_", "MINIMAX_", "LOCAL_H3_", "DASHSCOPE_", "TENCENT_AI3D_"
-    )
+    forbidden_prefixes = ("OPENAI_", "VOLCANO_", "MINIMAX_", "LOCAL_H3_", "DASHSCOPE_", "TENCENT_AI3D_")
     assert not any(key.startswith(forbidden_prefixes) for key in keys)
 
 

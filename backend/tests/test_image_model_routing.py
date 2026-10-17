@@ -109,12 +109,8 @@ async def test_two_image_deployments_are_instance_isolated(monkeypatch):
         legacy_tool.VOLCANO_BASE_URL,
         legacy_tool.VOLCANO_IMAGE_MODEL,
     )
-    first = VolcanoImageProvider(
-        api_key="key-one", base_url="https://one.test/v1", model_name="model-one"
-    )
-    second = VolcanoImageProvider(
-        api_key="key-two", base_url="https://two.test/v1", model_name="model-two"
-    )
+    first = VolcanoImageProvider(api_key="key-one", base_url="https://one.test/v1", model_name="model-one")
+    second = VolcanoImageProvider(api_key="key-two", base_url="https://two.test/v1", model_name="model-two")
 
     first_result = await first.generate(ImageGenerationRequest(prompt="one"))
     second_result = await second.generate(ImageGenerationRequest(prompt="two"))
@@ -197,17 +193,13 @@ async def test_unavailable_primary_uses_configured_fallback_order():
         ),
         mock_enabled=lambda: False,
     )
-    session = FakeSession(
-        {"image_generation": _route("image_generation", "primary", ["fallback"])}
-    )
+    session = FakeSession({"image_generation": _route("image_generation", "primary", ["fallback"])})
 
     execution = await resolver.execute(session, ImageGenerationRequest(prompt="fallback"))
 
     assert execution.deployment_name == "fallback"
     assert execution.routing_snapshot["fallback_used"] is True
-    assert execution.routing_snapshot["unavailable"] == [
-        {"deployment": "primary", "reason": "unavailable"}
-    ]
+    assert execution.routing_snapshot["unavailable"] == [{"deployment": "primary", "reason": "unavailable"}]
     assert primary.calls == []
     assert len(fallback.calls) == 1
 
@@ -239,9 +231,7 @@ async def test_legacy_mock_mode_is_kept_only_without_db_config(monkeypatch):
     monkeypatch.setenv("MOCK_IMAGE_PATH", "/storage/images/legacy.png")
     resolver = ImageResolver(_catalog(), mock_enabled=lambda: False)
 
-    execution = await resolver.execute(
-        FakeSession({}), ImageGenerationRequest(prompt="legacy mock")
-    )
+    execution = await resolver.execute(FakeSession({}), ImageGenerationRequest(prompt="legacy mock"))
 
     assert execution.mocked is True
     assert execution.deployment_name == "legacy-mock-image"

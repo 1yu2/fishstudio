@@ -25,24 +25,55 @@ pytestmark = pytest.mark.skipif(
 
 EXPECTED_TABLES = {
     # 0001
-    "users", "canvases", "settings_kv", "audit_logs",
+    "users",
+    "canvases",
+    "settings_kv",
+    "audit_logs",
     # 0002（18 张）
-    "workflow_templates", "skill_manifests", "series_projects", "episodes", "scenes",
-    "storyboard_revisions", "shots", "asset_cards", "workflow_runs", "workflow_steps",
-    "workflow_step_dependencies", "generation_jobs", "artifacts", "asset_artifact_refs",
-    "shot_asset_refs", "approvals", "usage_events", "artifact_feedback",
-    "clone_voice_quotes", "script_revisions", "series_bible_revisions",
-    "style_bible_revisions", "invalidation_events", "model_invocations",
-    "director_plan_revisions", "observer_reviews",
-    "artifact_candidates", "regeneration_requests",
+    "workflow_templates",
+    "skill_manifests",
+    "series_projects",
+    "episodes",
+    "scenes",
+    "storyboard_revisions",
+    "shots",
+    "asset_cards",
+    "workflow_runs",
+    "workflow_steps",
+    "workflow_step_dependencies",
+    "generation_jobs",
+    "artifacts",
+    "asset_artifact_refs",
+    "shot_asset_refs",
+    "approvals",
+    "usage_events",
+    "artifact_feedback",
+    "clone_voice_quotes",
+    "script_revisions",
+    "series_bible_revisions",
+    "style_bible_revisions",
+    "invalidation_events",
+    "model_invocations",
+    "director_plan_revisions",
+    "observer_reviews",
+    "artifact_candidates",
+    "regeneration_requests",
     "timeline_revisions",
-    "qc_reports", "publications", "publish_packages",
-    "reference_analyses", "shot_references",
-    "job_events", "provider_circuits",
-    "benchmark_datasets", "eval_runs", "price_table_entries", "budget_alerts",
+    "qc_reports",
+    "publications",
+    "publish_packages",
+    "reference_analyses",
+    "shot_references",
+    "job_events",
+    "provider_circuits",
+    "benchmark_datasets",
+    "eval_runs",
+    "price_table_entries",
+    "budget_alerts",
     "publication_metrics",
     # 0021–0022
-    "model_deployments", "model_routes",
+    "model_deployments",
+    "model_routes",
 }
 
 
@@ -168,7 +199,9 @@ def test_empty_database_upgrades_to_head(mig_env):
         "based_on_style_bible_revision_id",
     } <= _columns("script_revisions")
     assert {"narrative_purpose", "generation_mode", "qa_status"} <= _columns("shots")
-    assert {"priority", "worker_class", "leased_by", "heartbeat_at", "dead_lettered_at"} <= _columns("generation_jobs")
+    assert {"priority", "worker_class", "leased_by", "heartbeat_at", "dead_lettered_at"} <= _columns(
+        "generation_jobs"
+    )
     assert "storage_backend" in _columns("artifacts")
 
 
@@ -298,9 +331,7 @@ def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
         try:
             async with engine.connect() as conn:
                 return (
-                    await conn.execute(
-                        text("SELECT title FROM series_projects WHERE id='roundtrip-project'")
-                    )
+                    await conn.execute(text("SELECT title FROM series_projects WHERE id='roundtrip-project'"))
                 ).scalar_one()
         finally:
             await engine.dispose()

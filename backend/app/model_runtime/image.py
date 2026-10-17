@@ -75,8 +75,7 @@ class ImageResolver:
         required = PURPOSES[purpose][1]
         capabilities = deployment.capabilities
         return all(
-            capabilities.get(capability) is True
-            or capability in capabilities.get("operations", [])
+            capabilities.get(capability) is True or capability in capabilities.get("operations", [])
             for capability in required
         )
 
@@ -122,9 +121,7 @@ class ImageResolver:
             "purpose": purpose,
             "route_revision": route.revision,
             "catalog_revision": snapshot.catalog_revision,
-            "candidate_deployments": [
-                route.primary_deployment, *route.fallback_deployments
-            ],
+            "candidate_deployments": [route.primary_deployment, *route.fallback_deployments],
             "skipped": skipped,
             "legacy": False,
         }
@@ -151,9 +148,7 @@ class ImageResolver:
 
         configured = await self._configured_candidates(session, purpose)
         if configured is None:
-            legacy_mock = os.getenv("MOCK_MODE", "false").strip().lower() in {
-                "1", "true", "yes"
-            }
+            legacy_mock = os.getenv("MOCK_MODE", "false").strip().lower() in {"1", "true", "yes"}
             provider = (
                 _LegacyPathMockImageProvider(os.getenv("MOCK_IMAGE_PATH", ""))
                 if legacy_mock
@@ -170,22 +165,17 @@ class ImageResolver:
         else:
             deployments, route_snapshot = configured
             candidates = [
-                (deployment.slug, deployment.model, deployment.instance)
-                for deployment in deployments
+                (deployment.slug, deployment.model, deployment.instance) for deployment in deployments
             ]
 
         unavailable = list(route_snapshot.get("skipped", []))
         for deployment_name, model, provider in candidates:
             if not provider.is_available():
-                unavailable.append(
-                    {"deployment": deployment_name, "reason": "unavailable"}
-                )
+                unavailable.append({"deployment": deployment_name, "reason": "unavailable"})
                 continue
             result = await provider.generate(req)
             if not result.success and result.error_code == "no_provider":
-                unavailable.append(
-                    {"deployment": deployment_name, "reason": "no_provider"}
-                )
+                unavailable.append({"deployment": deployment_name, "reason": "no_provider"})
                 continue
             routing_snapshot = {
                 **route_snapshot,
@@ -193,8 +183,7 @@ class ImageResolver:
                 "selected_deployment": deployment_name,
                 "model": model,
                 "selected_model": model,
-                "fallback_used": deployment_name
-                != route_snapshot["candidate_deployments"][0],
+                "fallback_used": deployment_name != route_snapshot["candidate_deployments"][0],
                 "unavailable": unavailable,
             }
             result.raw_metadata = {
@@ -239,9 +228,7 @@ class ImageResolver:
                 result=result,
             )
 
-        raise RuntimeError(
-            f"用途 {purpose} 没有可用图片 Deployment；unavailable={unavailable}"
-        )
+        raise RuntimeError(f"用途 {purpose} 没有可用图片 Deployment；unavailable={unavailable}")
 
 
 _IMAGE_RESOLVER: ImageResolver | None = None

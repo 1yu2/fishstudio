@@ -28,9 +28,7 @@ async def _owned_run(session: AsyncSession, run_id: str, user: User) -> Workflow
     if run is None:
         raise HTTPException(status_code=404, detail="Run 不存在")
     try:
-        project = await series_service.get_project(
-            session, run.project_id, user.id, is_admin=user.is_admin
-        )
+        project = await series_service.get_project(session, run.project_id, user.id, is_admin=user.is_admin)
     except PermissionError:
         # 无权与不存在统一 404，不泄露存在性
         raise HTTPException(status_code=404, detail="项目不存在") from None
@@ -170,9 +168,7 @@ async def create_run(
         await workflow_service.seed_builtin_templates(session)
         goal = body.goal or project.title
         if body.use_llm_planner:
-            ctx_token = set_execution_context(
-                replace(get_execution_context(), project_id=project.id)
-            )
+            ctx_token = set_execution_context(replace(get_execution_context(), project_id=project.id))
             try:
                 plan = await planner_service.plan_with_llm(goal, project.settings)
             finally:

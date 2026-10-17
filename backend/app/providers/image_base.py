@@ -55,11 +55,19 @@ def _placeholder_png(file_path: Path, size: str = "576x1024") -> None:
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
-            imageio_ffmpeg.get_ffmpeg_exe(), "-y",
-            "-f", "lavfi", "-i", f"color=c=0x336699:size={size}",
-            "-frames:v", "1", str(file_path),
+            imageio_ffmpeg.get_ffmpeg_exe(),
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=0x336699:size={size}",
+            "-frames:v",
+            "1",
+            str(file_path),
         ],
-        check=True, capture_output=True, timeout=30,
+        check=True,
+        capture_output=True,
+        timeout=30,
     )
 
 

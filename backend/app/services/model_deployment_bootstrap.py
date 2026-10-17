@@ -51,53 +51,82 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             model=_env("MODEL_NAME", "deepseek-ai/DeepSeek-V3.1-Terminus"),
             base_url=_env("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1"),
             credential_ref="env:OPENAI_API_KEY",
-            config={}, capabilities={"tools": True}, pricing={},
+            config={},
+            capabilities={"tools": True},
+            pricing={},
         )
     if _env("VOLCANO_API_KEY"):
         base_url = _env("VOLCANO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
         add(
             ("VOLCANO_API_KEY", "VOLCANO_BASE_URL", "VOLCANO_MODEL_NAME"),
-            name="Volcano Chat", slug="volcano-chat", driver="openai_compatible",
-            modality="chat", model=_env("VOLCANO_MODEL_NAME", "doubao-seed-1-6-251015"),
-            base_url=base_url, credential_ref="env:VOLCANO_API_KEY",
-            config={}, capabilities={"tools": True}, pricing={}, priority=110,
+            name="Volcano Chat",
+            slug="volcano-chat",
+            driver="openai_compatible",
+            modality="chat",
+            model=_env("VOLCANO_MODEL_NAME", "doubao-seed-1-6-251015"),
+            base_url=base_url,
+            credential_ref="env:VOLCANO_API_KEY",
+            config={},
+            capabilities={"tools": True},
+            pricing={},
+            priority=110,
         )
         add(
             ("VOLCANO_API_KEY", "VOLCANO_BASE_URL", "VOLCANO_IMAGE_MODEL"),
-            name="Volcano Image", slug="volcano-image", driver="volcano_image",
-            modality="image", model=_env("VOLCANO_IMAGE_MODEL", "seedream-4.5"),
-            base_url=base_url, credential_ref="env:VOLCANO_API_KEY",
-            config={}, capabilities={"operations": ["generate", "edit"]},
+            name="Volcano Image",
+            slug="volcano-image",
+            driver="volcano_image",
+            modality="image",
+            model=_env("VOLCANO_IMAGE_MODEL", "seedream-4.5"),
+            base_url=base_url,
+            credential_ref="env:VOLCANO_API_KEY",
+            config={},
+            capabilities={"operations": ["generate", "edit"]},
             pricing={"currency": "CNY", "output_per_image": "0.20"},
         )
         add(
             ("VOLCANO_API_KEY", "VOLCANO_BASE_URL", "VOLCANO_VIDEO_MODEL"),
-            name="Volcano Video", slug="volcano-video", driver="volcano_video",
-            modality="video", model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
-            base_url=base_url, credential_ref="env:VOLCANO_API_KEY",
-            config={"protocol": "volcano"}, capabilities={"min_duration": 4, "max_duration": 12},
-            pricing={"currency": "CNY", "output_per_second": "0.50"}, priority=120,
+            name="Volcano Video",
+            slug="volcano-video",
+            driver="volcano_video",
+            modality="video",
+            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
+            base_url=base_url,
+            credential_ref="env:VOLCANO_API_KEY",
+            config={"protocol": "volcano"},
+            capabilities={"min_duration": 4, "max_duration": 12},
+            pricing={"currency": "CNY", "output_per_second": "0.50"},
+            priority=120,
         )
     else:
         # 保留旧 Runtime 的未配置火山视频占位：管理页显示“未配置”，
         # 测试/显式 Mock 模式仍可锁定该协议后在执行前回退到 Mock。
         add(
             ("VOLCANO_API_KEY", "VOLCANO_BASE_URL", "VOLCANO_VIDEO_MODEL"),
-            name="Volcano Video", slug="volcano-video", driver="volcano_video",
-            modality="video", model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
+            name="Volcano Video",
+            slug="volcano-video",
+            driver="volcano_video",
+            modality="video",
+            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
             base_url=_env("VOLCANO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
-            credential_ref="env:VOLCANO_API_KEY", config={"protocol": "volcano"},
+            credential_ref="env:VOLCANO_API_KEY",
+            config={"protocol": "volcano"},
             capabilities={"min_duration": 4, "max_duration": 12},
-            pricing={"currency": "CNY", "output_per_second": "0.50"}, priority=120,
+            pricing={"currency": "CNY", "output_per_second": "0.50"},
+            priority=120,
             enabled=False,
         )
     if _env("MINIMAX_API_KEY"):
         add(
             ("MINIMAX_API_KEY", "MINIMAX_BASE_URL", "MINIMAX_V1_MODEL"),
-            name="MiniMax Video", slug="minimax-video", driver="minimax_video",
-            modality="video", model=_env("MINIMAX_V1_MODEL", "MiniMax-Hailuo-2.3"),
+            name="MiniMax Video",
+            slug="minimax-video",
+            driver="minimax_video",
+            modality="video",
+            model=_env("MINIMAX_V1_MODEL", "MiniMax-Hailuo-2.3"),
             base_url=_env("MINIMAX_BASE_URL", "https://api.minimaxi.com"),
-            credential_ref="env:MINIMAX_API_KEY", config={"protocol": "v1"},
+            credential_ref="env:MINIMAX_API_KEY",
+            config={"protocol": "v1"},
             capabilities={"modes": ["text", "first_frame"], "min_duration": 6, "max_duration": 10},
             pricing={"currency": "CNY", "per_piece_6": "2.00", "per_piece_10": "4.00"},
             priority=130,
@@ -109,17 +138,25 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             pricing["output_per_second"] = cost
         add(
             (
-                "LOCAL_H3_ENABLED", "LOCAL_H3_DEPLOYMENT", "LOCAL_H3_BASE_URL",
-                "LOCAL_H3_API_KEY", "LOCAL_H3_MODEL", "LOCAL_H3_MAX_CONCURRENCY",
-                "LOCAL_H3_MIN_DURATION", "LOCAL_H3_MAX_DURATION",
+                "LOCAL_H3_ENABLED",
+                "LOCAL_H3_DEPLOYMENT",
+                "LOCAL_H3_BASE_URL",
+                "LOCAL_H3_API_KEY",
+                "LOCAL_H3_MODEL",
+                "LOCAL_H3_MAX_CONCURRENCY",
+                "LOCAL_H3_MIN_DURATION",
+                "LOCAL_H3_MAX_DURATION",
                 "LOCAL_H3_COST_CNY_PER_SECOND",
             ),
             name="Local MiniMax H3",
             slug=_env("LOCAL_H3_DEPLOYMENT", "h3-fl2va-int8-convrot"),
-            driver="local_h3_gateway", modality="video",
+            driver="local_h3_gateway",
+            modality="video",
             model=_env("LOCAL_H3_MODEL", "MiniMax-H3"),
-            base_url=_env("LOCAL_H3_BASE_URL"), credential_ref="env:LOCAL_H3_API_KEY",
-            enabled=_enabled("LOCAL_H3_ENABLED"), priority=10,
+            base_url=_env("LOCAL_H3_BASE_URL"),
+            credential_ref="env:LOCAL_H3_API_KEY",
+            enabled=_enabled("LOCAL_H3_ENABLED"),
+            priority=10,
             config={
                 "max_concurrency": int(_env("LOCAL_H3_MAX_CONCURRENCY", "1")),
                 "min_duration": int(_env("LOCAL_H3_MIN_DURATION", "4")),
@@ -129,29 +166,45 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
                 "max_artifact_bytes": int(_env("LOCAL_H3_MAX_ARTIFACT_BYTES", "536870912")),
                 "max_inline_image_bytes": int(_env("LOCAL_H3_MAX_INLINE_IMAGE_BYTES", "8388608")),
                 "artifact_allowed_hosts": [
-                    value.strip() for value in _env("LOCAL_H3_ARTIFACT_ALLOWED_HOSTS").split(",")
+                    value.strip()
+                    for value in _env("LOCAL_H3_ARTIFACT_ALLOWED_HOSTS").split(",")
                     if value.strip()
                 ],
             },
             capabilities={
-                "modes": [value.strip() for value in _env("LOCAL_H3_MODES", "text").split(",") if value.strip()]
+                "modes": [
+                    value.strip() for value in _env("LOCAL_H3_MODES", "text").split(",") if value.strip()
+                ]
             },
             pricing=pricing,
         )
     if _env("DASHSCOPE_API_KEY"):
         add(
             ("DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL"),
-            name="Qwen TTS", slug="qwen-tts", driver="qwen_tts", modality="speech",
-            model="qwen-tts", base_url=_env("DASHSCOPE_BASE_URL"),
-            credential_ref="env:DASHSCOPE_API_KEY", config={}, capabilities={}, pricing={},
+            name="Qwen TTS",
+            slug="qwen-tts",
+            driver="qwen_tts",
+            modality="speech",
+            model="qwen-tts",
+            base_url=_env("DASHSCOPE_BASE_URL"),
+            credential_ref="env:DASHSCOPE_API_KEY",
+            config={},
+            capabilities={},
+            pricing={},
         )
     if _env("TENCENT_AI3D_API_KEY"):
         add(
             ("TENCENT_AI3D_API_KEY", "TENCENT_AI3D_BASE_URL"),
-            name="Tencent AI3D", slug="tencent-ai3d", driver="tencent_ai3d",
-            modality="model_3d", model="hunyuan-3d",
+            name="Tencent AI3D",
+            slug="tencent-ai3d",
+            driver="tencent_ai3d",
+            modality="model_3d",
+            model="hunyuan-3d",
             base_url=_env("TENCENT_AI3D_BASE_URL", "https://api.ai3d.cloud.tencent.com"),
-            credential_ref="env:TENCENT_AI3D_API_KEY", config={}, capabilities={}, pricing={},
+            credential_ref="env:TENCENT_AI3D_API_KEY",
+            config={},
+            capabilities={},
+            pricing={},
         )
     if mock_providers_enabled():
         logger.info("Mock Provider 保持兼容模式，不写入生产 Deployment Catalog")
@@ -166,15 +219,15 @@ async def bootstrap_legacy_deployments(session: AsyncSession) -> int:
         payload = spec.payload
         if payload.slug in existing:
             continue
-        row = ModelDeployment(
-            **payload.model_dump(), revision=1, config_hash=config_hash(payload)
-        )
+        row = ModelDeployment(**payload.model_dump(), revision=1, config_hash=config_hash(payload))
         session.add(row)
         existing.add(payload.slug)
         inserted += 1
         logger.info(
             "bootstrap model deployment slug=%s driver=%s sources=%s",
-            payload.slug, payload.driver, ",".join(spec.source_variables),
+            payload.slug,
+            payload.driver,
+            ",".join(spec.source_variables),
         )
     marker = await session.get(Setting, BOOTSTRAP_SETTING_KEY)
     if marker is None:
@@ -194,9 +247,9 @@ async def bootstrap_default_routes(session: AsyncSession) -> int:
     from app.db.models import ModelRoute
 
     deployments = list(
-        (await session.execute(
-            select(ModelDeployment).where(ModelDeployment.enabled.is_(True))
-        )).scalars().all()
+        (await session.execute(select(ModelDeployment).where(ModelDeployment.enabled.is_(True))))
+        .scalars()
+        .all()
     )
     existing = set((await session.execute(select(ModelRoute.purpose))).scalars().all())
     by_modality: dict[str, list[ModelDeployment]] = {}
@@ -225,14 +278,16 @@ async def bootstrap_default_routes(session: AsyncSession) -> int:
         if purpose in existing or not items:
             continue
         primary = items[0]
-        session.add(ModelRoute(
-            purpose=purpose,
-            modality=primary.modality,
-            primary_deployment=primary.slug,
-            fallback_deployments=[item.slug for item in items[1:]],
-            enabled=True,
-            revision=1,
-        ))
+        session.add(
+            ModelRoute(
+                purpose=purpose,
+                modality=primary.modality,
+                primary_deployment=primary.slug,
+                fallback_deployments=[item.slug for item in items[1:]],
+                enabled=True,
+                revision=1,
+            )
+        )
         inserted += 1
         logger.info("bootstrap model route purpose=%s primary=%s", purpose, primary.slug)
     await session.commit()

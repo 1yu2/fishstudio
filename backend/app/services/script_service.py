@@ -37,9 +37,7 @@ async def _owned_episode(
 async def _next_revision(session: AsyncSession, episode_id: str) -> int:
     current = (
         await session.execute(
-            select(func.max(ScriptRevision.revision)).where(
-                ScriptRevision.episode_id == episode_id
-            )
+            select(func.max(ScriptRevision.revision)).where(ScriptRevision.episode_id == episode_id)
         )
     ).scalar_one_or_none()
     return (current or 0) + 1
@@ -67,46 +65,54 @@ async def create_revision(
         )
 
     latest = (
-        await session.execute(
-            select(ScriptRevision)
-            .where(ScriptRevision.episode_id == episode_id)
-            .order_by(ScriptRevision.revision.desc())
-            .limit(1)
+        (
+            await session.execute(
+                select(ScriptRevision)
+                .where(ScriptRevision.episode_id == episode_id)
+                .order_by(ScriptRevision.revision.desc())
+                .limit(1)
+            )
         )
-    ).scalars().first()
-    if based_on_revision is not None and (
-        latest is None or based_on_revision != latest.revision
-    ):
+        .scalars()
+        .first()
+    )
+    if based_on_revision is not None and (latest is None or based_on_revision != latest.revision):
         current = latest.revision if latest else None
-        raise ValueError(
-            f"based_on_revision {based_on_revision} 不是当前版本 {current}"
-        )
+        raise ValueError(f"based_on_revision {based_on_revision} 不是当前版本 {current}")
     if based_on_revision is None and latest is not None:
         based_on_revision = latest.revision
 
     revision_no = await _next_revision(session, episode_id)
     series_bible = (
-        await session.execute(
-            select(SeriesBibleRevision)
-            .where(
-                SeriesBibleRevision.project_id == episode.project_id,
-                SeriesBibleRevision.status == "approved",
+        (
+            await session.execute(
+                select(SeriesBibleRevision)
+                .where(
+                    SeriesBibleRevision.project_id == episode.project_id,
+                    SeriesBibleRevision.status == "approved",
+                )
+                .order_by(SeriesBibleRevision.revision.desc())
+                .limit(1)
             )
-            .order_by(SeriesBibleRevision.revision.desc())
-            .limit(1)
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     style_bible = (
-        await session.execute(
-            select(StyleBibleRevision)
-            .where(
-                StyleBibleRevision.project_id == episode.project_id,
-                StyleBibleRevision.status == "approved",
+        (
+            await session.execute(
+                select(StyleBibleRevision)
+                .where(
+                    StyleBibleRevision.project_id == episode.project_id,
+                    StyleBibleRevision.status == "approved",
+                )
+                .order_by(StyleBibleRevision.revision.desc())
+                .limit(1)
             )
-            .order_by(StyleBibleRevision.revision.desc())
-            .limit(1)
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     row = ScriptRevision(
         episode_id=episode_id,
         based_on_series_bible_revision_id=series_bible.id if series_bible else None,
@@ -125,14 +131,18 @@ async def create_revision(
         latest.status = "superseded"
 
     approvals = (
-        await session.execute(
-            select(Approval).where(
-                Approval.target_type == "script",
-                Approval.target_id == episode_id,
-                Approval.status != "superseded",
+        (
+            await session.execute(
+                select(Approval).where(
+                    Approval.target_type == "script",
+                    Approval.target_id == episode_id,
+                    Approval.status != "superseded",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for approval in approvals:
         approval.status = "superseded"
 
@@ -190,10 +200,14 @@ async def get_current_revision(
 ) -> Optional[ScriptRevision]:
     await _owned_episode(session, episode_id, user_id, is_admin)
     return (
-        await session.execute(
-            select(ScriptRevision)
-            .where(ScriptRevision.episode_id == episode_id)
-            .order_by(ScriptRevision.revision.desc())
-            .limit(1)
+        (
+            await session.execute(
+                select(ScriptRevision)
+                .where(ScriptRevision.episode_id == episode_id)
+                .order_by(ScriptRevision.revision.desc())
+                .limit(1)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )

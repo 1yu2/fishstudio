@@ -42,14 +42,16 @@ async def save_route(
         await session.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from error
     dto = service.to_dto(row)
-    session.add(AuditLog(
-        user_id=admin.id,
-        username=admin.username,
-        action="model_route.save",
-        target=purpose,
-        before=before,
-        after=dto.model_dump(mode="json"),
-    ))
+    session.add(
+        AuditLog(
+            user_id=admin.id,
+            username=admin.username,
+            action="model_route.save",
+            target=purpose,
+            before=before,
+            after=dto.model_dump(mode="json"),
+        )
+    )
     await session.commit()
     return dto
 
@@ -65,12 +67,14 @@ async def delete_route(
         raise HTTPException(status_code=404, detail="用途绑定不存在")
     before = service.to_dto(row).model_dump(mode="json")
     await session.delete(row)
-    session.add(AuditLog(
-        user_id=admin.id,
-        username=admin.username,
-        action="model_route.delete",
-        target=purpose,
-        before=before,
-    ))
+    session.add(
+        AuditLog(
+            user_id=admin.id,
+            username=admin.username,
+            action="model_route.delete",
+            target=purpose,
+            before=before,
+        )
+    )
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

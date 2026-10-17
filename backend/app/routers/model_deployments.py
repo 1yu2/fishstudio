@@ -85,9 +85,7 @@ async def create_deployment(
 
 
 @router.get("/{slug}", response_model=DeploymentDTO)
-async def get_deployment(
-    slug: str, session: AsyncSession = Depends(get_session)
-) -> DeploymentDTO:
+async def get_deployment(slug: str, session: AsyncSession = Depends(get_session)) -> DeploymentDTO:
     row = await service.get_deployment(session, slug)
     if row is None:
         raise HTTPException(status_code=404, detail="Deployment not found")
@@ -124,9 +122,7 @@ async def set_enabled(
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> DeploymentDTO:
-    return await update_deployment(
-        slug, DeploymentPatch(enabled=body.enabled), admin, session
-    )
+    return await update_deployment(slug, DeploymentPatch(enabled=body.enabled), admin, session)
 
 
 @router.put("/{slug}/credential", status_code=status.HTTP_204_NO_CONTENT)
@@ -145,13 +141,15 @@ async def write_credential(
         write_env_credential(row.credential_ref, body.api_key)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    session.add(_audit(
-        admin,
-        "model_deployment.credential.update",
-        slug,
-        before={"configured": bool(row.credential_ref)},
-        after={"configured": True},
-    ))
+    session.add(
+        _audit(
+            admin,
+            "model_deployment.credential.update",
+            slug,
+            before={"configured": bool(row.credential_ref)},
+            after={"configured": True},
+        )
+    )
     await session.commit()
     await _reload_catalog(session, force=True)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -167,15 +165,19 @@ async def delete_deployment(
     if row is None:
         raise HTTPException(status_code=404, detail="Deployment not found")
     references = (
-        await session.execute(
-            select(ModelRoute.purpose).where(
-                or_(
-                    ModelRoute.primary_deployment == slug,
-                    ModelRoute.fallback_deployments.contains([slug]),
+        (
+            await session.execute(
+                select(ModelRoute.purpose).where(
+                    or_(
+                        ModelRoute.primary_deployment == slug,
+                        ModelRoute.fallback_deployments.contains([slug]),
+                    )
                 )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if references:
         raise HTTPException(
             status_code=409,

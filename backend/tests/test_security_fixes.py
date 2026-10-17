@@ -57,18 +57,12 @@ class TestApprovalCrossProject:
             execute_first=revision,
         )
         with pytest.raises(PermissionError):
-            await approval_service._validate_target(
-                session, "storyboard", "ep-B", 1, "project-A"
-            )
+            await approval_service._validate_target(session, "storyboard", "ep-B", 1, "project-A")
 
     async def test_asset_target_other_project_rejected(self):
-        session = StubSession(
-            get_map={AssetCard: SimpleNamespace(version=2, project_id="project-B")}
-        )
+        session = StubSession(get_map={AssetCard: SimpleNamespace(version=2, project_id="project-B")})
         with pytest.raises(PermissionError):
-            await approval_service._validate_target(
-                session, "asset", "asset-1", 2, "project-A"
-            )
+            await approval_service._validate_target(session, "asset", "asset-1", 2, "project-A")
 
     async def test_same_project_target_allowed(self):
         asset = SimpleNamespace(version=1, project_id="project-A")
@@ -271,9 +265,7 @@ class TestArtifactDownload:
         assert self._client(app).get("/api/artifacts/nope/download").status_code == 404
 
     def test_path_traversal_rejected(self, monkeypatch, tmp_path):
-        artifact = SimpleNamespace(
-            id="art-1", project_id="p1", storage_key="../../etc/passwd", mime_type=""
-        )
+        artifact = SimpleNamespace(id="art-1", project_id="p1", storage_key="../../etc/passwd", mime_type="")
         project = SimpleNamespace(id="p1", user_id=1)
         user = SimpleNamespace(id=1, is_admin=False, username="u1")
         app = self._override(monkeypatch, tmp_path, artifact, project, user)
@@ -309,6 +301,7 @@ class _StorageSession:
 
 class TestStorageRoute:
     """main.py 在导入时按 STORAGE_PUBLIC_LEGACY 默认值（false）注册了自定义 /storage 路由。"""
+
     def test_storage_requires_auth(self, client):
         """非 public 路径无 token → 401。"""
         resp = client.get("/storage/images/whatever.png")
@@ -440,9 +433,7 @@ class TestStorageRoute:
 
 class TestOrphanProjectOwnership:
     async def test_orphan_project_normal_user_rejected(self):
-        session = StubSession(
-            get_map={SeriesProject: SimpleNamespace(id="p1", user_id=None)}
-        )
+        session = StubSession(get_map={SeriesProject: SimpleNamespace(id="p1", user_id=None)})
         with pytest.raises(PermissionError):
             await series_service.get_project(session, "p1", 2)
 
@@ -452,9 +443,7 @@ class TestOrphanProjectOwnership:
         assert await series_service.get_project(session, "p1", 1, is_admin=True) is project
 
     async def test_other_users_project_rejected(self):
-        session = StubSession(
-            get_map={SeriesProject: SimpleNamespace(id="p1", user_id=1)}
-        )
+        session = StubSession(get_map={SeriesProject: SimpleNamespace(id="p1", user_id=1)})
         with pytest.raises(PermissionError):
             await series_service.get_project(session, "p1", 2)
 

@@ -48,10 +48,12 @@ def _route(**updates):
 async def test_route_snapshot_locks_all_revisions(monkeypatch):
     monkeypatch.setenv("CHAT_KEY", "key")
     manager = CatalogManager()
-    catalog = await manager.reload_rows([
-        _deployment("primary", revision=4),
-        _deployment("fallback", revision=7),
-    ])
+    catalog = await manager.reload_rows(
+        [
+            _deployment("primary", revision=4),
+            _deployment("fallback", revision=7),
+        ]
+    )
 
     snapshot = resolve_route(_route(), catalog)
 
@@ -66,20 +68,24 @@ async def test_route_snapshot_locks_all_revisions(monkeypatch):
 async def test_route_validation_rejects_disabled_or_missing_capability(monkeypatch):
     monkeypatch.setenv("CHAT_KEY", "key")
     manager = CatalogManager()
-    catalog = await manager.reload_rows([
-        _deployment("primary", enabled=False),
-        _deployment("fallback"),
-    ])
+    catalog = await manager.reload_rows(
+        [
+            _deployment("primary", enabled=False),
+            _deployment("fallback"),
+        ]
+    )
     with pytest.raises(ValueError, match="已停用"):
         validate_route(ModelRouteInput.model_validate(_route().__dict__), catalog)
 
-    catalog = await manager.reload_rows([
-        _deployment("primary", revision=2, capabilities={"vision": False}),
-        _deployment("fallback", revision=2, capabilities={"vision": False}),
-    ])
-    reviewer = ModelRouteInput.model_validate({
-        **_route().__dict__, "purpose": "reviewer", "fallback_deployments": []
-    })
+    catalog = await manager.reload_rows(
+        [
+            _deployment("primary", revision=2, capabilities={"vision": False}),
+            _deployment("fallback", revision=2, capabilities={"vision": False}),
+        ]
+    )
+    reviewer = ModelRouteInput.model_validate(
+        {**_route().__dict__, "purpose": "reviewer", "fallback_deployments": []}
+    )
     with pytest.raises(ValueError, match="缺少用途"):
         validate_route(reviewer, catalog)
 
@@ -87,9 +93,7 @@ async def test_route_validation_rejects_disabled_or_missing_capability(monkeypat
 @pytest.mark.asyncio
 async def test_explicit_route_never_falls_back(monkeypatch):
     monkeypatch.setenv("CHAT_KEY", "key")
-    catalog = await CatalogManager().reload_rows([
-        _deployment("primary"), _deployment("fallback")
-    ])
+    catalog = await CatalogManager().reload_rows([_deployment("primary"), _deployment("fallback")])
     snapshot = resolve_route(_route(), catalog, explicit_deployment="fallback")
     assert [item.slug for item in snapshot.candidates] == ["fallback"]
     with pytest.raises(RuntimeError, match="显式选择"):
@@ -99,9 +103,7 @@ async def test_explicit_route_never_falls_back(monkeypatch):
 @pytest.mark.asyncio
 async def test_async_submission_forbids_provider_fallback(monkeypatch):
     monkeypatch.setenv("CHAT_KEY", "key")
-    catalog = await CatalogManager().reload_rows([
-        _deployment("primary"), _deployment("fallback")
-    ])
+    catalog = await CatalogManager().reload_rows([_deployment("primary"), _deployment("fallback")])
     snapshot = resolve_route(_route(), catalog)
     assert fallback_candidate(snapshot, 1).slug == "fallback"
     with pytest.raises(RuntimeError, match="已提交"):

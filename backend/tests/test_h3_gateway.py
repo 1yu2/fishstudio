@@ -14,9 +14,7 @@ from gateway.h3_gateway import (
 
 
 def _settings(monkeypatch, tmp_path: Path) -> Settings:
-    workflow = (
-        Path(__file__).parent.parent / "gateway" / "workflows" / "video_minimax_h3_t2v.json"
-    )
+    workflow = Path(__file__).parent.parent / "gateway" / "workflows" / "video_minimax_h3_t2v.json"
     monkeypatch.setenv("H3_GATEWAY_API_KEY", "secret")
     monkeypatch.setenv("H3_GATEWAY_WORKFLOW", str(workflow))
     monkeypatch.setenv("H3_GATEWAY_STATE_DIR", str(tmp_path))
@@ -66,9 +64,7 @@ def test_h3_workflow_builder_rejects_unverified_modes(monkeypatch, tmp_path):
 async def test_gateway_store_idempotency_and_recovery(monkeypatch, tmp_path):
     settings = _settings(monkeypatch, tmp_path)
     store = GatewayStore(settings.db_path)
-    payload = GenerationRequest(
-        deployment=settings.deployment, prompt="cat", duration=4
-    ).model_dump()
+    payload = GenerationRequest(deployment=settings.deployment, prompt="cat", duration=4).model_dump()
 
     first = await store.create("job-1", payload)
     second = await store.create("job-1", payload)
@@ -85,9 +81,7 @@ async def test_gateway_store_idempotency_and_recovery(monkeypatch, tmp_path):
 async def test_gateway_does_not_replay_uncertain_submission(monkeypatch, tmp_path):
     settings = _settings(monkeypatch, tmp_path)
     store = GatewayStore(settings.db_path)
-    payload = GenerationRequest(
-        deployment=settings.deployment, prompt="cat", duration=4
-    ).model_dump()
+    payload = GenerationRequest(deployment=settings.deployment, prompt="cat", duration=4).model_dump()
     task = await store.create("job-uncertain", payload)
     await store.update(task["task_id"], status="submitting")
 
@@ -101,8 +95,6 @@ async def test_gateway_does_not_replay_uncertain_submission(monkeypatch, tmp_pat
 def test_comfy_history_helpers():
     descriptor = {"filename": "fishstudio/task.mp4", "subfolder": "", "type": "output"}
     assert _find_video({"92": {"video": [descriptor]}}) == descriptor
-    assert "CUDA OOM" in _history_error({
-        "status": {
-            "messages": [["execution_error", {"exception_message": "CUDA OOM"}]]
-        }
-    })
+    assert "CUDA OOM" in _history_error(
+        {"status": {"messages": [["execution_error", {"exception_message": "CUDA OOM"}]]}}
+    )

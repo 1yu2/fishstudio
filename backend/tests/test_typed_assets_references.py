@@ -30,12 +30,22 @@ def test_reference_slots_compile_to_first_last_frame_request():
         prompt_version="shot-prompt-v1",
         input_hash="hash",
         reference_slots=[{"type": "first_frame"}, {"type": "last_frame"}],
-        reference_images=(), reference_videos=(), reference_audios=(),
-        first_frame="images/a.png", last_frame="images/b.png", source_video=None,
+        reference_images=(),
+        reference_videos=(),
+        reference_audios=(),
+        first_frame="images/a.png",
+        last_frame="images/b.png",
+        source_video=None,
     )
     params = build_video_job_params(
-        shot_id="s1", step_id="step1", run_id="run1", prompt="old",
-        duration_ms=5000, aspect_ratio="9:16", policy={}, first_frame=None,
+        shot_id="s1",
+        step_id="step1",
+        run_id="run1",
+        prompt="old",
+        duration_ms=5000,
+        aspect_ratio="9:16",
+        policy={},
+        first_frame=None,
         compiled=compiled,
     )
     assert params["mode"] == "first_last_frame"

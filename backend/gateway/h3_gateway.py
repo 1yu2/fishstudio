@@ -38,30 +38,18 @@ class Settings:
     def __init__(self) -> None:
         self.api_key = os.getenv("H3_GATEWAY_API_KEY", "").strip()
         self.comfy_url = os.getenv("H3_COMFY_URL", "http://127.0.0.1:8190").rstrip("/")
-        self.public_url = os.getenv(
-            "H3_GATEWAY_PUBLIC_URL", "http://127.0.0.1:8088"
-        ).rstrip("/")
-        self.deployment = os.getenv(
-            "H3_GATEWAY_DEPLOYMENT", "h3-fl2va-int8-convrot"
-        ).strip()
+        self.public_url = os.getenv("H3_GATEWAY_PUBLIC_URL", "http://127.0.0.1:8088").rstrip("/")
+        self.deployment = os.getenv("H3_GATEWAY_DEPLOYMENT", "h3-fl2va-int8-convrot").strip()
         self.model = os.getenv("H3_GATEWAY_MODEL", "MiniMax-H3").strip()
-        self.workflow_path = Path(
-            os.getenv("H3_GATEWAY_WORKFLOW", str(DEFAULT_WORKFLOW))
-        ).expanduser()
-        state_dir = Path(
-            os.getenv("H3_GATEWAY_STATE_DIR", str(GATEWAY_DIR / "state"))
-        ).expanduser()
+        self.workflow_path = Path(os.getenv("H3_GATEWAY_WORKFLOW", str(DEFAULT_WORKFLOW))).expanduser()
+        state_dir = Path(os.getenv("H3_GATEWAY_STATE_DIR", str(GATEWAY_DIR / "state"))).expanduser()
         self.db_path = state_dir / "gateway.sqlite3"
         self.artifact_dir = state_dir / "artifacts"
         self.poll_seconds = max(0.5, float(os.getenv("H3_GATEWAY_POLL_SECONDS", "2")))
         self.request_timeout = float(os.getenv("H3_GATEWAY_COMFY_TIMEOUT_SECONDS", "30"))
-        self.artifact_timeout = float(
-            os.getenv("H3_GATEWAY_ARTIFACT_TIMEOUT_SECONDS", "900")
-        )
+        self.artifact_timeout = float(os.getenv("H3_GATEWAY_ARTIFACT_TIMEOUT_SECONDS", "900"))
         self.max_queue = max(1, int(os.getenv("H3_GATEWAY_MAX_QUEUE", "8")))
-        self.max_artifact_bytes = int(
-            os.getenv("H3_GATEWAY_MAX_ARTIFACT_BYTES", str(512 * 1024 * 1024))
-        )
+        self.max_artifact_bytes = int(os.getenv("H3_GATEWAY_MAX_ARTIFACT_BYTES", str(512 * 1024 * 1024)))
         self.turbo = _env_bool("H3_GATEWAY_TURBO", True)
         self.turbo_lora = os.getenv(
             "H3_GATEWAY_TURBO_LORA",
@@ -127,10 +115,13 @@ class GatewayStore:
                        updated_at=?
                    WHERE status='submitting'""",
                 (
-                    json.dumps({
-                        "code": "submission_uncertain",
-                        "message": "Gateway 在 ComfyUI 提交确认窗口内重启，未自动重提以避免重复推理",
-                    }, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "code": "submission_uncertain",
+                            "message": "Gateway 在 ComfyUI 提交确认窗口内重启，未自动重提以避免重复推理",
+                        },
+                        ensure_ascii=False,
+                    ),
                     time.time(),
                     time.time(),
                 ),
@@ -142,26 +133,20 @@ class GatewayStore:
             return None
         data = dict(row)
         data["request"] = json.loads(data.pop("request_json"))
-        data["artifacts"] = (
-            json.loads(data.pop("artifact_json")) if data["artifact_json"] else []
-        )
+        data["artifacts"] = json.loads(data.pop("artifact_json")) if data["artifact_json"] else []
         data["error"] = json.loads(data.pop("error_json")) if data["error_json"] else None
         return data
 
     async def get(self, task_id: str) -> dict[str, Any] | None:
         async with self.lock:
             with self._connect() as conn:
-                return self._row(
-                    conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-                )
+                return self._row(conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone())
 
     async def get_by_key(self, key: str) -> dict[str, Any] | None:
         async with self.lock:
             with self._connect() as conn:
                 return self._row(
-                    conn.execute(
-                        "SELECT * FROM tasks WHERE idempotency_key=?", (key,)
-                    ).fetchone()
+                    conn.execute("SELECT * FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
                 )
 
     async def active_count(self) -> int:
@@ -185,9 +170,7 @@ class GatewayStore:
                         (task_id, key, "queued", json.dumps(payload, ensure_ascii=False), now, now),
                     )
                 except sqlite3.IntegrityError:
-                    row = conn.execute(
-                        "SELECT * FROM tasks WHERE idempotency_key=?", (key,)
-                    ).fetchone()
+                    row = conn.execute("SELECT * FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
                     existing = self._row(row)
                     if existing is None:
                         raise
@@ -310,9 +293,7 @@ class ComfyClient:
         return stats.json(), queue.json()
 
     async def submit(self, workflow: dict[str, Any], client_id: str) -> str:
-        response = await self._request(
-            "POST", "/prompt", json={"prompt": workflow, "client_id": client_id}
-        )
+        response = await self._request("POST", "/prompt", json={"prompt": workflow, "client_id": client_id})
         data = response.json()
         if data.get("node_errors"):
             raise ValueError(f"ComfyUI node_errors: {data['node_errors']}")
@@ -386,8 +367,16 @@ def _probe_video(path: Path) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path),
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height:format=duration",
+                "-of",
+                "json",
+                str(path),
             ],
             check=True,
             capture_output=True,
@@ -544,7 +533,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def authenticate(authorization: str = Header(default="")) -> None:
         prefix = "Bearer "
-        token = authorization[len(prefix):] if authorization.startswith(prefix) else ""
+        token = authorization[len(prefix) :] if authorization.startswith(prefix) else ""
         if not token or not hmac.compare_digest(token, settings.api_key):
             raise HTTPException(status_code=401, detail="invalid bearer token")
 

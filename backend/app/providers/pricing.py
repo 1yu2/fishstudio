@@ -83,12 +83,10 @@ def _lookup(provider: str, model: str, resolution: str) -> Optional[dict]:
         from app.model_runtime.catalog import get_catalog
 
         matches = [
-            item for item in get_catalog().snapshot.list()
+            item
+            for item in get_catalog().snapshot.list()
             if item.model == model
-            and (
-                item.driver == provider
-                or getattr(item.instance, "name", "") == provider
-            )
+            and (item.driver == provider or getattr(item.instance, "name", "") == provider)
         ]
         if matches:
             pricing = dict(matches[0].pricing)
@@ -157,9 +155,7 @@ def estimate_video_cost(
     total += entry.get("image_over_price", _ZERO) * billable_images
 
     total += entry.get("input_audio_per_second", _ZERO) * Decimal(str(input_audio_seconds))
-    total += entry.get("regeneration_per_second", _ZERO) * Decimal(
-        str(regeneration_output_seconds)
-    )
+    total += entry.get("regeneration_per_second", _ZERO) * Decimal(str(regeneration_output_seconds))
     return total.quantize(Decimal("0.000001"))
 
 
@@ -213,13 +209,13 @@ def resolve_video_routing(
             if not local_h3.is_available():
                 raise ValueError("Local H3 Deployment 未启用或配置不完整")
             if not local_h3.min_duration <= duration <= local_h3.max_duration:
-                raise ValueError(
-                    f"Local H3 仅支持 {local_h3.min_duration}-{local_h3.max_duration} 秒"
-                )
+                raise ValueError(f"Local H3 仅支持 {local_h3.min_duration}-{local_h3.max_duration} 秒")
             return _make_plan(
-                "local_h3", local_h3.model_name,
+                "local_h3",
+                local_h3.model_name,
                 "preview" if resolution.lower() == "preview" else "standard",
-                duration, "local_h3_v1",
+                duration,
+                "local_h3_v1",
             )
         if prov in ("volcano", "volcano_image"):
             if not volcano_ok:
@@ -230,16 +226,16 @@ def resolve_video_routing(
                 return _make_plan("minimax", "MiniMax-Hailuo-02", "512P", duration, "v1")
             if h3_on and h3_ok:
                 return _make_plan("minimax", h3_model, resolution, duration, "h3")
-            raise ValueError(
-                f"explicit minimax 不支持 {duration}s（V1 仅 6/10s，H3 仅 4-15s）"
-            )
+            raise ValueError(f"explicit minimax 不支持 {duration}s（V1 仅 6/10s，H3 仅 4-15s）")
         raise ValueError(f"explicit provider {explicit_provider} 未注册")
     elif provider_policy in ("balanced", "quality"):
         if local_h3.is_available() and local_h3.min_duration <= duration <= local_h3.max_duration:
             return _make_plan(
-                "local_h3", local_h3.model_name,
+                "local_h3",
+                local_h3.model_name,
                 "preview" if resolution.lower() == "preview" else "standard",
-                duration, "local_h3_v1",
+                duration,
+                "local_h3_v1",
             )
         if volcano_ok:
             return _make_plan("volcano", volcano_model, resolution, duration, "volcano")
@@ -294,22 +290,22 @@ def _make_plan(provider: str, model: str, resolution: str, duration: int, protoc
         catalog = get_catalog().snapshot
         deployment = next(
             (
-                item for item in catalog.list("video")
+                item
+                for item in catalog.list("video")
                 if item.model == model
-                and (
-                    item.driver == provider
-                    or getattr(item.instance, "name", "") == provider
-                )
+                and (item.driver == provider or getattr(item.instance, "name", "") == provider)
             ),
             None,
         )
         if deployment is not None:
-            plan.update({
-                "deployment_name": deployment.slug,
-                "deployment_revision": deployment.revision,
-                "deployment_config_hash": deployment.config_hash,
-                "catalog_revision": catalog.catalog_revision,
-            })
+            plan.update(
+                {
+                    "deployment_name": deployment.slug,
+                    "deployment_revision": deployment.revision,
+                    "deployment_config_hash": deployment.config_hash,
+                    "catalog_revision": catalog.catalog_revision,
+                }
+            )
     except Exception:
         # 兼容期 Catalog 尚未加载时继续生成旧格式快照。
         pass

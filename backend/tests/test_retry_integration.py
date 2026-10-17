@@ -179,9 +179,7 @@ def test_step_retry_full_chain(pg, monkeypatch):
         # 1) Job failed → Step failed(job_failed) → Run failed
         async with pg() as s:
             job = await s.get(GenerationJob, job_id)
-            await job_service.mark_failed(
-                s, job, error_code="render_failed", error="boom", retryable=False
-            )
+            await job_service.mark_failed(s, job, error_code="render_failed", error="boom", retryable=False)
             await workflow_service.on_job_finished(s, job)
         async with pg() as s:
             step = await s.get(WorkflowStep, step_id)
@@ -199,13 +197,17 @@ def test_step_retry_full_chain(pg, monkeypatch):
             run = await s.get(WorkflowRun, run_id)
             assert run.status == "running"
             new_job = (
-                await s.execute(
-                    select(GenerationJob).where(
-                        GenerationJob.workflow_step_id == step_id,
-                        GenerationJob.step_attempt == 1,
+                (
+                    await s.execute(
+                        select(GenerationJob).where(
+                            GenerationJob.workflow_step_id == step_id,
+                            GenerationJob.step_attempt == 1,
+                        )
                     )
                 )
-            ).scalars().one()
+                .scalars()
+                .one()
+            )
 
         # 3) 新一代 Job succeeded → 旧 attempt 的 failed 不影响聚合 → Step/Run succeeded
         async with pg() as s:
@@ -232,9 +234,7 @@ def test_job_level_retry_supersedes_old_failed(pg):
         # 1) 旧 job failed → step failed(job_failed)
         async with pg() as s:
             job = await s.get(GenerationJob, job_id)
-            await job_service.mark_failed(
-                s, job, error_code="render_failed", error="boom", retryable=False
-            )
+            await job_service.mark_failed(s, job, error_code="render_failed", error="boom", retryable=False)
             await workflow_service.on_job_finished(s, job)
             step = await s.get(WorkflowStep, step_id)
             assert step.status == "failed"

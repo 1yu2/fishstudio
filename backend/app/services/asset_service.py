@@ -123,13 +123,10 @@ async def copy_personal_asset_to_project(
 
 async def _supersede_asset_approvals(session: AsyncSession, asset: AssetCard) -> None:
     """同名同 type 的旧版本资产相关 Approval 全部置 superseded。"""
-    stmt = (
-        select(AssetCard.id)
-        .where(
-            AssetCard.project_id == asset.project_id,
-            AssetCard.type == asset.type,
-            AssetCard.name == asset.name,
-        )
+    stmt = select(AssetCard.id).where(
+        AssetCard.project_id == asset.project_id,
+        AssetCard.type == asset.type,
+        AssetCard.name == asset.name,
     )
     sibling_ids = [r[0] for r in (await session.execute(stmt)).all()]
     stmt = select(Approval).where(
@@ -266,9 +263,17 @@ async def _shot_project_id(session: AsyncSession, shot_id: str) -> Optional[str]
 
 
 async def bind_asset_to_shot(
-    session: AsyncSession, shot_id: str, asset_id: str, role: str = "character",
-    *, reference_type: Optional[str] = None, artifact_id: Optional[str] = None,
-    subject: str = "", weight: float = 1.0, sort_order: int = 0, usage: str = "identity",
+    session: AsyncSession,
+    shot_id: str,
+    asset_id: str,
+    role: str = "character",
+    *,
+    reference_type: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    subject: str = "",
+    weight: float = 1.0,
+    sort_order: int = 0,
+    usage: str = "identity",
 ) -> ShotAssetRef:
     """绑定资产到镜头（幂等：重复绑定直接返回已有）。
 
@@ -286,7 +291,17 @@ async def bind_asset_to_shot(
     if shot_project_id != asset.project_id:
         raise PermissionError("shot and asset belong to different projects")
     reference_type = reference_type or role
-    allowed_types = {"character", "scene", "style", "composition", "motion", "first_frame", "last_frame", "source_video", "audio"}
+    allowed_types = {
+        "character",
+        "scene",
+        "style",
+        "composition",
+        "motion",
+        "first_frame",
+        "last_frame",
+        "source_video",
+        "audio",
+    }
     if reference_type not in allowed_types:
         raise ValueError(f"unsupported reference_type: {reference_type}")
     if not 0 < weight <= 2:
@@ -309,9 +324,16 @@ async def bind_asset_to_shot(
     if existing is not None:
         return existing
     ref = ShotAssetRef(
-        shot_id=shot_id, asset_id=asset_id, role=role, asset_version=getattr(asset, "version", 1),
-        reference_type=reference_type, artifact_id=artifact_id, subject=subject,
-        weight=weight, sort_order=sort_order, usage=usage,
+        shot_id=shot_id,
+        asset_id=asset_id,
+        role=role,
+        asset_version=getattr(asset, "version", 1),
+        reference_type=reference_type,
+        artifact_id=artifact_id,
+        subject=subject,
+        weight=weight,
+        sort_order=sort_order,
+        usage=usage,
     )
     session.add(ref)
     from app.db.models import Shot

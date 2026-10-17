@@ -20,9 +20,7 @@ import pytest
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 
 pytestmark = [
-    pytest.mark.skipif(
-        not TEST_DATABASE_URL, reason="TEST_DATABASE_URL 未设置，跳过真实 PG 多租户集成测试"
-    ),
+    pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL 未设置，跳过真实 PG 多租户集成测试"),
     pytest.mark.no_bypass_auth,
 ]
 
@@ -128,11 +126,13 @@ def tenancy():
             orphan = SeriesProject(user_id=None, title="历史无主项目")
             s.add_all([proj_a, proj_b, orphan])
             await s.flush()
-            s.add_all([
-                Episode(project_id=proj_a.id, episode_no=1),
-                Episode(project_id=proj_b.id, episode_no=1),
-                Episode(project_id=orphan.id, episode_no=1),
-            ])
+            s.add_all(
+                [
+                    Episode(project_id=proj_a.id, episode_no=1),
+                    Episode(project_id=proj_b.id, episode_no=1),
+                    Episode(project_id=orphan.id, episode_no=1),
+                ]
+            )
             job_a = GenerationJob(
                 project_id=proj_a.id,
                 operation="generate_video",
@@ -154,9 +154,14 @@ def tenancy():
             s.add(step_b)
             await s.commit()
             return Simple(
-                a=a.id, b=b.id, admin=admin.id,
-                proj_a=proj_a.id, proj_b=proj_b.id, orphan=orphan.id,
-                art_a=art_a.id, step_b=step_b.id,
+                a=a.id,
+                b=b.id,
+                admin=admin.id,
+                proj_a=proj_a.id,
+                proj_b=proj_b.id,
+                orphan=orphan.id,
+                art_a=art_a.id,
+                step_b=step_b.id,
             )
 
     class Simple:
@@ -203,9 +208,7 @@ class TestCrossUserIsolation:
         assert r.status_code == 403
 
     def test_jobs_404(self, tenancy):
-        r = tenancy.client.get(
-            f"/api/jobs?project_id={tenancy.ids.proj_a}", headers=_h(tenancy.token_b)
-        )
+        r = tenancy.client.get(f"/api/jobs?project_id={tenancy.ids.proj_a}", headers=_h(tenancy.token_b))
         assert r.status_code == 404
 
     def test_storyboard_403(self, tenancy):
@@ -221,9 +224,7 @@ class TestCrossUserIsolation:
         assert r.status_code == 403
 
     def test_artifact_download_404(self, tenancy):
-        r = tenancy.client.get(
-            f"/api/artifacts/{tenancy.ids.art_a}/download", headers=_h(tenancy.token_b)
-        )
+        r = tenancy.client.get(f"/api/artifacts/{tenancy.ids.art_a}/download", headers=_h(tenancy.token_b))
         assert r.status_code == 404
 
     def test_feedback_on_others_artifact_403(self, tenancy):

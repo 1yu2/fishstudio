@@ -29,9 +29,7 @@ logger = logging.getLogger(__name__)
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "canceled"}
 
 
-def make_job_idempotency_key(
-    operation: str, run_id: str, node_key: str, shot_id: str, attempt: int
-) -> str:
+def make_job_idempotency_key(operation: str, run_id: str, node_key: str, shot_id: str, attempt: int) -> str:
     """稳定的幂等键（纯函数，供测试锚定格式）。"""
     return f"{operation}:{run_id}:{node_key}:{shot_id}:attempt{attempt}"
 
@@ -105,8 +103,7 @@ async def _reserve_budget_or_fail(
         step.status = "failed"
         step.error_code = "cost_limit_exceeded"
         step.error = (
-            f"planned {run.estimated_cost or 0} + estimated {estimated} "
-            f"> cost_limit {run.cost_limit}"
+            f"planned {run.estimated_cost or 0} + estimated {estimated} > cost_limit {run.cost_limit}"
         )
         return False
     return True
@@ -125,9 +122,7 @@ async def _cost_quote_still_valid(session: AsyncSession, run: WorkflowRun) -> bo
     from app.services import cost_service  # 延迟导入避免环
 
     quote = snapshot.get("cost_quote") or {}
-    ok, _reason = await cost_service.validate_cost_quote(
-        session, run, quote.get("quote_id", "")
-    )
+    ok, _reason = await cost_service.validate_cost_quote(session, run, quote.get("quote_id", ""))
     return ok
 
 
@@ -196,8 +191,15 @@ def _confirmed_shot_plans(run: WorkflowRun, node_key: str) -> list[dict]:
 
 
 def build_video_job_params(
-    *, shot_id: str, step_id: str, run_id: str, prompt: str, duration_ms: int,
-    aspect_ratio: str, policy: dict[str, Any], first_frame: Optional[str],
+    *,
+    shot_id: str,
+    step_id: str,
+    run_id: str,
+    prompt: str,
+    duration_ms: int,
+    aspect_ratio: str,
+    policy: dict[str, Any],
+    first_frame: Optional[str],
     routing: Optional[dict[str, Any]] = None,
     compiled: Optional[Any] = None,
 ) -> dict[str, Any]:
@@ -223,15 +225,17 @@ def build_video_job_params(
         params["routing_snapshot"] = routing
         params["resolution"] = routing.get("resolution", params["resolution"])
     if compiled:
-        params.update({
-            "prompt": compiled.prompt,
-            "prompt_version": compiled.prompt_version,
-            "prompt_input_hash": compiled.input_hash,
-            "reference_slots": compiled.reference_slots,
-            "reference_images": list(compiled.reference_images),
-            "reference_videos": list(compiled.reference_videos),
-            "reference_audios": list(compiled.reference_audios),
-        })
+        params.update(
+            {
+                "prompt": compiled.prompt,
+                "prompt_version": compiled.prompt_version,
+                "prompt_input_hash": compiled.input_hash,
+                "reference_slots": compiled.reference_slots,
+                "reference_images": list(compiled.reference_images),
+                "reference_videos": list(compiled.reference_videos),
+                "reference_audios": list(compiled.reference_audios),
+            }
+        )
         first_frame = compiled.first_frame or first_frame
         if compiled.last_frame:
             params["last_frame"] = compiled.last_frame
@@ -282,7 +286,9 @@ async def plan_shot_video_jobs(
         for s in shots:
             dur = int(max(1, s.duration_ms) / 1000)
             routing = resolve_video_routing(
-                provider_policy, resolution, duration=dur,
+                provider_policy,
+                resolution,
+                duration=dur,
                 explicit_provider=policy.get("explicit_provider", ""),
             )
             shot_plans[s.id] = routing
@@ -313,7 +319,9 @@ async def plan_shot_video_jobs(
         if not plan:
             dur = int(max(1, shot.duration_ms) / 1000)
             plan = resolve_video_routing(
-                provider_policy, resolution, duration=dur,
+                provider_policy,
+                resolution,
+                duration=dur,
                 explicit_provider=policy.get("explicit_provider", ""),
             )
         first_frame = await find_first_frame_storage_key(session, shot.id)
@@ -322,16 +330,21 @@ async def plan_shot_video_jobs(
         compiled = await compile_shot_input(session, shot)
         if not first_frame and not compiled.first_frame:
             fallback_count += 1
-        key = make_job_idempotency_key(
-            "video", run.id, step.node_key, shot.id, step.attempt
-        )
+        key = make_job_idempotency_key("video", run.id, step.node_key, shot.id, step.attempt)
         params = build_video_job_params(
-            shot_id=shot.id, step_id=step.id, run_id=run.id,
-            prompt=shot.visual_prompt, duration_ms=shot.duration_ms,
-            aspect_ratio=shot.aspect_ratio, policy=policy, first_frame=first_frame,
+            shot_id=shot.id,
+            step_id=step.id,
+            run_id=run.id,
+            prompt=shot.visual_prompt,
+            duration_ms=shot.duration_ms,
+            aspect_ratio=shot.aspect_ratio,
+            policy=policy,
+            first_frame=first_frame,
             routing={
-                "provider": plan["provider"], "model": plan["model"],
-                "resolution": plan["resolution"], "protocol": plan.get("protocol", ""),
+                "provider": plan["provider"],
+                "model": plan["model"],
+                "resolution": plan["resolution"],
+                "protocol": plan.get("protocol", ""),
                 "billable_duration": plan["billable_duration"],
                 "estimated_total_cost": plan.get("estimated_total_cost"),
                 "price_snapshot": plan.get("price_snapshot", {}),
@@ -340,7 +353,8 @@ async def plan_shot_video_jobs(
                 "deployment_revision": plan.get("deployment_revision"),
                 "deployment_config_hash": plan.get("deployment_config_hash", ""),
                 "catalog_revision": plan.get("catalog_revision", ""),
-            }, compiled=compiled,
+            },
+            compiled=compiled,
         )
         from app.model_runtime.media import get_media_runtime
         from app.providers.base import VideoGenerationRequest
@@ -368,9 +382,7 @@ async def plan_shot_video_jobs(
             provider=plan["provider"],
             model=plan["model"],
             step_attempt=step.attempt,
-            logical_job_key=make_logical_job_key(
-                "generate_video", run.id, step.node_key, shot.id
-            ),
+            logical_job_key=make_logical_job_key("generate_video", run.id, step.node_key, shot.id),
             params=params,
         )
         jobs.append(job)
@@ -392,6 +404,7 @@ async def plan_shot_image_jobs(
     policy = _run_policy(run)
     candidate_count = int(policy.get("candidate_count", 1))
     from app.providers.pricing import estimate_image_cost
+
     unit_price = estimate_image_cost("volcano_image", "seedream-4.5", count=1)
     estimated = (unit_price or Decimal("0.20")) * candidate_count * len(shots)
     if not await _cost_quote_still_valid(session, run):
@@ -409,9 +422,7 @@ async def plan_shot_image_jobs(
         from app.services.prompt_compiler import compile_shot_input
 
         compiled = await compile_shot_input(session, shot)
-        key = make_job_idempotency_key(
-            "image", run.id, step.node_key, shot.id, step.attempt
-        )
+        key = make_job_idempotency_key("image", run.id, step.node_key, shot.id, step.attempt)
         job, _ = await _get_or_create_job(
             session,
             idempotency_key=key,
@@ -421,9 +432,7 @@ async def plan_shot_image_jobs(
             workflow_step_id=step.id,
             operation="generate_image",
             step_attempt=step.attempt,
-            logical_job_key=make_logical_job_key(
-                "generate_image", run.id, step.node_key, shot.id
-            ),
+            logical_job_key=make_logical_job_key("generate_image", run.id, step.node_key, shot.id),
             params={
                 "shot_id": shot.id,
                 "step_id": step.id,
@@ -505,9 +514,7 @@ async def plan_shot_audio_jobs(
                 text = (track or {}).get("text") or ""
                 if not text.strip():
                     continue
-                voice_asset = await _find_voice_asset(
-                    session, run.project_id, track.get("speaker_asset_id")
-                )
+                voice_asset = await _find_voice_asset(session, run.project_id, track.get("speaker_asset_id"))
                 # voice 资产 provider_meta.voice_id（clone_voice 回写的音色标识）传入
                 # tts job；没有则用 provider 默认音色（见 QwenTTSProvider 注释）
                 voice_id = (voice_asset.provider_meta or {}).get("voice_id") if voice_asset else None
@@ -572,9 +579,7 @@ async def plan_episode_render_job(
         workflow_step_id=step.id,
         operation="render_episode",
         step_attempt=step.attempt,
-        logical_job_key=make_logical_job_key(
-            "render_episode", run.id, step.node_key, episode_id
-        ),
+        logical_job_key=make_logical_job_key("render_episode", run.id, step.node_key, episode_id),
         params={
             "episode_id": episode_id,
             "step_id": step.id,
@@ -590,9 +595,7 @@ async def plan_episode_render_job(
     return job
 
 
-async def retry_failed_shot_jobs(
-    session: AsyncSession, episode_id: str, run_id: str
-) -> int:
+async def retry_failed_shot_jobs(session: AsyncSession, episode_id: str, run_id: str) -> int:
     """只重置该 episode 下 failed 的 shot Job 为 pending，返回重置数量。
 
     语义选择（简单版）：attempt 不归零、idempotency_key 不变 —— attempt 是

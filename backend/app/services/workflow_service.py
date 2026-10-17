@@ -81,9 +81,7 @@ async def seed_builtin_templates(session: AsyncSession) -> WorkflowTemplate:
         template.graph_schema = SHORT_DRAMA_TEMPLATE_GRAPH
         template.default_policy = SHORT_DRAMA_TEMPLATE_DEFAULT_POLICY
 
-    stmt = select(SkillManifest).where(
-        SkillManifest.key == "short-drama", SkillManifest.version == "4.0.0"
-    )
+    stmt = select(SkillManifest).where(SkillManifest.key == "short-drama", SkillManifest.version == "4.0.0")
     if (await session.execute(stmt)).scalars().first() is None:
         session.add(
             SkillManifest(
@@ -153,9 +151,7 @@ _EXTRA_NODE_DEFAULT_UPSTREAM = "shot.audio.generate"
 _EXTRA_NODE_RENDER_SINK = "episode.render"
 
 
-def apply_extra_nodes(
-    graph: dict[str, Any], extra_nodes: list[Any]
-) -> dict[str, Any]:
+def apply_extra_nodes(graph: dict[str, Any], extra_nodes: list[Any]) -> dict[str, Any]:
     """把 Planner 校验过的额外节点作为 final render 的附加前置链。纯函数。
 
     落地语义（受控最小实现，见 P2-1）：
@@ -229,12 +225,18 @@ async def create_run(
 
     # 复审 0.10：Planner (LLM/规则) 输出的策略参数规范化到 default_policy，
     # 确保报价、Job Planner 和前端读同一份快照
-    provider_policy = snapshot.pop("provider_policy", None) or default_policy.get("provider_policy", "balanced")
+    provider_policy = snapshot.pop("provider_policy", None) or default_policy.get(
+        "provider_policy", "balanced"
+    )
     planner_provider_map = {"fast": "cheapest", "cheap": "cheapest"}
     provider_policy = planner_provider_map.get(provider_policy, provider_policy)
     default_policy["provider_policy"] = provider_policy
-    default_policy["resolution"] = snapshot.pop("resolution", None) or default_policy.get("resolution", "768P")
-    default_policy["aspect_ratio"] = snapshot.pop("aspect_ratio", None) or default_policy.get("aspect_ratio", "9:16")
+    default_policy["resolution"] = snapshot.pop("resolution", None) or default_policy.get(
+        "resolution", "768P"
+    )
+    default_policy["aspect_ratio"] = snapshot.pop("aspect_ratio", None) or default_policy.get(
+        "aspect_ratio", "9:16"
+    )
     shots_per_episode = snapshot.pop("shots_per_episode", None)
     if shots_per_episode is not None:
         default_policy["shots_per_episode"] = int(shots_per_episode)
@@ -249,9 +251,7 @@ async def create_run(
         raise ValueError(f"shots_per_episode {shots_per_episode_val} > max {max_shots}")
 
     episodes = (
-        (await session.execute(select(Episode).where(Episode.project_id == project.id)))
-        .scalars()
-        .all()
+        (await session.execute(select(Episode).where(Episode.project_id == project.id))).scalars().all()
     )
     if not episodes:
         raise ValueError("project has no episodes")
@@ -262,16 +262,16 @@ async def create_run(
         existing_nos = {e.episode_no for e in episodes}
         for n in range(1, planned_episodes + 1):
             if n not in existing_nos:
-                session.add(Episode(
-                    project_id=project.id,
-                    episode_no=n,
-                    title=f"{project.title} 第{n}集",
-                ))
+                session.add(
+                    Episode(
+                        project_id=project.id,
+                        episode_no=n,
+                        title=f"{project.title} 第{n}集",
+                    )
+                )
         await session.flush()
         episodes = (
-            (await session.execute(select(Episode).where(Episode.project_id == project.id)))
-            .scalars()
-            .all()
+            (await session.execute(select(Episode).where(Episode.project_id == project.id))).scalars().all()
         )
 
     run = WorkflowRun(
@@ -399,18 +399,20 @@ async def _approval_passed(session: AsyncSession, run: WorkflowRun, step: Workfl
         model = SeriesBibleRevision if is_series else StyleBibleRevision
         target_type = "series_bible" if is_series else "style_bible"
         revision = (
-            await session.execute(
-                select(model)
-                .where(model.project_id == run.project_id)
-                .order_by(model.revision.desc())
-                .limit(1)
+            (
+                await session.execute(
+                    select(model)
+                    .where(model.project_id == run.project_id)
+                    .order_by(model.revision.desc())
+                    .limit(1)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if revision is None:
             return False
-        return await approval_service.is_approved(
-            session, target_type, run.project_id, revision.revision
-        )
+        return await approval_service.is_approved(session, target_type, run.project_id, revision.revision)
     if step.node_type == "episode.script.approve":
         stmt = (
             select(ScriptRevision)
@@ -421,23 +423,23 @@ async def _approval_passed(session: AsyncSession, run: WorkflowRun, step: Workfl
         revision = (await session.execute(stmt)).scalars().first()
         if revision is None:
             return False
-        return await approval_service.is_approved(
-            session, "script", step.entity_id, revision.revision
-        )
+        return await approval_service.is_approved(session, "script", step.entity_id, revision.revision)
     if step.node_type == "director.plan.approve":
         revision = (
-            await session.execute(
-                select(DirectorPlanRevision)
-                .where(DirectorPlanRevision.episode_id == step.entity_id)
-                .order_by(DirectorPlanRevision.revision.desc())
-                .limit(1)
+            (
+                await session.execute(
+                    select(DirectorPlanRevision)
+                    .where(DirectorPlanRevision.episode_id == step.entity_id)
+                    .order_by(DirectorPlanRevision.revision.desc())
+                    .limit(1)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if revision is None:
             return False
-        return await approval_service.is_approved(
-            session, "director_plan", step.entity_id, revision.revision
-        )
+        return await approval_service.is_approved(session, "director_plan", step.entity_id, revision.revision)
     if step.node_type == "storyboard.approve":
         stmt = (
             select(StoryboardRevision)
@@ -448,9 +450,7 @@ async def _approval_passed(session: AsyncSession, run: WorkflowRun, step: Workfl
         revision = (await session.execute(stmt)).scalars().first()
         if revision is None:
             return False
-        return await approval_service.is_approved(
-            session, "storyboard", step.entity_id, revision.revision
-        )
+        return await approval_service.is_approved(session, "storyboard", step.entity_id, revision.revision)
     if step.node_type == "asset.version.approve":
         stmt = select(AssetCard).where(
             AssetCard.project_id == run.project_id,
@@ -462,17 +462,26 @@ async def _approval_passed(session: AsyncSession, run: WorkflowRun, step: Workfl
         return all(c.status == "approved" for c in cards)
     if step.node_type == "shot.video.generate":
         # 收费 Gate：分镜+资产审批齐备，且用户已确认费用
-        ok, _reasons = await approval_service.check_generation_gate(
-            session, run.project_id, step.entity_id
-        )
+        ok, _reasons = await approval_service.check_generation_gate(session, run.project_id, step.entity_id)
         if not ok:
             return False
         return bool((run.input_snapshot or {}).get("cost_confirmed"))
     if step.node_type in {"episode.render", "episode.render.final"}:
-        revision = (await session.execute(select(TimelineRevision).where(
-            TimelineRevision.episode_id == step.entity_id,
-            TimelineRevision.status == "approved",
-        ).order_by(TimelineRevision.revision.desc()).limit(1))).scalars().first()
+        revision = (
+            (
+                await session.execute(
+                    select(TimelineRevision)
+                    .where(
+                        TimelineRevision.episode_id == step.entity_id,
+                        TimelineRevision.status == "approved",
+                    )
+                    .order_by(TimelineRevision.revision.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
         return revision is not None
     return True
 
@@ -488,33 +497,23 @@ async def _cost_gate_passed(session: AsyncSession, run: WorkflowRun) -> bool:
     if snapshot.get("cost_confirmed") is not True:
         return False
     quote = snapshot.get("cost_quote") or {}
-    ok, _reason = await cost_service.validate_cost_quote(
-        session, run, quote.get("quote_id", "")
-    )
+    ok, _reason = await cost_service.validate_cost_quote(session, run, quote.get("quote_id", ""))
     return ok
 
 
 async def _expand_jobs(session: AsyncSession, run: WorkflowRun, step: WorkflowStep) -> int:
     """creates_jobs 节点展开 Job，返回创建/复用的 job 数。"""
     if step.node_type == "shot.video.generate":
-        jobs = await job_planner.plan_shot_video_jobs(
-            session, run=run, step=step, episode_id=step.entity_id
-        )
+        jobs = await job_planner.plan_shot_video_jobs(session, run=run, step=step, episode_id=step.entity_id)
         return len(jobs)
     if step.node_type == "shot.image.generate":
-        jobs = await job_planner.plan_shot_image_jobs(
-            session, run=run, step=step, episode_id=step.entity_id
-        )
+        jobs = await job_planner.plan_shot_image_jobs(session, run=run, step=step, episode_id=step.entity_id)
         return len(jobs)
     if step.node_type == "shot.audio.generate":
-        jobs = await job_planner.plan_shot_audio_jobs(
-            session, run=run, step=step, episode_id=step.entity_id
-        )
+        jobs = await job_planner.plan_shot_audio_jobs(session, run=run, step=step, episode_id=step.entity_id)
         return len(jobs)
     if step.node_type in {"episode.render", "episode.render.final"}:
-        await job_planner.plan_episode_render_job(
-            session, run=run, step=step, episode_id=step.entity_id
-        )
+        await job_planner.plan_episode_render_job(session, run=run, step=step, episode_id=step.entity_id)
         return 1
     raise ValueError(f"node_type {step.node_type} does not create jobs")
 
@@ -528,16 +527,10 @@ async def advance_run(session: AsyncSession, run_id: str) -> WorkflowRun:
         return run
 
     steps = list(
-        (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id)))
-        .scalars()
-        .all()
+        (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id))).scalars().all()
     )
     deps = list(
-        (
-            await session.execute(
-                select(WorkflowStepDependency).where(WorkflowStepDependency.run_id == run_id)
-            )
-        )
+        (await session.execute(select(WorkflowStepDependency).where(WorkflowStepDependency.run_id == run_id)))
         .scalars()
         .all()
     )
@@ -667,9 +660,7 @@ async def retry_step(session: AsyncSession, step_id: str) -> WorkflowStep:
     if step is None:
         raise ValueError(f"step {step_id} not found")
     if step.status not in {"failed", "canceled"}:
-        raise ValueError(
-            f"step status is {step.status}, only failed/canceled can retry"
-        )
+        raise ValueError(f"step status is {step.status}, only failed/canceled can retry")
     run = await session.get(WorkflowRun, step.run_id)
     if run is None:
         raise ValueError(f"run {step.run_id} not found")
@@ -722,17 +713,9 @@ async def get_run_with_steps(session: AsyncSession, run_id: str) -> dict[str, An
     run = await session.get(WorkflowRun, run_id)
     if run is None:
         raise ValueError(f"run {run_id} not found")
-    steps = (
-        (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id)))
-        .scalars()
-        .all()
-    )
+    steps = (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id))).scalars().all()
     deps = (
-        (
-            await session.execute(
-                select(WorkflowStepDependency).where(WorkflowStepDependency.run_id == run_id)
-            )
-        )
+        (await session.execute(select(WorkflowStepDependency).where(WorkflowStepDependency.run_id == run_id)))
         .scalars()
         .all()
     )

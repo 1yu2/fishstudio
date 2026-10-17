@@ -87,9 +87,7 @@ class JobResponse(BaseModel):
         )
 
 
-async def _check_project_access(
-    session: AsyncSession, project_id: str, user: User
-) -> SeriesProject:
+async def _check_project_access(session: AsyncSession, project_id: str, user: User) -> SeriesProject:
     """project 归属校验（统一走 ownership.check_project_access，含无主项目拒绝）；
     不存在或无权 → 404（不泄露存在性）。"""
     project = await session.get(SeriesProject, project_id)
@@ -102,9 +100,7 @@ async def _check_project_access(
     return project
 
 
-async def _get_job_checked(
-    session: AsyncSession, job_id: str, user: User
-) -> GenerationJob:
+async def _get_job_checked(session: AsyncSession, job_id: str, user: User) -> GenerationJob:
     job = await job_service.get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
@@ -122,9 +118,7 @@ async def list_jobs(
 ):
     if project_id:
         await _check_project_access(session, project_id, user)
-        jobs = await job_service.list_jobs(
-            session, project_id=project_id, status=status, limit=limit
-        )
+        jobs = await job_service.list_jobs(session, project_id=project_id, status=status, limit=limit)
     else:
         # 不带 project_id 时不做全量暴露：要求调用方给 project_id
         raise HTTPException(status_code=400, detail="project_id is required")
@@ -141,9 +135,7 @@ async def list_job_events(
 ):
     """断线可续传的事件游标接口；Redis 负责低延迟通知，DB 提供一致回放。"""
     await _check_project_access(session, project_id, user)
-    rows = await job_event_service.list_events(
-        session, project_id, after=max(0, after), limit=limit
-    )
+    rows = await job_event_service.list_events(session, project_id, after=max(0, after), limit=limit)
     return {"events": [job_event_service.event_payload(row) for row in rows]}
 
 
@@ -195,9 +187,7 @@ async def retry_job(
         locked_row = None  # 测试替身兼容
     if locked_row is not None and hasattr(locked_row, "superseded_by"):
         if locked_row.superseded_by:
-            raise HTTPException(
-                status_code=409, detail=f"job 已被 job={locked_row.superseded_by} 替代重试"
-            )
+            raise HTTPException(status_code=409, detail=f"job 已被 job={locked_row.superseded_by} 替代重试")
     elif hasattr(job, "superseded_by") and job.superseded_by:
         raise HTTPException(status_code=409, detail=f"job 已被 job={job.superseded_by} 替代重试")
 
@@ -207,9 +197,7 @@ async def retry_job(
     # 重试预算（P1-5）：原 job 有估算费用时先原子预留，不够 → 409 budget_exceeded
     if job.workflow_run_id:
         retry_cost = cost_service.estimate_job_retry_cost(job)
-        if retry_cost > 0 and not await cost_service.reserve_budget(
-            session, job.workflow_run_id, retry_cost
-        ):
+        if retry_cost > 0 and not await cost_service.reserve_budget(session, job.workflow_run_id, retry_cost):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -221,9 +209,7 @@ async def retry_job(
     base_key = f"retry:{job.idempotency_key}"[:240]  # idempotency_key 列上限 255
     key = base_key
     n = 2
-    while await session.scalar(
-        select(GenerationJob.id).where(GenerationJob.idempotency_key == key)
-    ):
+    while await session.scalar(select(GenerationJob.id).where(GenerationJob.idempotency_key == key)):
         key = f"{base_key}:{n}"
         n += 1
 

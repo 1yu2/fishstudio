@@ -29,10 +29,21 @@ from app.db.models import (
 from app.services.ownership import check_project_access
 
 VISUAL_FIELDS = {
-    "shot_type", "narrative_purpose", "composition", "action_start", "action_end",
-    "emotion", "first_frame_prompt", "last_frame_prompt", "generation_mode",
-    "continuity_constraints", "risk_tags", "locked_asset_versions", "visual_prompt",
-    "camera", "aspect_ratio",
+    "shot_type",
+    "narrative_purpose",
+    "composition",
+    "action_start",
+    "action_end",
+    "emotion",
+    "first_frame_prompt",
+    "last_frame_prompt",
+    "generation_mode",
+    "continuity_constraints",
+    "risk_tags",
+    "locked_asset_versions",
+    "visual_prompt",
+    "camera",
+    "aspect_ratio",
 }
 DIALOGUE_FIELDS = {"dialogue_tracks", "narration_tracks"}
 SUBTITLE_FIELDS = {"subtitle_tracks"}
@@ -62,7 +73,19 @@ def stages_for_change(source_type: str, changed_fields: list[str]) -> set[str]:
     """纯规则映射，供 dry-run、执行和测试共用。"""
     fields = set(changed_fields)
     if source_type in {"series_bible", "style_bible", "script"}:
-        stages = {"script_review", "director_plan", "director_approval", "storyboard", "continuity_review", "image", "video", "audio", "timeline", "render", "publication"}
+        stages = {
+            "script_review",
+            "director_plan",
+            "director_approval",
+            "storyboard",
+            "continuity_review",
+            "image",
+            "video",
+            "audio",
+            "timeline",
+            "render",
+            "publication",
+        }
         if source_type in {"series_bible", "style_bible"}:
             stages.add("script")
         return stages
@@ -116,16 +139,24 @@ async def _resolve_scope(
         if source_id != project_id:
             raise PermissionError("source belongs to another project")
         episodes = (
-            await session.execute(select(Episode.id).where(Episode.project_id == project_id))
-        ).scalars().all()
+            (await session.execute(select(Episode.id).where(Episode.project_id == project_id)))
+            .scalars()
+            .all()
+        )
         episode_ids = list(episodes)
         shots = (
-            await session.execute(
-                select(Shot.id).join(Scene, Shot.scene_id == Scene.id).where(
-                    Scene.episode_id.in_(episode_ids)
+            (
+                await session.execute(
+                    select(Shot.id)
+                    .join(Scene, Shot.scene_id == Scene.id)
+                    .where(Scene.episode_id.in_(episode_ids))
                 )
             )
-        ).scalars().all() if episode_ids else []
+            .scalars()
+            .all()
+            if episode_ids
+            else []
+        )
         return episode_ids, list(shots)
     if source_type == "script":
         episode = await session.get(Episode, source_id)
@@ -134,22 +165,32 @@ async def _resolve_scope(
         if episode.project_id != project_id:
             raise PermissionError("source belongs to another project")
         shots = (
-            await session.execute(
-                select(Shot.id).join(Scene, Shot.scene_id == Scene.id).where(
-                    Scene.episode_id == episode.id
+            (
+                await session.execute(
+                    select(Shot.id)
+                    .join(Scene, Shot.scene_id == Scene.id)
+                    .where(Scene.episode_id == episode.id)
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [episode.id], list(shots)
     if source_type == "timeline":
         timeline = await session.get(TimelineRevision, source_id)
         if timeline is None or timeline.project_id != project_id:
             raise ValueError(f"timeline {source_id} not found")
-        shots = (await session.execute(
-            select(Shot.id).join(Scene, Shot.scene_id == Scene.id).where(
-                Scene.episode_id == timeline.episode_id
+        shots = (
+            (
+                await session.execute(
+                    select(Shot.id)
+                    .join(Scene, Shot.scene_id == Scene.id)
+                    .where(Scene.episode_id == timeline.episode_id)
+                )
             )
-        )).scalars().all()
+            .scalars()
+            .all()
+        )
         return [timeline.episode_id], list(shots)
     if source_type == "shot":
         shot = await session.get(Shot, source_id)
@@ -167,10 +208,10 @@ async def _resolve_scope(
         if asset.project_id != project_id:
             raise PermissionError("source belongs to another project")
         refs = (
-            await session.execute(
-                select(ShotAssetRef.shot_id).where(ShotAssetRef.asset_id == source_id)
-            )
-        ).scalars().all()
+            (await session.execute(select(ShotAssetRef.shot_id).where(ShotAssetRef.asset_id == source_id)))
+            .scalars()
+            .all()
+        )
         if not refs:
             return [], []
         rows = (
@@ -218,48 +259,66 @@ async def preview_invalidation(
 
     if "script" in stages and episode_ids:
         scripts = (
-            await session.execute(
-                select(ScriptRevision).where(
-                    ScriptRevision.episode_id.in_(episode_ids),
-                    ScriptRevision.status.notin_({"superseded", "stale"}),
+            (
+                await session.execute(
+                    select(ScriptRevision).where(
+                        ScriptRevision.episode_id.in_(episode_ids),
+                        ScriptRevision.status.notin_({"superseded", "stale"}),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         impacts.extend(_impact("script", row.id, "script", reason) for row in scripts)
 
     if "storyboard" in stages and episode_ids:
         revisions = (
-            await session.execute(
-                select(StoryboardRevision).where(
-                    StoryboardRevision.episode_id.in_(episode_ids),
-                    StoryboardRevision.status.notin_({"superseded", "stale"}),
+            (
+                await session.execute(
+                    select(StoryboardRevision).where(
+                        StoryboardRevision.episode_id.in_(episode_ids),
+                        StoryboardRevision.status.notin_({"superseded", "stale"}),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         impacts.extend(_impact("storyboard", row.id, "storyboard", reason) for row in revisions)
 
     if "director_plan" in stages and episode_ids:
         plans = (
-            await session.execute(
-                select(DirectorPlanRevision).where(
-                    DirectorPlanRevision.episode_id.in_(episode_ids),
-                    DirectorPlanRevision.status.notin_({"superseded", "stale"}),
+            (
+                await session.execute(
+                    select(DirectorPlanRevision).where(
+                        DirectorPlanRevision.episode_id.in_(episode_ids),
+                        DirectorPlanRevision.status.notin_({"superseded", "stale"}),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         impacts.extend(_impact("director_plan", row.id, "director_plan", reason) for row in plans)
 
     if "timeline" in stages and episode_ids:
-        timelines = (await session.execute(select(TimelineRevision).where(
-            TimelineRevision.episode_id.in_(episode_ids),
-            TimelineRevision.status.notin_({"stale", "rejected"}),
-        ))).scalars().all()
+        timelines = (
+            (
+                await session.execute(
+                    select(TimelineRevision).where(
+                        TimelineRevision.episode_id.in_(episode_ids),
+                        TimelineRevision.status.notin_({"stale", "rejected"}),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         impacts.extend(_impact("timeline", row.id, "timeline", reason) for row in timelines)
 
     job_filters = []
-    wanted_operations = {
-        operation for operation, stage in OPERATION_TO_STAGE.items() if stage in stages
-    }
+    wanted_operations = {operation for operation, stage in OPERATION_TO_STAGE.items() if stage in stages}
     if wanted_operations and shot_ids:
         job_filters.append(
             (GenerationJob.shot_id.in_(shot_ids))
@@ -271,8 +330,7 @@ async def preview_invalidation(
             WorkflowStep.node_type.in_({"episode.render", "episode.render.final"}),
         )
         job_filters.append(
-            (GenerationJob.workflow_step_id.in_(render_steps))
-            & (GenerationJob.operation == "render_episode")
+            (GenerationJob.workflow_step_id.in_(render_steps)) & (GenerationJob.operation == "render_episode")
         )
     jobs = []
     if job_filters:
@@ -286,15 +344,19 @@ async def preview_invalidation(
                         or_(*job_filters),
                     )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
     for job in jobs:
         stage = OPERATION_TO_STAGE.get(job.operation, "unknown")
         impacts.append(_impact("job", job.id, stage, reason))
     if jobs:
         artifacts = (
-            await session.execute(select(Artifact).where(Artifact.job_id.in_([j.id for j in jobs])))
-        ).scalars().all()
+            (await session.execute(select(Artifact).where(Artifact.job_id.in_([j.id for j in jobs]))))
+            .scalars()
+            .all()
+        )
         job_stage = {job.id: OPERATION_TO_STAGE.get(job.operation, "unknown") for job in jobs}
         impacts.extend(
             _impact("artifact", artifact.id, job_stage.get(artifact.job_id, "unknown"), reason)
@@ -302,9 +364,17 @@ async def preview_invalidation(
         )
 
     if "publication" in stages and episode_ids:
-        publications = (await session.execute(select(Publication).where(
-            Publication.episode_id.in_(episode_ids), Publication.status != "stale"
-        ))).scalars().all()
+        publications = (
+            (
+                await session.execute(
+                    select(Publication).where(
+                        Publication.episode_id.in_(episode_ids), Publication.status != "stale"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         impacts.extend(_impact("publication", row.id, "publication", reason) for row in publications)
 
     node_types = {STAGE_TO_NODE[stage] for stage in stages if stage in STAGE_TO_NODE}
@@ -312,30 +382,37 @@ async def preview_invalidation(
         node_types.add("episode.render")  # legacy workflow templates
     if node_types and episode_ids:
         steps = (
-            await session.execute(
-                select(WorkflowStep)
-                .join(WorkflowRun, WorkflowStep.run_id == WorkflowRun.id)
-                .where(
-                    WorkflowRun.project_id == project_id,
-                    WorkflowStep.entity_id.in_(episode_ids),
-                    WorkflowStep.node_type.in_(node_types),
+            (
+                await session.execute(
+                    select(WorkflowStep)
+                    .join(WorkflowRun, WorkflowStep.run_id == WorkflowRun.id)
+                    .where(
+                        WorkflowRun.project_id == project_id,
+                        WorkflowStep.entity_id.in_(episode_ids),
+                        WorkflowStep.node_type.in_(node_types),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         impacts.extend(
-            _impact("workflow_step", step.id, next(
-                (stage for stage, node in STAGE_TO_NODE.items() if node == step.node_type),
-                "unknown",
-            ), reason)
+            _impact(
+                "workflow_step",
+                step.id,
+                next(
+                    (stage for stage, node in STAGE_TO_NODE.items() if node == step.node_type),
+                    "unknown",
+                ),
+                reason,
+            )
             for step in steps
         )
     # 去重并稳定排序，保证 dry-run 与 apply 可比较。
-    unique = {
-        (item["entity_type"], item["entity_id"], item["stage"]): item for item in impacts
-    }
-    ordered = sorted(unique.values(), key=lambda item: (
-        item["stage"], item["entity_type"], item["entity_id"]
-    ))
+    unique = {(item["entity_type"], item["entity_id"], item["stage"]): item for item in impacts}
+    ordered = sorted(
+        unique.values(), key=lambda item: (item["stage"], item["entity_type"], item["entity_id"])
+    )
     return {
         "project_id": project_id,
         "source_type": source_type,
@@ -363,9 +440,7 @@ async def apply_invalidation(
     key = make_idempotency_key(
         project_id, source_type, source_id, source_revision, changed_fields, change_token
     )
-    existing = await session.scalar(
-        select(InvalidationEvent).where(InvalidationEvent.idempotency_key == key)
-    )
+    existing = await session.scalar(select(InvalidationEvent).where(InvalidationEvent.idempotency_key == key))
     if existing is not None:
         return existing
     preview = await preview_invalidation(
@@ -444,14 +519,18 @@ async def apply_invalidation(
         if source_type in {"series_bible", "style_bible"}:
             approval_types.add("script")
         approvals = (
-            await session.execute(
-                select(Approval).where(
-                    Approval.target_type.in_(approval_types),
-                    Approval.target_id.in_(episode_ids),
-                    Approval.status != "superseded",
+            (
+                await session.execute(
+                    select(Approval).where(
+                        Approval.target_type.in_(approval_types),
+                        Approval.target_id.in_(episode_ids),
+                        Approval.status != "superseded",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for approval in approvals:
             approval.status = "superseded"
 

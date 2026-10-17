@@ -22,9 +22,7 @@ from app.db.models import (
 logger = logging.getLogger(__name__)
 
 
-async def _supersede_target_approvals(
-    session: AsyncSession, target_type: str, target_id: str
-) -> None:
+async def _supersede_target_approvals(session: AsyncSession, target_type: str, target_id: str) -> None:
     """同 target 的非 superseded 旧审批全部置 superseded。"""
     stmt = select(Approval).where(
         Approval.target_type == target_type,
@@ -36,7 +34,10 @@ async def _supersede_target_approvals(
 
 
 async def _validate_target(
-    session: AsyncSession, target_type: str, target_id: str, target_revision: int,
+    session: AsyncSession,
+    target_type: str,
+    target_id: str,
+    target_revision: int,
     project_id: str,
 ) -> Any:
     """校验目标存在、版本匹配且属于传入项目；不存在/版本不符抛 ValueError，跨项目抛 PermissionError。"""
@@ -48,9 +49,7 @@ async def _validate_target(
         )
         row = (await session.execute(stmt)).scalars().first()
         if row is None:
-            raise ValueError(
-                f"storyboard revision {target_revision} of episode {target_id} not found"
-            )
+            raise ValueError(f"storyboard revision {target_revision} of episode {target_id} not found")
         episode = await session.get(Episode, row.episode_id)
         if episode is None or episode.project_id != project_id:
             raise PermissionError("target belongs to another project")
@@ -62,22 +61,24 @@ async def _validate_target(
         )
         row = (await session.execute(stmt)).scalars().first()
         if row is None:
-            raise ValueError(
-                f"script revision {target_revision} of episode {target_id} not found"
-            )
+            raise ValueError(f"script revision {target_revision} of episode {target_id} not found")
         episode = await session.get(Episode, row.episode_id)
         if episode is None or episode.project_id != project_id:
             raise PermissionError("target belongs to another project")
         return row
     if target_type == "director_plan":
         row = (
-            await session.execute(
-                select(DirectorPlanRevision).where(
-                    DirectorPlanRevision.episode_id == target_id,
-                    DirectorPlanRevision.revision == target_revision,
+            (
+                await session.execute(
+                    select(DirectorPlanRevision).where(
+                        DirectorPlanRevision.episode_id == target_id,
+                        DirectorPlanRevision.revision == target_revision,
+                    )
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if row is None:
             raise ValueError(f"director plan revision {target_revision} not found")
         episode = await session.get(Episode, row.episode_id)
@@ -87,17 +88,19 @@ async def _validate_target(
     if target_type in {"series_bible", "style_bible"}:
         model = SeriesBibleRevision if target_type == "series_bible" else StyleBibleRevision
         row = (
-            await session.execute(
-                select(model).where(
-                    model.project_id == target_id,
-                    model.revision == target_revision,
+            (
+                await session.execute(
+                    select(model).where(
+                        model.project_id == target_id,
+                        model.revision == target_revision,
+                    )
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if row is None:
-            raise ValueError(
-                f"{target_type} revision {target_revision} of project {target_id} not found"
-            )
+            raise ValueError(f"{target_type} revision {target_revision} of project {target_id} not found")
         if row.project_id != project_id:
             raise PermissionError("target belongs to another project")
         return row
@@ -148,26 +151,26 @@ async def approve(
             episode.status = "storyboarding"
     if target_type in {"series_bible", "style_bible"}:
         model = SeriesBibleRevision if target_type == "series_bible" else StyleBibleRevision
-        id_field = (
-            "series_bible_revision_id"
-            if target_type == "series_bible"
-            else "style_bible_revision_id"
-        )
+        id_field = "series_bible_revision_id" if target_type == "series_bible" else "style_bible_revision_id"
         # 新批准版本成为项目真相源；旧批准版本与基于旧版的创作结果保留但失效。
         old_rows = (
-            await session.execute(
-                select(model).where(
-                    model.project_id == project_id,
-                    model.id != target.id,
-                    model.status == "approved",
+            (
+                await session.execute(
+                    select(model).where(
+                        model.project_id == project_id,
+                        model.id != target.id,
+                        model.status == "approved",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for old in old_rows:
             old.status = "superseded"
         episodes = (
-            await session.execute(select(Episode).where(Episode.project_id == project_id))
-        ).scalars().all()
+            (await session.execute(select(Episode).where(Episode.project_id == project_id))).scalars().all()
+        )
         episode_ids = [episode.id for episode in episodes]
         for episode in episodes:
             setattr(episode, id_field, target.id)
@@ -222,9 +225,7 @@ async def reject(
     return row
 
 
-async def is_approved(
-    session: AsyncSession, target_type: str, target_id: str, target_revision: int
-) -> bool:
+async def is_approved(session: AsyncSession, target_type: str, target_id: str, target_revision: int) -> bool:
     stmt = select(Approval).where(
         Approval.target_type == target_type,
         Approval.target_id == target_id,
@@ -292,13 +293,17 @@ async def check_generation_gate(
             reasons.append("Style Bible 尚未审批")
 
     script = (
-        await session.execute(
-            select(ScriptRevision)
-            .where(ScriptRevision.episode_id == episode_id)
-            .order_by(ScriptRevision.revision.desc())
-            .limit(1)
+        (
+            await session.execute(
+                select(ScriptRevision)
+                .where(ScriptRevision.episode_id == episode_id)
+                .order_by(ScriptRevision.revision.desc())
+                .limit(1)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     # 兼容没有剧本版本的存量项目；一旦进入新版剧本流，就必须先通过审稿。
     if script is not None and script.status != "approved":
         reasons.append(f"剧本 revision {script.revision} 未审批（当前状态 {script.status}）")
@@ -315,9 +320,7 @@ async def check_generation_gate(
     if revision.status != "approved":
         reasons.append(f"分镜 revision {revision.revision} 未审批（当前状态 {revision.status}）")
     if script is not None and revision.based_on_script_revision_id != script.id:
-        reasons.append(
-            f"分镜 revision {revision.revision} 未基于当前剧本 revision {script.revision}"
-        )
+        reasons.append(f"分镜 revision {revision.revision} 未基于当前剧本 revision {script.revision}")
 
     asset_ids = collect_character_asset_ids(revision.payload or {})
     for aid in asset_ids:
@@ -333,9 +336,5 @@ async def check_generation_gate(
 
 
 async def list_approvals(session: AsyncSession, project_id: str) -> list[Approval]:
-    stmt = (
-        select(Approval)
-        .where(Approval.project_id == project_id)
-        .order_by(Approval.created_at.desc())
-    )
+    stmt = select(Approval).where(Approval.project_id == project_id).order_by(Approval.created_at.desc())
     return list((await session.execute(stmt)).scalars().all())

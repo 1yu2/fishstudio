@@ -247,9 +247,7 @@ class TestWorkflowRouterErrorMapping:
         async def fake_get_project(session, project_id, user_id=None, is_admin=False):
             raise PermissionError("project belongs to another user")
 
-        monkeypatch.setattr(
-            "app.routers.workflow.series_service.get_project", fake_get_project
-        )
+        monkeypatch.setattr("app.routers.workflow.series_service.get_project", fake_get_project)
         resp = client.get("/api/workflow/runs", params={"project_id": "p1"})
         assert resp.status_code == 403
 
@@ -257,9 +255,7 @@ class TestWorkflowRouterErrorMapping:
         async def fake_get_project(session, project_id, user_id=None, is_admin=False):
             return None
 
-        monkeypatch.setattr(
-            "app.routers.workflow.series_service.get_project", fake_get_project
-        )
+        monkeypatch.setattr("app.routers.workflow.series_service.get_project", fake_get_project)
         resp = client.get("/api/workflow/runs", params={"project_id": "ghost"})
         assert resp.status_code == 404
 
@@ -277,9 +273,7 @@ class TestWorkflowRouterErrorMapping:
         async def fake_get_project(session, project_id, user_id=None, is_admin=False):
             raise PermissionError("project belongs to another user")
 
-        monkeypatch.setattr(
-            "app.routers.workflow.series_service.get_project", fake_get_project
-        )
+        monkeypatch.setattr("app.routers.workflow.series_service.get_project", fake_get_project)
         resp = client.post("/api/workflow/runs", json={"project_id": "p1"})
         assert resp.status_code == 403
 

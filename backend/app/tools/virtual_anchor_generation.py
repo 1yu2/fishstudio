@@ -1116,9 +1116,7 @@ class BizyairUploader:
         canon_resource = f"/{bucket}/{object_key}"
         sign_str = f"PUT\n\n{content_type}\n{date}\n{canon_headers}{canon_resource}"
         signature = base64.b64encode(
-            hmac.new(
-                access_key_secret.encode(), sign_str.encode(), hashlib.sha1
-            ).digest()
+            hmac.new(access_key_secret.encode(), sign_str.encode(), hashlib.sha1).digest()
         ).decode()
 
         headers = {
