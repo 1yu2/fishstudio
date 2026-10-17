@@ -47,10 +47,12 @@ export default function StudioPage({
   projectId,
   theme,
   onToggleTheme,
+  managedByAppShell = false,
 }: {
   projectId: string
   theme: ThemeMode
   onToggleTheme: () => void
+  managedByAppShell?: boolean
 }) {
   const { project, storyboard, loading, error, reload } = useSeriesProject(projectId)
   const { run, reload: reloadRun } = useWorkflowRun(projectId, true)
@@ -150,8 +152,8 @@ export default function StudioPage({
   }
 
   return (
-    <div className="studio">
-      <PageHeader title={project?.title || '短剧工作台'} subtitle="系列视频项目" theme={theme} onToggleTheme={onToggleTheme} variant="sub" />
+    <div className={`studio${managedByAppShell ? ' studio--embedded' : ''}`}>
+      {!managedByAppShell && <PageHeader title={project?.title || '短剧工作台'} subtitle="系列视频项目" theme={theme} onToggleTheme={onToggleTheme} variant="sub" />}
       <main className="studio__main">
         {run?.planner_model && (
           <div className="studio__muted" style={{ fontSize: 12, marginBottom: 8 }}>

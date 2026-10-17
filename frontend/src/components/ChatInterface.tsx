@@ -26,6 +26,7 @@ type ChatInterfaceProps = {
   theme: 'dark' | 'light'
   onToggleTheme: () => void
   onSetTheme: (t: 'dark' | 'light') => void
+  managedByAppShell?: boolean
 }
 
 interface ToolCall {
@@ -107,7 +108,7 @@ const StoryboardPanel = ({ storyboard }: { storyboard: Storyboard }) => (
   </div>
 )
 
-const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: ChatInterfaceProps) => {
+const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme, managedByAppShell = false }: ChatInterfaceProps) => {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [prefs] = usePreferences()
@@ -1347,29 +1348,33 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
     (currentCanvasData?.elements || []).some((e: any) => e && !e.isDeleted && e.type === 'image')
 
   return (
-    <div className="chat-interface">
+    <div className={`chat-interface${managedByAppShell ? ' chat-interface--embedded' : ''}`}>
       <div className="interface-layout">
         <div className="canvas-panel">
           {/* 画布控制栏 */}
           <div className="canvas-controls">
-            <button className="control-btn" onClick={goHome} title="回到首页">
-              <ArrowLeft size={18} />
-              <span>首页</span>
-            </button>
-            <button className="control-btn" onClick={onToggleTheme} title="切换主题">
-              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-              <span>{theme === 'dark' ? '亮色' : '暗色'}</span>
-            </button>
-            <button
-              className="control-btn"
-              onClick={async () => {
-                if (await confirmDialog({ title: '确定要退出登录吗？', confirmText: '退出登录' })) logout()
-              }}
-              title="退出登录"
-            >
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            {!managedByAppShell && (
+              <>
+                <button className="control-btn" onClick={goHome} title="回到首页">
+                  <ArrowLeft size={18} />
+                  <span>首页</span>
+                </button>
+                <button className="control-btn" onClick={onToggleTheme} title="切换主题">
+                  {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+                  <span>{theme === 'dark' ? '亮色' : '暗色'}</span>
+                </button>
+                <button
+                  className="control-btn"
+                  onClick={async () => {
+                    if (await confirmDialog({ title: '确定要退出登录吗？', confirmText: '退出登录' })) logout()
+                  }}
+                  title="退出登录"
+                >
+                  <LogOut size={18} />
+                  <span>退出</span>
+                </button>
+              </>
+            )}
 
             <button
               className="control-btn"
@@ -1646,16 +1651,20 @@ const ChatInterface = ({ initialCanvasId, theme, onToggleTheme, onSetTheme }: Ch
               <h1>FishStudio</h1>
               <p>使用AI生成图像</p>
             </div>
-            <span className="chat-header__avatar" title={prefs.nickname}>
-              <Avatar avatarId={prefs.avatarId} nickname={prefs.nickname} size={26} />
-            </span>
-            <button
-              className="control-btn"
-              onClick={goToSettings}
-              title="设置"
-            >
-              <Settings size={18} />
-            </button>
+            {!managedByAppShell && (
+              <>
+                <span className="chat-header__avatar" title={prefs.nickname}>
+                  <Avatar avatarId={prefs.avatarId} nickname={prefs.nickname} size={26} />
+                </span>
+                <button
+                  className="control-btn"
+                  onClick={goToSettings}
+                  title="设置"
+                >
+                  <Settings size={18} />
+                </button>
+              </>
+            )}
             <button 
               className="close-chat-btn"
               onClick={() => setChatPanelCollapsed(true)}

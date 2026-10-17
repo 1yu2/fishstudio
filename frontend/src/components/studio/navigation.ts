@@ -4,19 +4,11 @@
  */
 
 export function goToStudioHome() {
-  const url = new URL(window.location.href)
-  url.searchParams.delete('canvasId')
-  url.searchParams.delete('projectId')
-  url.searchParams.set('page', 'studio')
-  window.history.pushState({}, '', url.toString())
+  window.history.pushState({}, '', '/projects/drama')
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
 export function goToStudioProject(projectId: string) {
-  const url = new URL(window.location.href)
-  url.searchParams.delete('canvasId')
-  url.searchParams.set('page', 'studio')
-  url.searchParams.set('projectId', projectId)
-  window.history.pushState({}, '', url.toString())
+  window.history.pushState({}, '', `/projects/drama/${encodeURIComponent(projectId)}`)
   window.dispatchEvent(new PopStateEvent('popstate'))
 }

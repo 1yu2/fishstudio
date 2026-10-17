@@ -134,9 +134,11 @@ function projectStatus(canvas: CanvasSummary): 'running' | 'done' {
 export default function HomePage({
   theme,
   onToggleTheme,
+  managedByAppShell = false,
 }: {
   theme: ThemeMode
   onToggleTheme: () => void
+  managedByAppShell?: boolean
 }) {
   const [projects, setProjects] = useState<CanvasSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -344,7 +346,7 @@ export default function HomePage({
 
   return (
     <div className="home">
-      <PageHeader title="FishStudio" subtitle="创意不止于画布" theme={theme} onToggleTheme={onToggleTheme} variant="home" />
+      {!managedByAppShell && <PageHeader title="FishStudio" subtitle="创意不止于画布" theme={theme} onToggleTheme={onToggleTheme} variant="home" />}
 
       <main className="home__main">
         <section className="home__top">

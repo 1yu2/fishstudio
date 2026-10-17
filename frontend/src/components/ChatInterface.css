@@ -7,6 +7,10 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
+.chat-interface--embedded {
+  height: 100%;
+}
+
 .interface-layout {
   position: relative;
   width: 100%;
