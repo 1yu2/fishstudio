@@ -135,13 +135,23 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_handler(request: Request, exc: RequestValidationError):
+        # Pydantic 的原始 errors() 会带回请求 input，并可能在 ctx 中包含
+        # ValueError 对象。前者可能泄露 API Key，后者无法被 JSON 序列化。
+        safe_errors = [
+            {
+                "type": error.get("type", "value_error"),
+                "loc": error.get("loc", ()),
+                "msg": error.get("msg", "Invalid value"),
+            }
+            for error in exc.errors()
+        ]
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=_error_payload(
                 "validation_error",
                 "Request payload validation failed",
                 request,
-                extra={"errors": exc.errors()},
+                extra={"errors": safe_errors},
             ),
         )
 

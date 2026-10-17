@@ -7,10 +7,8 @@ from pydantic import BaseModel, ConfigDict
 
 from app.config import mock_providers_enabled
 from app.providers.base import VideoGenerationRequest, VideoProvider
-from app.providers.minimax_video import MiniMaxVideoProvider
 from app.providers.mock_video import MockVideoProvider
 from app.providers.pricing import estimate_video_cost, snapshot_price
-from app.providers.volcano_video import VolcanoVideoProvider
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +39,22 @@ class VideoProviderRouter:
 
     def __init__(self, providers: Optional[list[VideoProvider]] = None):
         if providers is None:
-            providers = [MiniMaxVideoProvider(), VolcanoVideoProvider(), MockVideoProvider()]
+            providers = []
         self.providers = providers
         self._mock = next(
             (p for p in providers if isinstance(p, MockVideoProvider)), MockVideoProvider()
         )
 
     def _model_and_resolution(self, provider: VideoProvider, req) -> tuple[str, str]:
-        if isinstance(provider, MiniMaxVideoProvider):
+        provider_name = getattr(provider, "name", "")
+        if provider_name == "local_h3":
+            return provider.model_name, provider.resolution_for(req)
+        if provider_name == "minimax":
             return provider.pick_model(req), provider.resolution_for(req)
-        if isinstance(provider, VolcanoVideoProvider):
-            from app.tools import volcano_video_generation as vvg
-
-            return vvg.ACTIVE_VIDEO_MODEL, req.resolution
+        if provider_name == "volcano":
+            # Keep route selection independent from the optional Volcano/LangChain
+            # tool stack; the concrete provider already owns its configured model.
+            return getattr(provider, "model_name", ""), req.resolution
         return "mock-video", req.resolution
 
     def _decide(self, provider: VideoProvider, req, mocked: bool, reason: str) -> RouteDecision:
@@ -108,10 +109,14 @@ class VideoProviderRouter:
             candidates.sort(key=_cost)
             reason = "cheapest: 按估算成本升序"
         elif req.provider_policy == "quality":
-            # volcano 优先，其次 minimax（H3 可按 req.resolution=2K 出高质量）
-            candidates.sort(key=lambda p: 0 if isinstance(p, VolcanoVideoProvider) else 1)
-            reason = "quality: volcano 优先，其次 minimax"
+            candidates.sort(key=lambda p: (
+                0 if getattr(p, "name", "") == "local_h3" else
+                1 if getattr(p, "name", "") == "volcano" else 2
+            ))
+            reason = "quality: 可用的 local_h3 优先，其次 volcano/minimax"
         else:  # balanced（默认）
+            has_local_h3 = any(getattr(p, "name", "") == "local_h3" for p in candidates)
+
             # 路由守卫（复审 0.9）：MiniMax H3 协议未经官方文档核验，balanced 默认
             # volcano 优先，minimax 殿后——且此时 minimax 只会以已核验的 Hailuo V1
             # 系列模型出现在候选（H3 实验关闭时 supports/pick_model 不选 H3）。
@@ -122,29 +127,35 @@ class VideoProviderRouter:
                 candidates.sort(
                     key=lambda p: (
                         0
-                        if isinstance(p, MiniMaxVideoProvider)
+                        if getattr(p, "name", "") == "local_h3"
                         else 1
-                        if isinstance(p, VolcanoVideoProvider)
+                        if getattr(p, "name", "") == "minimax"
                         else 2
+                        if getattr(p, "name", "") == "volcano"
+                        else 3
                     )
                 )
                 reason = (
-                    "balanced: minimax(H3, MINIMAX_H3_EXPERIMENTAL=true 实验分支，"
-                    "协议未经官方文档核验) 优先，其次 volcano"
+                    "balanced: local_h3 优先，其次 minimax(H3)/volcano"
+                    if has_local_h3 else
+                    "balanced: minimax(H3, MINIMAX_H3_EXPERIMENTAL=true) 优先，其次 volcano"
                 )
             else:
                 candidates.sort(
                     key=lambda p: (
                         0
-                        if isinstance(p, VolcanoVideoProvider)
+                        if getattr(p, "name", "") == "local_h3"
                         else 1
-                        if isinstance(p, MiniMaxVideoProvider)
+                        if getattr(p, "name", "") == "volcano"
                         else 2
+                        if getattr(p, "name", "") == "minimax"
+                        else 3
                     )
                 )
                 reason = (
-                    "balanced: volcano 优先，其次 minimax（仅已核验的 Hailuo V1 系列；"
-                    "H3 默认禁用，见 MINIMAX_H3_EXPERIMENTAL）"
+                    "balanced: local_h3 优先，其次 volcano/minimax"
+                    if has_local_h3 else
+                    "balanced: volcano 优先，其次 minimax（仅已核验的 Hailuo V1 系列）"
                 )
 
         # 4) 无可用真实 provider：仅 ALLOW_MOCK_PROVIDERS=true 才允许 mock 兜底；

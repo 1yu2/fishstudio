@@ -81,6 +81,53 @@ class AuditLog(Base):
     )
 
 
+class ModelDeployment(Base):
+    """管理员配置的模型服务实例；密钥只保存引用，不保存明文。"""
+
+    __tablename__ = "model_deployments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    slug: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    driver: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    modality: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(2048), nullable=False, default="")
+    credential_ref: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    pricing: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ModelRoute(Base):
+    """业务用途到主 Deployment / 有序备用 Deployment 的最小绑定。"""
+
+    __tablename__ = "model_routes"
+
+    purpose: Mapped[str] = mapped_column(String(64), primary_key=True)
+    modality: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    primary_deployment: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    fallback_deployments: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 def _uuid_str() -> str:
     return str(uuid.uuid4())
 

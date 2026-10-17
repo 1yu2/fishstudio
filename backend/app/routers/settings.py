@@ -237,67 +237,24 @@ SENSITIVE_PATTERNS = ["KEY", "SECRET", "TOKEN", "PASSWORD"]
 # 按分组定义关心的 env keys（含描述）
 ENV_GROUPS = [
     {
-        "group": "LLM 配置",
+        "group": "数据库与认证",
         "keys": [
-            {
-                "key": "OPENAI_API_KEY",
-                "desc": "OpenAI 兼容接口 API Key（SiliconFlow / 火山引擎等）",
-                "sensitive": True,
-            },
-            {"key": "OPENAI_BASE_URL", "desc": "OpenAI 兼容接口 Base URL", "sensitive": False},
-            {"key": "MODEL_NAME", "desc": "主模型名称", "sensitive": False},
-            {"key": "RECURSION_LIMIT", "desc": "LangGraph 多步推理递归上限", "sensitive": False},
+            {"key": "DATABASE_URL", "desc": "PostgreSQL 连接地址", "sensitive": True},
+            {"key": "JWT_SECRET", "desc": "JWT 签名密钥", "sensitive": True},
+            {"key": "ADMIN_USERNAME", "desc": "初始管理员用户名", "sensitive": False},
+            {"key": "ADMIN_PASSWORD", "desc": "初始管理员密码", "sensitive": True},
+            {"key": "CORS_ORIGINS", "desc": "允许访问的前端来源", "sensitive": False},
         ],
     },
     {
-        "group": "图片生成",
+        "group": "运行与日志",
         "keys": [
-            {"key": "VOLCANO_API_KEY", "desc": "火山引擎 API Key", "sensitive": True},
-            {"key": "VOLCANO_BASE_URL", "desc": "火山引擎 Base URL", "sensitive": False},
-            {"key": "VOLCANO_IMAGE_MODEL", "desc": "图片生成模型", "sensitive": False},
-            {"key": "VOLCANO_EDIT_MODEL", "desc": "图片编辑模型", "sensitive": False},
-            {"key": "IMAGE_MODEL_NAME", "desc": "备用图片生成模型名称", "sensitive": False},
-            {"key": "EDIT_IMAGE_MODEL_NAME", "desc": "备用图片编辑模型名称", "sensitive": False},
-            {"key": "BASE_URL", "desc": "本地服务基础 URL（用于图片可访问地址拼接）", "sensitive": False},
-        ],
-    },
-    {
-        "group": "视频生成",
-        "keys": [
-            {"key": "VOLCANO_VIDEO_MODEL", "desc": "火山引擎视频生成模型", "sensitive": False},
-            {"key": "VOLCANO_THINKING_ENABLED", "desc": "是否启用思考模式（true/false）", "sensitive": False},
-        ],
-    },
-    {
-        "group": "3D 模型生成",
-        "keys": [
-            {"key": "TENCENT_AI3D_API_KEY", "desc": "腾讯混元 3D API Key", "sensitive": True},
-            {"key": "TENCENT_AI3D_BASE_URL", "desc": "腾讯混元 3D Base URL", "sensitive": False},
-        ],
-    },
-    {
-        "group": "语音合成 (TTS)",
-        "keys": [
-            {"key": "DASHSCOPE_API_KEY", "desc": "阿里云百炼 CosyVoice / Qwen API Key", "sensitive": True},
-            {"key": "DASHSCOPE_BASE_URL", "desc": "DashScope Base URL", "sensitive": False},
-        ],
-    },
-    {
-        "group": "ComfyUI 虚拟人",
-        "keys": [
-            {"key": "COMFYUI_SERVER_ADDRESS", "desc": "ComfyUI 服务器地址", "sensitive": False},
-            {"key": "COMFYUI_WORKFLOW_PATH", "desc": "ComfyUI 工作流 JSON 文件路径", "sensitive": False},
-            {"key": "FACE_DETECTION_METHOD", "desc": "人脸检测方法（opencv / llm）", "sensitive": False},
-        ],
-    },
-    {
-        "group": "调试配置",
-        "keys": [
-            {"key": "MOCK_MODE", "desc": "Mock 模式（true 时不调用真实 API）", "sensitive": False},
-            {"key": "MOCK_IMAGE_PATH", "desc": "Mock 图片路径", "sensitive": False},
-            {"key": "MOCK_MODEL_PATH", "desc": "Mock 3D 模型路径", "sensitive": False},
-            {"key": "MOCK_VIDEO_PATH", "desc": "Mock 视频路径", "sensitive": False},
             {"key": "LOG_LEVEL", "desc": "日志级别（DEBUG / INFO / WARNING / ERROR）", "sensitive": False},
+            {"key": "LOG_FORMAT", "desc": "日志格式（console / json）", "sensitive": False},
+            {"key": "ENVIRONMENT", "desc": "运行环境标识", "sensitive": False},
+            {"key": "SENTRY_DSN", "desc": "Sentry DSN", "sensitive": True},
+            {"key": "EMBEDDED_WORKER", "desc": "是否在 API 进程内运行 Worker", "sensitive": False},
+            {"key": "ALLOW_MOCK_PROVIDERS", "desc": "是否允许测试 Mock Provider", "sensitive": False},
         ],
     },
 ]

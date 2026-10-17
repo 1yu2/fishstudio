@@ -29,6 +29,8 @@ from app.routers import auth as auth_router
 from app.routers import chat
 from app.routers import eval as eval_router
 from app.routers import jobs as jobs_router
+from app.routers import model_deployments as model_deployments_router
+from app.routers import model_routes as model_routes_router
 from app.routers import model_runtime as model_runtime_router
 from app.routers import series as series_router
 from app.routers import settings as settings_router
@@ -214,6 +216,16 @@ app.include_router(auth_router.router, prefix="/api", tags=["auth"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(jobs_router.router, prefix="/api", tags=["jobs"])
+app.include_router(
+    model_deployments_router.router,
+    prefix="/api/model-deployments",
+    tags=["model-deployments"],
+)
+app.include_router(
+    model_routes_router.router,
+    prefix="/api/model-routes",
+    tags=["model-routes"],
+)
 app.include_router(series_router.router, prefix="/api", tags=["series"])
 app.include_router(workflow_router.router, prefix="/api", tags=["workflow"])
 app.include_router(model_runtime_router.router, prefix="/api", tags=["model-runtime"])

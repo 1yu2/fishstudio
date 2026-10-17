@@ -809,7 +809,7 @@ async def test_mock_image_provider_generate(monkeypatch, tmp_path):
     assert r.artifacts[0]["storage_key"].startswith("images/")
     assert r.raw_metadata["mocked"] is True
     # 无 VOLCANO_API_KEY 时真实 provider 列表为空（worker 据此走 mock/no_provider 分支）
-    monkeypatch.setattr("app.tools.volcano_image_generation.VOLCANO_API_KEY", "")
+    monkeypatch.delenv("VOLCANO_API_KEY", raising=False)
     assert available_image_providers() == []
 
 
@@ -840,34 +840,37 @@ def _volcano_result_json(**over):
 def test_volcano_image_availability(monkeypatch):
     from app.providers.volcano_image import VolcanoImageProvider
 
-    monkeypatch.setattr("app.tools.volcano_image_generation.VOLCANO_API_KEY", "")
-    assert VolcanoImageProvider().is_available() is False
-    monkeypatch.setattr("app.tools.volcano_image_generation.VOLCANO_API_KEY", "k")
-    assert VolcanoImageProvider().is_available() is True
+    assert VolcanoImageProvider(
+        api_key="", base_url="https://image.test/v1", model_name="seedream"
+    ).is_available() is False
+    assert VolcanoImageProvider(
+        api_key="k", base_url="https://image.test/v1", model_name="seedream"
+    ).is_available() is True
 
 
 def test_available_image_providers_registers_volcano(monkeypatch):
     from app.providers.image_base import available_image_providers
 
-    monkeypatch.setattr("app.tools.volcano_image_generation.VOLCANO_API_KEY", "k")
+    monkeypatch.setenv("VOLCANO_API_KEY", "k")
     providers = available_image_providers()
     assert [p.name for p in providers] == ["volcano_image"]  # 选择顺序：volcano 优先
 
 
 async def test_volcano_image_generate_text2image(monkeypatch):
-    import app.tools.volcano_image_generation as vig
     from app.providers.image_base import ImageGenerationRequest
     from app.providers.volcano_image import VolcanoImageProvider
 
-    monkeypatch.setattr(vig, "VOLCANO_API_KEY", "k")
     calls = {}
 
-    def fake_generate(prompt, size="1:1"):
-        calls.update({"prompt": prompt, "size": size})
-        return _volcano_result_json()
+    def fake_generate(req):
+        calls.update({"prompt": req.prompt, "size": req.aspect_ratio})
+        return {"local_path": "/storage/images/volcano_x.jpg"}
 
-    monkeypatch.setattr(vig, "generate_volcano_image_tool", _FakeTool(fake_generate))
-    r = await VolcanoImageProvider().generate(
+    provider = VolcanoImageProvider(
+        api_key="k", base_url="https://image.test/v1", model_name="seedream"
+    )
+    monkeypatch.setattr(provider, "_generate_sync", fake_generate)
+    r = await provider.generate(
         ImageGenerationRequest(prompt="角色图", aspect_ratio="9:16")
     )
     assert r.success and r.provider == "volcano_image"
@@ -878,19 +881,27 @@ async def test_volcano_image_generate_text2image(monkeypatch):
 
 async def test_volcano_image_generate_edit_with_source(monkeypatch):
     """image+prompt→image（首帧/角色参考图编辑）：走 edit 工具。"""
-    import app.tools.volcano_image_generation as vig
     from app.providers.image_base import ImageGenerationRequest
     from app.providers.volcano_image import VolcanoImageProvider
 
-    monkeypatch.setattr(vig, "VOLCANO_API_KEY", "k")
     calls = {}
 
-    def fake_edit(prompt, image_url, size="1:1"):
-        calls.update({"prompt": prompt, "image_url": image_url, "size": size})
-        return _volcano_result_json(source_image=image_url)
+    def fake_edit(req):
+        calls.update({
+            "prompt": req.prompt,
+            "image_url": req.source_image,
+            "size": req.aspect_ratio,
+        })
+        return {
+            "local_path": "/storage/images/volcano_x.jpg",
+            "source_image": req.source_image,
+        }
 
-    monkeypatch.setattr(vig, "edit_volcano_image_tool", _FakeTool(fake_edit))
-    r = await VolcanoImageProvider().generate(
+    provider = VolcanoImageProvider(
+        api_key="k", base_url="https://image.test/v1", model_name="seedream-edit"
+    )
+    monkeypatch.setattr(provider, "_generate_sync", fake_edit)
+    r = await provider.generate(
         ImageGenerationRequest(
             prompt="换成夜景", source_image="/storage/images/ref.png", aspect_ratio="9:16"
         )
@@ -900,16 +911,16 @@ async def test_volcano_image_generate_edit_with_source(monkeypatch):
 
 
 async def test_volcano_image_generate_error(monkeypatch):
-    import app.tools.volcano_image_generation as vig
     from app.providers.image_base import ImageGenerationRequest
     from app.providers.volcano_image import VolcanoImageProvider
 
-    monkeypatch.setattr(vig, "VOLCANO_API_KEY", "k")
-    monkeypatch.setattr(
-        vig, "generate_volcano_image_tool",
-        _FakeTool(lambda prompt, size="1:1": "Error generating image: boom"),
+    provider = VolcanoImageProvider(
+        api_key="k", base_url="https://image.test/v1", model_name="seedream"
     )
-    r = await VolcanoImageProvider().generate(ImageGenerationRequest(prompt="x"))
+    monkeypatch.setattr(
+        provider, "_generate_sync", lambda req: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    r = await provider.generate(ImageGenerationRequest(prompt="x"))
     assert not r.success and r.error_code == "generate_failed" and r.retryable
 
 

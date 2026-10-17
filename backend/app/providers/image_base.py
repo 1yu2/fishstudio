@@ -1,7 +1,7 @@
 """图片生成 provider 抽象（最小接口，文档 S6 风格）。
 
-真实图片 provider：VolcanoImageProvider（providers/volcano_image.py，薄封装
-app/tools/volcano_image_generation.py）；MockImageProvider（ffmpeg 纯色占位图）
+真实图片 provider：VolcanoImageProvider（providers/volcano_image.py）；
+MockImageProvider（ffmpeg 纯色占位图）
 仅允许在 ALLOW_MOCK_PROVIDERS=true 时使用。
 """
 
@@ -90,11 +90,11 @@ class MockImageProvider(ImageProvider):
 
 
 def available_image_providers() -> list[ImageProvider]:
-    """当前可用的真实图片 provider（选择顺序：volcano → 其余后续注册）。
+    """旧 env 兼容用的真实图片 provider。
 
-    MockImageProvider 不在此注册——mock 兜底由 worker 按 ALLOW_MOCK_PROVIDERS 控制。
+    DB Route 执行不使用此函数。Mock 兜底由统一图片 Resolver 控制。
     """
     from app.providers.volcano_image import VolcanoImageProvider
 
-    providers: list[ImageProvider] = [VolcanoImageProvider()]
+    providers: list[ImageProvider] = [VolcanoImageProvider.from_legacy_env()]
     return [p for p in providers if p.is_available()]

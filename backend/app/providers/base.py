@@ -53,6 +53,8 @@ class VideoGenerationRequest(BaseModel):
     quality: Literal["preview", "standard", "final"] = "standard"
     provider_policy: Literal["cheapest", "balanced", "quality", "explicit"] = "balanced"
     explicit_provider: Optional[str] = None
+    # 由 Worker 写入，远端异步 Provider 必须据此去重。
+    idempotency_key: Optional[str] = None
 
 
 class VideoProvider(ABC):

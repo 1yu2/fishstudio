@@ -19,9 +19,39 @@ class MediaDeployment:
 
 
 class MediaRuntime:
-    def __init__(self) -> None:
+    def __init__(self, *, catalog_backed: bool = False) -> None:
         self._deployments: dict[str, MediaDeployment] = {}
         self._video_router = None
+        self._video_router_revision = ""
+        self._catalog_backed = catalog_backed
+
+    def _catalog_deployments(self) -> list[MediaDeployment]:
+        if not self._catalog_backed:
+            return []
+        from app.model_runtime.catalog import get_catalog
+
+        snapshot = get_catalog().snapshot
+        catalog_items = {
+            item.slug: MediaDeployment(item.slug, item.modality, item.instance)
+            for item in snapshot.list()
+            if item.modality != "chat" and item.enabled
+        }
+        # 兼容期：缺失的 Deployment 用同一 Driver Registry 从旧 env 构造；
+        # 同 slug 永远以数据库 Catalog 为准。
+        from app.model_runtime.registry import DEFAULT_DRIVER_REGISTRY
+        from app.services.model_deployment_bootstrap import legacy_deployment_specs
+
+        legacy_items = {
+            spec.payload.slug: MediaDeployment(
+                spec.payload.slug,
+                spec.payload.modality,
+                DEFAULT_DRIVER_REGISTRY.build(spec.payload),
+            )
+            for spec in legacy_deployment_specs()
+            if spec.payload.modality != "chat" and spec.payload.enabled
+        }
+        legacy_items.update(catalog_items)
+        return list(legacy_items.values())
 
     def register(self, deployment: MediaDeployment) -> None:
         if deployment.name in self._deployments:
@@ -32,12 +62,19 @@ class MediaRuntime:
         self._deployments[deployment.name] = deployment
 
     def list(self, modality: Optional[str] = None) -> list[MediaDeployment]:
-        values = list(self._deployments.values())
+        merged = dict(self._deployments)
+        merged.update({item.name: item for item in self._catalog_deployments()})
+        values = list(merged.values())
         return [item for item in values if modality is None or item.modality == modality]
 
     def get(self, modality: str, name: str) -> Optional[MediaDeployment]:
-        item = self._deployments.get(name)
-        return item if item and item.modality == modality else None
+        return next(
+            (
+                item for item in self.list(modality)
+                if item.name == name or getattr(item.provider, "name", "") == name
+            ),
+            None,
+        )
 
     def resolve_image(self) -> tuple[Any, bool]:
         from app.providers.image_base import MockImageProvider, available_image_providers
@@ -77,16 +114,22 @@ class MediaRuntime:
         return chosen.provider, chosen.mocked
 
     def video_router(self):
-        if self._video_router is None:
-            from app.providers.minimax_video import MiniMaxVideoProvider
+        from app.model_runtime.catalog import get_catalog
+
+        revision = get_catalog().snapshot.catalog_revision
+        if self._video_router is None or revision != self._video_router_revision:
             from app.providers.mock_video import MockVideoProvider
             from app.providers.video_router import VideoProviderRouter
-            from app.providers.volcano_video import VolcanoVideoProvider
 
-            providers = [MiniMaxVideoProvider(), VolcanoVideoProvider(), MockVideoProvider()]
-            for provider in providers:
-                self.upsert(MediaDeployment(provider.name, "video", provider, provider.name == "mock"))
+            providers = [
+                item.provider for item in self.list("video") if not item.mocked
+            ]
+            if mock_providers_enabled():
+                mock = MockVideoProvider()
+                providers.append(mock)
+                self.upsert(MediaDeployment(mock.name, "video", mock, True))
             self._video_router = VideoProviderRouter(providers)
+            self._video_router_revision = revision
         return self._video_router
 
 
@@ -96,13 +139,5 @@ _RUNTIME: Optional[MediaRuntime] = None
 def get_media_runtime() -> MediaRuntime:
     global _RUNTIME
     if _RUNTIME is None:
-        _RUNTIME = MediaRuntime()
-        # 图片默认端点集中注册；可继续追加其它适配器而无需修改 Worker。
-        from app.providers.image_base import available_image_providers
-        for provider in available_image_providers():
-            _RUNTIME.register(MediaDeployment(provider.name, "image", provider))
-        from app.providers.tts_base import QwenTTSProvider
-        qwen = QwenTTSProvider()
-        if qwen.is_available():
-            _RUNTIME.register(MediaDeployment(qwen.name, "speech", qwen))
+        _RUNTIME = MediaRuntime(catalog_backed=True)
     return _RUNTIME

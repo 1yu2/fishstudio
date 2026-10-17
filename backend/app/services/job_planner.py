@@ -336,6 +336,10 @@ async def plan_shot_video_jobs(
                 "estimated_total_cost": plan.get("estimated_total_cost"),
                 "price_snapshot": plan.get("price_snapshot", {}),
                 "price_table_version": plan.get("price_table_version", PRICE_TABLE_VERSION),
+                "deployment_name": plan.get("deployment_name", ""),
+                "deployment_revision": plan.get("deployment_revision"),
+                "deployment_config_hash": plan.get("deployment_config_hash", ""),
+                "catalog_revision": plan.get("catalog_revision", ""),
             }, compiled=compiled,
         )
         from app.model_runtime.media import get_media_runtime

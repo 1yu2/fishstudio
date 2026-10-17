@@ -47,7 +47,10 @@ OPERATION_WORKER_CLASS = {
 WORKER_ID = os.getenv("WORKER_ID", f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}")
 
 # Provider 级并发上限（asyncio.Semaphore 限流）
-PROVIDER_CONCURRENCY = {"minimax": 3, "volcano": 2, "mock": 10}
+PROVIDER_CONCURRENCY = {
+    "local_h3": max(1, int(os.getenv("LOCAL_H3_MAX_CONCURRENCY", "1"))),
+    "minimax": 3, "volcano": 2, "mock": 10,
+}
 _SEMAPHORES: dict[str, asyncio.Semaphore] = {
     name: asyncio.Semaphore(n) for name, n in PROVIDER_CONCURRENCY.items()
 }
@@ -59,6 +62,13 @@ def _provider_semaphore(name: str) -> asyncio.Semaphore:
 
 _media_runtime = get_media_runtime()
 _router = _media_runtime.video_router()
+
+
+async def _resolve_worker_image(session, req, purpose: str):
+    """Worker 图片入口；与 Agent Tool 延迟导入同一个 Resolver 函数。"""
+    from app.model_runtime.image import resolve_and_generate_image
+
+    return await resolve_and_generate_image(session, req, purpose=purpose)
 
 
 def _resolve_locked_video_provider(provider_name: str) -> tuple[Optional[VideoProvider], bool]:
@@ -288,6 +298,7 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
     started = time.monotonic()
     try:
         req = _build_video_request(job)
+        req.idempotency_key = job.id
     except Exception as e:
         await finalize_job(session, job, success=False, error_code="invalid_params", error=str(e))
         return
@@ -616,20 +627,31 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
         source_image=params.get("source_image") or None,
     )
 
+    purpose = "image_edit" if req.source_image else "image_generation"
     try:
-        provider, mocked = _media_runtime.resolve_image()
-    except RuntimeError:
+        execution = await _resolve_worker_image(
+            session, req, purpose=purpose
+        )
+    except RuntimeError as error:
         await finalize_job(
             session, job, success=False, error_code="no_provider",
-            error="无可用图片 provider 且未开启 ALLOW_MOCK_PROVIDERS",
+            error=str(error),
         )
         return
 
+    provider = execution.provider
+    mocked = execution.mocked
     job.provider = provider.name
-    await _ensure_media_invocation(session, job, modality="image", purpose="shot_image")
+    job.model = execution.model
+    job.params = {
+        **(job.params or {}),
+        "routing_snapshot": execution.routing_snapshot,
+        "deployment_name": execution.deployment_name,
+    }
+    await _ensure_media_invocation(session, job, modality="image", purpose=purpose)
     await session.flush()
-    result = await provider.generate(req)
-    job.model = result.model or job.model
+    result = execution.result
+    job.model = result.model or execution.model
     # 图片计费（pricing 图片单价表；无条目按 None，不按 0 入账）
     from app.providers.pricing import estimate_image_cost
 
@@ -1189,6 +1211,14 @@ async def run_worker(poll_interval: float = 2.0, once: bool = False) -> None:
     while True:
         try:
             async with SessionLocal() as session:
+                # API 与 Worker 使用相同 Catalog 刷新路径；失败时 CatalogManager
+                # 保留上一版快照，任务执行仍可继续使用已验证的配置。
+                try:
+                    from app.model_runtime.catalog import get_catalog
+
+                    await get_catalog().refresh(session)
+                except Exception:
+                    logger.exception("model catalog 刷新失败，继续使用上一版快照")
                 await job_service.recover_expired_leases(session)
                 jobs = await job_service.lease_jobs(
                     session, operations=operations, limit=5,

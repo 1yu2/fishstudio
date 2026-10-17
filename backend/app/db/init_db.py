@@ -144,6 +144,21 @@ async def init_db() -> None:
             else:
                 logger.info("ℹ️  settings_kv 表已有数据，跳过 settings.json 迁移")
 
+        # 5) 旧模型环境变量 → Deployment。按 slug 幂等插入，绝不覆盖管理端配置。
+        from app.services.model_deployment_bootstrap import (
+            bootstrap_default_routes,
+            bootstrap_legacy_deployments,
+        )
+
+        inserted = await bootstrap_legacy_deployments(session)
+        logger.info("model deployment bootstrap complete inserted=%s", inserted)
+        routes_inserted = await bootstrap_default_routes(session)
+        logger.info("model route bootstrap complete inserted=%s", routes_inserted)
+        from app.model_runtime.catalog import get_catalog
+
+        await get_catalog().refresh(session)
+        logger.info("model deployment catalog loaded")
+
 
 def _migrate_history(session, admin_id: int) -> None:
     try:
