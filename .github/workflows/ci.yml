@@ -58,7 +58,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff coverage
+          # 固定版本：未固定时 ruff 升级会改变格式规则（0.17 起会格式化 Markdown 代码块）
+          pip install ruff==0.15.20 coverage
 
       - name: Ruff lint
         working-directory: backend
