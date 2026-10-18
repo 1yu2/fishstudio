@@ -601,7 +601,15 @@ async def _finish_job(
             storage_key=storage_key,
             mime_type="video/mp4" if a.get("type", "video") == "video" else "",
             duration_ms=a.get("duration_ms", req.duration * 1000),
-            meta=meta,
+            # 尾帧可作为下一镜首帧（镜头接力）；只有支持返回尾帧的 Provider 才有。
+            meta={
+                **meta,
+                **(
+                    {"last_frame_storage_key": a["last_frame_storage_key"]}
+                    if a.get("last_frame_storage_key")
+                    else {}
+                ),
+            },
         )
         artifact_id = artifact.id
         url = asset_service.artifact_url(artifact)

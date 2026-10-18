@@ -7,14 +7,15 @@ const DRIVER_OPTIONS = [
   ['openai_compatible', 'OpenAI 兼容', 'chat'],
   ['volcano_image', '火山图片', 'image'],
   ['minimax_video', 'MiniMax 视频', 'video'],
-  ['volcano_video', '火山视频', 'video'],
+  ['ark_video', 'Seedance（火山方舟）', 'video'],
+  ['volcano_video', '火山视频（旧版 / DMXAPI）', 'video'],
   ['qwen_tts', 'Qwen TTS', 'speech'],
   ['tencent_ai3d', '腾讯 3D', 'model_3d'],
 ] as const
 
 const CREDENTIAL_REFS: Record<string, string> = {
   local_h3_gateway: 'env:LOCAL_H3_API_KEY', openai_compatible: 'env:OPENAI_API_KEY',
-  volcano_image: 'env:VOLCANO_API_KEY', volcano_video: 'env:VOLCANO_API_KEY',
+  volcano_image: 'env:VOLCANO_API_KEY', volcano_video: 'env:VOLCANO_API_KEY', ark_video: 'env:VOLCANO_API_KEY',
   minimax_video: 'env:MINIMAX_API_KEY', qwen_tts: 'env:DASHSCOPE_API_KEY',
   tencent_ai3d: 'env:TENCENT_AI3D_API_KEY',
 }
