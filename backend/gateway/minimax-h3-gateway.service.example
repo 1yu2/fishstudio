@@ -1,0 +1,16 @@
+[Unit]
+Description=FishStudio MiniMax H3 Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/.myservice/h3-gateway
+EnvironmentFile=/root/.myservice/h3-gateway/.env
+ExecStart=/home/ffkj/miniconda3/envs/minimax-h3/bin/python -m uvicorn gateway.h3_gateway:create_app --factory --host 0.0.0.0 --port 8088
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

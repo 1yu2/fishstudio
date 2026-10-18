@@ -59,20 +59,25 @@ class VolcanoVideoProvider(VideoProvider):
             task_id_or_url, is_streaming = await asyncio.to_thread(_submit)
         except Exception as e:
             return ProviderResult(
-                success=False, provider=self.name, model=active_model,
-                error_code="server_error", error_message=str(e)[:500],
+                success=False,
+                provider=self.name,
+                model=active_model,
+                error_code="server_error",
+                error_message=str(e)[:500],
                 retryable=True,
             )
 
         if is_streaming:
             video_url = task_id_or_url
             local_path = await asyncio.to_thread(vvg.download_and_save_video, video_url, req.prompt)
-            storage_key = local_path[len("/storage/"):] if local_path.startswith("/storage/") else ""
+            storage_key = local_path[len("/storage/") :] if local_path.startswith("/storage/") else ""
             artifacts = [{"type": "video", "url": video_url}]
             if storage_key:
                 artifacts[0]["storage_key"] = storage_key
             return ProviderResult(
-                success=True, provider=self.name, model=active_model,
+                success=True,
+                provider=self.name,
+                model=active_model,
                 external_request_id=video_url,
                 artifacts=artifacts,
                 usage={"output_video_seconds": float(req.duration)},
@@ -80,7 +85,9 @@ class VolcanoVideoProvider(VideoProvider):
             )
 
         return ProviderResult(
-            success=True, provider=self.name, model=active_model,
+            success=True,
+            provider=self.name,
+            model=active_model,
             external_request_id=str(task_id_or_url),
             usage={"output_video_seconds": float(req.duration)},
         )
@@ -92,28 +99,41 @@ class VolcanoVideoProvider(VideoProvider):
         except Exception as e:
             # 单步查询异常（网络/5xx）视为可重试
             return ProviderResult(
-                success=False, provider=self.name, model=model,
+                success=False,
+                provider=self.name,
+                model=model,
                 external_request_id=external_task_id,
-                error_code="server_error", error_message=str(e)[:500], retryable=True,
+                error_code="server_error",
+                error_message=str(e)[:500],
+                retryable=True,
             )
         if step["state"] == "succeeded":
             return ProviderResult(
-                success=True, provider=self.name, model=model,
+                success=True,
+                provider=self.name,
+                model=model,
                 external_request_id=external_task_id,
                 raw_metadata={"video_url": step["video_url"], "raw": step["raw"]},
             )
         if step["state"] == "failed":
             return ProviderResult(
-                success=False, provider=self.name, model=model,
+                success=False,
+                provider=self.name,
+                model=model,
                 external_request_id=external_task_id,
-                error_code="task_failed", error_message=step["error"][:500],
+                error_code="task_failed",
+                error_message=step["error"][:500],
                 raw_metadata={"raw": step["raw"]},
             )
         return ProviderResult(
-            success=False, provider=self.name, model=model,
+            success=False,
+            provider=self.name,
+            model=model,
             external_request_id=external_task_id,
-            error_code="pending", error_message=f"任务进行中: {step['status']}",
-            retryable=True, raw_metadata={"raw": step["raw"]},
+            error_code="pending",
+            error_message=f"任务进行中: {step['status']}",
+            retryable=True,
+            raw_metadata={"raw": step["raw"]},
         )
 
     async def fetch_result(self, external_task_id: str, *, protocol: str | None = None) -> ProviderResult:
@@ -126,15 +146,18 @@ class VolcanoVideoProvider(VideoProvider):
         if not local_path.startswith("/storage/"):
             # 下载失败时 download_and_save_video 原样返回 URL
             return ProviderResult(
-                success=False, provider=self.name, model=model,
+                success=False,
+                provider=self.name,
+                model=model,
                 external_request_id=external_task_id,
-                error_code="server_error", error_message=f"视频下载失败: {video_url}",
+                error_code="server_error",
+                error_message=f"视频下载失败: {video_url}",
                 retryable=True,
             )
         return ProviderResult(
-            success=True, provider=self.name, model=model,
+            success=True,
+            provider=self.name,
+            model=model,
             external_request_id=external_task_id,
-            artifacts=[
-                {"storage_key": local_path[len("/storage/"):], "type": "video", "url": video_url}
-            ],
+            artifacts=[{"storage_key": local_path[len("/storage/") :], "type": "video", "url": video_url}],
         )

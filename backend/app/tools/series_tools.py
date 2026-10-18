@@ -101,9 +101,7 @@ async def create_series_project(
             planner_model = ""
             extra_nodes = None
             if use_llm_planner:
-                ctx_token = set_execution_context(
-                    replace(get_execution_context(), project_id=project.id)
-                )
+                ctx_token = set_execution_context(replace(get_execution_context(), project_id=project.id))
                 try:
                     plan = await planner_service.plan_with_llm(title, project.settings or {})
                 finally:
@@ -159,17 +157,13 @@ async def save_episode_script(
             )
             run = await _latest_run(session, project_id)
             if run is not None:
-                step = await _find_step(
-                    session, run.id, "episode.script.generate", episode_id
-                )
+                step = await _find_step(session, run.id, "episode.script.generate", episode_id)
                 if step is not None and step.status in {
                     "draft",
                     "ready",
                     "waiting_approval",
                 }:
-                    await workflow_service.complete_step(
-                        session, step.id, {"revision": revision.revision}
-                    )
+                    await workflow_service.complete_step(session, step.id, {"revision": revision.revision})
             return (
                 f"✅ 剧本已保存：episode {episode_id} revision {revision.revision}，"
                 f"共 {len((revision.structured_payload or {}).get('scenes', []))} 场。"
@@ -211,15 +205,9 @@ async def save_project_bible(
             )
             run = await _latest_run(session, project_id)
             if run is not None:
-                step = await _find_step(
-                    session, run.id, f"{kind}.bible.generate", project_id
-                )
-                if step is not None and step.status in {
-                    "draft", "ready", "waiting_approval"
-                }:
-                    await workflow_service.complete_step(
-                        session, step.id, {"revision": revision.revision}
-                    )
+                step = await _find_step(session, run.id, f"{kind}.bible.generate", project_id)
+                if step is not None and step.status in {"draft", "ready", "waiting_approval"}:
+                    await workflow_service.complete_step(session, step.id, {"revision": revision.revision})
             return f"✅ {kind} Bible 已保存：revision {revision.revision}。"
         except (ValueError, PermissionError) as error:
             return f"❌ 保存 Bible 失败：{error}"
@@ -247,15 +235,15 @@ async def save_storyboard(project_id: str, episode_id: str, storyboard: dict[str
             if run is not None:
                 step = await _find_step(session, run.id, "storyboard.generate", episode_id)
                 if step is not None and step.status in {"draft", "ready", "waiting_approval"}:
-                    await workflow_service.complete_step(
-                        session, step.id, {"revision": revision.revision}
-                    )
+                    await workflow_service.complete_step(session, step.id, {"revision": revision.revision})
             shot_count = sum(
                 len(sc.get("shots", []))
                 for ep in (revision.payload or {}).get("episodes", [])
                 for sc in ep.get("scenes", [])
             )
-            return f"✅ 分镜已保存：episode {episode_id} revision {revision.revision}，共 {shot_count} 个镜头。"
+            return (
+                f"✅ 分镜已保存：episode {episode_id} revision {revision.revision}，共 {shot_count} 个镜头。"
+            )
         except (ValueError, PermissionError) as e:
             return f"❌ 保存分镜失败：{e}"
 
@@ -438,9 +426,7 @@ async def start_generation(
     async with SessionLocal() as session:
         try:
             await _get_owned_project(session, project_id)
-            ok, reasons = await approval_service.check_generation_gate(
-                session, project_id, episode_id
-            )
+            ok, reasons = await approval_service.check_generation_gate(session, project_id, episode_id)
             if not ok:
                 return "❌ 生成 Gate 未通过：\n" + "\n".join(f"- {r}" for r in reasons)
             run = await _latest_run(session, project_id)
@@ -461,7 +447,9 @@ async def start_generation(
                         f"- {item.operation}（{item.step_node_key}）：{item.unit_count} × "
                         f"¥{item.unit_price} = ¥{item.subtotal}"
                     )
-                lines.append(f"合计约 ¥{quote.total}。请向用户确认费用后，再以 confirm_cost=True 调用本工具真正开始生成。")
+                lines.append(
+                    f"合计约 ¥{quote.total}。请向用户确认费用后，再以 confirm_cost=True 调用本工具真正开始生成。"
+                )
                 return "\n".join(lines)
 
             # P1-4：确认的必须是不可变报价——quote_id 绑定 + 过期/版本/input_hash 校验

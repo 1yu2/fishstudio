@@ -95,7 +95,8 @@ def _detect_schema_revision(inspector) -> str | None:
             return "0014"
         asset_columns = (
             {column["name"] for column in inspector.get_columns("asset_cards")}
-            if "asset_cards" in tables else set()
+            if "asset_cards" in tables
+            else set()
         )
         if "profile" in asset_columns:
             return "0013"
@@ -163,7 +164,9 @@ async def bootstrap_and_upgrade() -> None:
 
     # 老库：业务表已存在（可能来自更早的 create_all 或外部 dump），
     # stamp 到检测出的实际 revision 后再 upgrade head 补齐后续表。
-    logger.info(f"📦 检测到无 alembic_version 老库（实际 schema ≈ {detected}），stamp {detected} 后 upgrade head ...")
+    logger.info(
+        f"📦 检测到无 alembic_version 老库（实际 schema ≈ {detected}），stamp {detected} 后 upgrade head ..."
+    )
     await asyncio.to_thread(command.stamp, cfg, detected)
     await asyncio.to_thread(command.upgrade, cfg, "head")
     logger.info("✅ alembic stamp + upgrade head 完成")

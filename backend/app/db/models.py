@@ -81,6 +81,53 @@ class AuditLog(Base):
     )
 
 
+class ModelDeployment(Base):
+    """管理员配置的模型服务实例；密钥只保存引用，不保存明文。"""
+
+    __tablename__ = "model_deployments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    slug: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    driver: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    modality: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(2048), nullable=False, default="")
+    credential_ref: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    pricing: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ModelRoute(Base):
+    """业务用途到主 Deployment / 有序备用 Deployment 的最小绑定。"""
+
+    __tablename__ = "model_routes"
+
+    purpose: Mapped[str] = mapped_column(String(64), primary_key=True)
+    modality: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    primary_deployment: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    fallback_deployments: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 def _uuid_str() -> str:
     return str(uuid.uuid4())
 
@@ -115,9 +162,7 @@ class SeriesBibleRevision(Base):
     """不可变的整季故事设定版本。"""
 
     __tablename__ = "series_bible_revisions"
-    __table_args__ = (
-        UniqueConstraint("project_id", "revision", name="uq_series_bible_project_revision"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", "revision", name="uq_series_bible_project_revision"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
     project_id: Mapped[str] = mapped_column(
@@ -139,9 +184,7 @@ class StyleBibleRevision(Base):
     """不可变的整季视觉风格版本。"""
 
     __tablename__ = "style_bible_revisions"
-    __table_args__ = (
-        UniqueConstraint("project_id", "revision", name="uq_style_bible_project_revision"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", "revision", name="uq_style_bible_project_revision"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
     project_id: Mapped[str] = mapped_column(
@@ -370,7 +413,9 @@ class Shot(Base):
 class AssetCard(Base):
     __tablename__ = "asset_cards"
     __table_args__ = (
-        UniqueConstraint("project_id", "type", "name", "version", name="uq_asset_cards_project_type_name_version"),
+        UniqueConstraint(
+            "project_id", "type", "name", "version", name="uq_asset_cards_project_type_name_version"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
@@ -379,9 +424,7 @@ class AssetCard(Base):
         ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=True, index=True
     )
     # owner_user_id 语义：scope=personal 时归属用户；项目资产也可记录创建者
-    user_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     # character | style | scene | voice
     type: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -437,24 +480,36 @@ class ReferenceAnalysis(Base):
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
-    project_id: Mapped[str] = mapped_column(ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    parent_revision_id: Mapped[Optional[str]] = mapped_column(ForeignKey("reference_analyses.id", ondelete="SET NULL"), nullable=True)
+    parent_revision_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("reference_analyses.id", ondelete="SET NULL"), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", index=True)
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     segments: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    model_invocation_id: Mapped[Optional[str]] = mapped_column(ForeignKey("model_invocations.id", ondelete="SET NULL"), nullable=True)
+    model_invocation_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("model_invocations.id", ondelete="SET NULL"), nullable=True
+    )
     model_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     usage_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     estimated_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 6), nullable=True)
     source_uri: Mapped[str] = mapped_column(Text, nullable=False, default="")
     authorization: Mapped[str] = mapped_column(String(32), nullable=False, default="owned")
     usage_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="director_language_only")
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class ShotReference(Base):
@@ -462,21 +517,33 @@ class ShotReference(Base):
 
     __tablename__ = "shot_references"
     __table_args__ = (
-        UniqueConstraint("shot_id", "analysis_id", "segment_key", "reference_type", name="uq_shot_reference_slot"),
+        UniqueConstraint(
+            "shot_id", "analysis_id", "segment_key", "reference_type", name="uq_shot_reference_slot"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
-    project_id: Mapped[str] = mapped_column(ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    shot_id: Mapped[str] = mapped_column(ForeignKey("shots.id", ondelete="CASCADE"), nullable=False, index=True)
-    analysis_id: Mapped[str] = mapped_column(ForeignKey("reference_analyses.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    shot_id: Mapped[str] = mapped_column(
+        ForeignKey("shots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    analysis_id: Mapped[str] = mapped_column(
+        ForeignKey("reference_analyses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     analysis_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     segment_key: Mapped[str] = mapped_column(String(64), nullable=False)
     reference_type: Mapped[str] = mapped_column(String(32), nullable=False)
     segment_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     weight: Mapped[float] = mapped_column(Float, nullable=False, default=1)
     replace_subject: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class ArtifactCandidate(Base):
@@ -604,10 +671,18 @@ class QCReport(Base):
     __tablename__ = "qc_reports"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
-    project_id: Mapped[str] = mapped_column(ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    episode_id: Mapped[str] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True)
-    timeline_revision_id: Mapped[str] = mapped_column(ForeignKey("timeline_revisions.id", ondelete="CASCADE"), nullable=False)
-    render_artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    episode_id: Mapped[str] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    timeline_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("timeline_revisions.id", ondelete="CASCADE"), nullable=False
+    )
+    render_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     phase: Mapped[str] = mapped_column(String(32), nullable=False, default="final_qc")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
@@ -615,20 +690,36 @@ class QCReport(Base):
     semantic_checks: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     issues: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     repair_targets: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class Publication(Base):
     __tablename__ = "publications"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
-    project_id: Mapped[str] = mapped_column(ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    episode_id: Mapped[str] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True)
-    timeline_revision_id: Mapped[str] = mapped_column(ForeignKey("timeline_revisions.id", ondelete="CASCADE"), nullable=False)
-    render_artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False)
-    cover_artifact_id: Mapped[Optional[str]] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True)
-    qc_report_id: Mapped[str] = mapped_column(ForeignKey("qc_reports.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    episode_id: Mapped[str] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    timeline_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("timeline_revisions.id", ondelete="CASCADE"), nullable=False
+    )
+    render_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False
+    )
+    cover_artifact_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True
+    )
+    qc_report_id: Mapped[str] = mapped_column(
+        ForeignKey("qc_reports.id", ondelete="RESTRICT"), nullable=False
+    )
     platform: Mapped[str] = mapped_column(String(64), nullable=False, default="xiaohongshu")
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -637,22 +728,36 @@ class Publication(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
     external_post_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class PublishPackage(Base):
     __tablename__ = "publish_packages"
-    __table_args__ = (UniqueConstraint("publication_id", "version", name="uq_publish_packages_publication_version"),)
+    __table_args__ = (
+        UniqueConstraint("publication_id", "version", name="uq_publish_packages_publication_version"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
-    publication_id: Mapped[str] = mapped_column(ForeignKey("publications.id", ondelete="CASCADE"), nullable=False, index=True)
+    publication_id: Mapped[str] = mapped_column(
+        ForeignKey("publications.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    manifest_artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False)
+    manifest_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False
+    )
     package_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class AssetArtifactRef(Base):
@@ -662,9 +767,7 @@ class AssetArtifactRef(Base):
     asset_id: Mapped[str] = mapped_column(
         ForeignKey("asset_cards.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    artifact_id: Mapped[str] = mapped_column(
-        ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False
-    )
+    artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="reference")
 
 
@@ -675,9 +778,7 @@ class ShotAssetRef(Base):
     shot_id: Mapped[str] = mapped_column(
         ForeignKey("shots.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_cards.id", ondelete="CASCADE"), nullable=False
-    )
+    asset_id: Mapped[str] = mapped_column(ForeignKey("asset_cards.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="character")
     asset_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     reference_type: Mapped[str] = mapped_column(String(32), nullable=False, default="character")
@@ -722,9 +823,7 @@ class InvalidationEvent(Base):
     project_id: Mapped[str] = mapped_column(
         ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    idempotency_key: Mapped[str] = mapped_column(
-        String(255), nullable=False, unique=True, index=True
-    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
     source_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     source_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -815,9 +914,7 @@ class GenerationJob(Base):
     # step_attempt 创建时从 step.attempt 拷贝；logical_job_key 标记同一逻辑任务的多代重试；
     # superseded_by 在 job 级 retry 时回填新 job.id
     step_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    logical_job_key: Mapped[str] = mapped_column(
-        String(255), nullable=False, default="", index=True
-    )
+    logical_job_key: Mapped[str] = mapped_column(String(255), nullable=False, default="", index=True)
     superseded_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     error_code: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     error: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -840,16 +937,22 @@ class JobEvent(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     event: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     run_id: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
     step_id: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
-    job_id: Mapped[str] = mapped_column(ForeignKey("generation_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     entity_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
 
 
 class ProviderCircuit(Base):
@@ -864,7 +967,9 @@ class ProviderCircuit(Base):
     opened_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     probe_after: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class BenchmarkDataset(Base):
@@ -880,15 +985,21 @@ class BenchmarkDataset(Base):
     expected_constraints: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class EvalRun(Base):
     __tablename__ = "eval_runs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
-    dataset_id: Mapped[str] = mapped_column(ForeignKey("benchmark_datasets.id", ondelete="RESTRICT"), nullable=False, index=True)
-    project_id: Mapped[Optional[str]] = mapped_column(ForeignKey("series_projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    dataset_id: Mapped[str] = mapped_column(
+        ForeignKey("benchmark_datasets.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    project_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     provider: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     deployment: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     model: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -898,14 +1009,20 @@ class EvalRun(Base):
     failure_reasons: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     explanation: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class PriceTableEntry(Base):
     __tablename__ = "price_table_entries"
     __table_args__ = (
-        UniqueConstraint("version", "provider", "deployment", "model", "unit_type", name="uq_price_table_dimension"),
+        UniqueConstraint(
+            "version", "provider", "deployment", "model", "unit_type", name="uq_price_table_dimension"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
@@ -919,7 +1036,9 @@ class PriceTableEntry(Base):
     effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     effective_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     metadata_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class BudgetAlert(Base):
@@ -927,29 +1046,47 @@ class BudgetAlert(Base):
     __table_args__ = (UniqueConstraint("run_id", "threshold", name="uq_budget_alert_threshold"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
-    run_id: Mapped[str] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     threshold: Mapped[int] = mapped_column(Integer, nullable=False)
     utilization: Mapped[float] = mapped_column(Float, nullable=False)
     estimated_cost: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
     cost_limit: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class PublicationMetric(Base):
     __tablename__ = "publication_metrics"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid_str)
-    publication_id: Mapped[str] = mapped_column(ForeignKey("publications.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    episode_id: Mapped[str] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True)
-    artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False, index=True)
+    publication_id: Mapped[str] = mapped_column(
+        ForeignKey("publications.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    episode_id: Mapped[str] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     content_revisions: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     model_invocation_ids: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     platform: Mapped[str] = mapped_column(String(64), nullable=False)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    recorded_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    recorded_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class UsageEvent(Base):
@@ -1165,12 +1302,8 @@ class ArtifactFeedback(Base):
     step_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("workflow_steps.id", ondelete="SET NULL"), nullable=True
     )
-    artifact_id: Mapped[str] = mapped_column(
-        ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False
-    )
-    user_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     # selected | rejected | rated
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

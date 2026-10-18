@@ -22,7 +22,23 @@ def test_script_observer_marks_missing_hook_critical():
 
 
 def test_continuity_review_requires_director_trace_and_six_dimensions():
-    payload = {"episodes": [{"scenes": [{"number": 1, "shots": [{"number": 1, "director_intent_key": "missing", "continuity_constraints": {}}]}]}]}
+    payload = {
+        "episodes": [
+            {
+                "scenes": [
+                    {
+                        "number": 1,
+                        "shots": [
+                            {"number": 1, "director_intent_key": "missing", "continuity_constraints": {}}
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
     findings = deterministic_continuity_findings(payload, {"beat-1"})
-    assert {item["code"] for item in findings} == {"continuity.director_intent", "continuity.constraints_missing"}
+    assert {item["code"] for item in findings} == {
+        "continuity.director_intent",
+        "continuity.constraints_missing",
+    }
     ObserverFinding.model_validate(findings[0])

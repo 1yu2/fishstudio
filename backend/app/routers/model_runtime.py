@@ -1,53 +1,105 @@
-"""Model Runtime 管理面：脱敏目录与调用审计。"""
-from dataclasses import asdict
+"""Model Runtime 管理面：统一 Catalog、健康状态与调用审计。"""
+
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import require_admin
 from app.db.database import get_session
 from app.db.models import ModelInvocation, User
-from app.model_runtime import get_model_runtime
-from app.model_runtime.media import get_media_runtime
+from app.model_runtime.catalog import CatalogDeployment, get_catalog
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 @router.get("/model-runtime/deployments")
-async def list_deployments(admin: User = Depends(require_admin)):
-    runtime = get_model_runtime()
-    media = get_media_runtime()
-    media.video_router()  # 确保内置视频 Adapter 已完成注册。
-    chat = [
-        {
-            "name": item.name,
-            "provider": item.provider,
-            "model": item.model,
-            "modality": "chat",
-            "enabled": item.enabled,
-            "capabilities": asdict(item.capabilities),
-            "scores": {
-                "quality": item.quality_score,
-                "cost": item.cost_score,
-                "latency": item.latency_score,
-            },
-        }
-        for item in runtime.list_chat()
-    ]
-    media_items = [
-        {
-            "name": item.name,
-            "provider": item.name,
-            "model": "",
-            "modality": item.modality,
-            "enabled": bool(item.provider.is_available()) if hasattr(item.provider, "is_available") else True,
-            "mocked": item.mocked,
-        }
-        for item in media.list()
-    ]
-    return {"items": chat + media_items, "secret_fields_exposed": False}
+async def list_deployments(
+    session: AsyncSession = Depends(get_session), admin: User = Depends(require_admin)
+):
+    catalog = get_catalog()
+    try:
+        snapshot = await catalog.refresh(session)
+    except Exception:
+        snapshot = catalog.snapshot
+    return {
+        "items": [_catalog_dto(item) for item in snapshot.list()],
+        "catalog_revision": snapshot.catalog_revision,
+        "loaded_at": snapshot.loaded_at,
+        "last_reload_failure": _failure_dto(catalog.last_failure),
+        "secret_fields_exposed": False,
+    }
+
+
+def _catalog_dto(item: CatalogDeployment) -> dict:
+    available = getattr(item.instance, "is_available", None)
+    return {
+        "id": item.id,
+        "name": item.name,
+        "slug": item.slug,
+        "provider": item.driver,
+        "driver": item.driver,
+        "model": item.model,
+        "modality": item.modality,
+        "enabled": item.enabled,
+        "available": bool(available()) if available else item.enabled,
+        "priority": item.priority,
+        "revision": item.revision,
+        "capabilities": dict(item.capabilities),
+        "pricing": dict(item.pricing),
+    }
+
+
+def _failure_dto(failure) -> dict | None:
+    if failure is None:
+        return None
+    return {
+        "reason": failure.reason,
+        "attempted_revision": failure.attempted_revision,
+        "failed_at": failure.failed_at,
+    }
+
+
+@router.post("/model-runtime/reload")
+async def reload_catalog(
+    probe: bool = False,
+    session: AsyncSession = Depends(get_session),
+    admin: User = Depends(require_admin),
+):
+    try:
+        snapshot = await get_catalog().refresh(session, probe=probe)
+    except Exception as error:
+        raise HTTPException(status_code=409, detail=f"Catalog reload 失败: {error}") from error
+    return {
+        "catalog_revision": snapshot.catalog_revision,
+        "loaded_at": snapshot.loaded_at,
+        "deployment_count": len(snapshot.deployments),
+    }
+
+
+@router.get("/model-runtime/deployments/{deployment_name}/health")
+async def deployment_health(
+    deployment_name: str,
+    admin: User = Depends(require_admin),
+):
+    """主动探测媒体 Deployment；用于部署分层联调，不返回密钥。"""
+    item = get_catalog().snapshot.get(deployment_name)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Deployment 不存在")
+    try:
+        payload = await get_catalog().registry.probe(item.driver, item.instance)
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail={"deployment": deployment_name, "available": False, "error": str(error)},
+        )
+    return {
+        "deployment": deployment_name,
+        "available": True,
+        "active_probe": payload.get("active_probe", False),
+        "details": payload,
+    }
 
 
 @router.get("/model-runtime/invocations")

@@ -117,6 +117,10 @@ class ModelRuntime:
     def upsert_chat(self, deployment: ChatDeployment) -> None:
         self._deployments[deployment.name] = deployment
 
+    def replace_chat(self, deployments: list[ChatDeployment]) -> None:
+        """用完整 Catalog 原子替换 Chat 目录；已创建的模型实例不受影响。"""
+        self._deployments = {item.name: item for item in deployments}
+
     def list_chat(self) -> list[ChatDeployment]:
         return list(self._deployments.values())
 
@@ -392,4 +396,16 @@ def get_model_runtime() -> ModelRuntime:
     if _RUNTIME is None:
         _RUNTIME = ModelRuntime(persist_invocations=True)
         _register_defaults(_RUNTIME)
+        _RUNTIME.catalog_revision = "legacy-env"
+    from app.model_runtime.catalog import get_catalog
+
+    snapshot = get_catalog().snapshot
+    if snapshot.deployments and getattr(_RUNTIME, "catalog_revision", "") != snapshot.catalog_revision:
+        deployments = [
+            item.instance
+            for item in snapshot.list("chat")
+            if isinstance(item.instance, ChatDeployment) and item.enabled
+        ]
+        _RUNTIME.replace_chat(deployments)
+        _RUNTIME.catalog_revision = snapshot.catalog_revision
     return _RUNTIME

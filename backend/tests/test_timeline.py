@@ -139,7 +139,11 @@ def test_black_placeholder_video_generation(tmp_path):
     out = tmp_path / "black.mp4"
     args = [
         *tr.build_black_placeholder_args(1000, 720, 1280, 24),
-        "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
         str(out),
     ]
     tr._run_ffmpeg(args, timeout=60)
@@ -160,9 +164,7 @@ _TOOLS = "- example_tool: does work"
 
 
 def test_full_prompt_short_drama_skips_digital_and_understanding():
-    text = prompt_module.get_full_prompt(
-        tools_list_text=_TOOLS, project_type="short_drama"
-    )
+    text = prompt_module.get_full_prompt(tools_list_text=_TOOLS, project_type="short_drama")
     # short_drama 只注入 VIDEO + AUDIO
     assert prompt_module.VIDEO_PROMPT[:80] in text
     assert prompt_module.AUDIO_PROMPT[:80] in text

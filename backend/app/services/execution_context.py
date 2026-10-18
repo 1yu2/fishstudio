@@ -26,9 +26,7 @@ class ExecutionContext:
         return cls(**base)
 
 
-_context: ContextVar[ExecutionContext] = ContextVar(
-    "execution_context", default=ExecutionContext()
-)
+_context: ContextVar[ExecutionContext] = ContextVar("execution_context", default=ExecutionContext())
 
 
 def get_execution_context() -> ExecutionContext:

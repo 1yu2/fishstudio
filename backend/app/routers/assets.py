@@ -51,9 +51,16 @@ async def create_personal_asset(
         if body.profile:
             kwargs = {"profile_schema_version": body.profile_schema_version, "profile": body.profile}
         return await asset_service.create_asset_card(
-            session, None, user.id, type=body.type, name=body.name,
-            description=body.description, provider_meta=body.provider_meta,
-            tags=body.tags, scope="personal", **kwargs,
+            session,
+            None,
+            user.id,
+            type=body.type,
+            name=body.name,
+            description=body.description,
+            provider_meta=body.provider_meta,
+            tags=body.tags,
+            scope="personal",
+            **kwargs,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -114,17 +121,13 @@ async def copy_personal_asset_to_project(
     可复制（service 内 PermissionError）。
     """
     try:
-        project = await series_service.get_project(
-            session, body.project_id, user.id, is_admin=user.is_admin
-        )
+        project = await series_service.get_project(session, body.project_id, user.id, is_admin=user.is_admin)
     except PermissionError as e:
         raise _403(e)
     if project is None:
         raise HTTPException(status_code=404, detail="项目不存在")
     try:
-        return await asset_service.copy_personal_asset_to_project(
-            session, asset_id, body.project_id, user.id
-        )
+        return await asset_service.copy_personal_asset_to_project(session, asset_id, body.project_id, user.id)
     except PermissionError as e:
         raise _403(e)
     except ValueError as e:

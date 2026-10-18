@@ -57,6 +57,7 @@ def _resolve_image_provider_model() -> tuple[str, str]:
         model = "seedream-4.5"
         if isinstance(p, VolcanoImageProvider):
             from app.tools import volcano_image_generation as vig
+
             model = vig.VOLCANO_IMAGE_MODEL
         return p.name, model
     return "volcano_image", "seedream-4.5"
@@ -71,6 +72,7 @@ def _image_unit_price() -> Optional[Decimal]:
 
 class ShotRoutePlan(BaseModel):
     """R8.3：单个 Shot 的不可变路由计划（写入 CostQuoteItem，Planner 消费）。"""
+
     shot_id: str
     provider: str
     model: str
@@ -85,6 +87,7 @@ class ShotRoutePlan(BaseModel):
 
 class CostQuoteItem(BaseModel):
     """报价明细项（R8.3：含 shot 级 route_plans 供 Planner 消费）。"""
+
     step_node_key: str
     operation: str
     provider: str = ""
@@ -139,15 +142,20 @@ async def reserve_budget(session: AsyncSession, run_id: str, amount: Decimal) ->
     if run.cost_limit is not None and run.cost_limit > 0:
         utilization = float(run.estimated_cost / run.cost_limit)
         if utilization >= 0.8 and hasattr(session, "scalar") and hasattr(session, "add"):
-            existing = await session.scalar(select(BudgetAlert.id).where(
-                BudgetAlert.run_id == run.id, BudgetAlert.threshold == 80
-            ))
+            existing = await session.scalar(
+                select(BudgetAlert.id).where(BudgetAlert.run_id == run.id, BudgetAlert.threshold == 80)
+            )
             if not existing:
-                session.add(BudgetAlert(
-                    run_id=run.id, project_id=getattr(run, "project_id", None), threshold=80,
-                    utilization=utilization, estimated_cost=run.estimated_cost,
-                    cost_limit=run.cost_limit,
-                ))
+                session.add(
+                    BudgetAlert(
+                        run_id=run.id,
+                        project_id=getattr(run, "project_id", None),
+                        threshold=80,
+                        utilization=utilization,
+                        estimated_cost=run.estimated_cost,
+                        cost_limit=run.cost_limit,
+                    )
+                )
     await session.flush()
     return True
 
@@ -157,11 +165,17 @@ def _video_unit_price(policy: dict[str, Any]) -> tuple[Decimal, str, str, str]:
     resolution = policy.get("resolution", "768P")
     provider_policy = policy.get("provider_policy", "balanced")
     routing = resolve_video_routing(
-        provider_policy, resolution, duration=6,
+        provider_policy,
+        resolution,
+        duration=6,
         explicit_provider=policy.get("explicit_provider", ""),
     )
     price = routing["estimated_total_cost"]
-    per_second = (price / routing["billable_duration"]) if (price and routing["billable_duration"]) else VIDEO_FALLBACK_PRICE_PER_SECOND
+    per_second = (
+        (price / routing["billable_duration"])
+        if (price and routing["billable_duration"])
+        else VIDEO_FALLBACK_PRICE_PER_SECOND
+    )
     return (
         per_second,
         routing["provider"],
@@ -230,8 +244,11 @@ async def _estimate_step_item(
     operation = _STEP_OPERATION[step.node_type]
     if step.node_type == "episode.render":
         return CostQuoteItem(
-            step_node_key=step.node_key, operation=operation,
-            unit_count=1, unit_price="0", subtotal="0",
+            step_node_key=step.node_key,
+            operation=operation,
+            unit_count=1,
+            unit_price="0",
+            subtotal="0",
         )
 
     shots = await job_planner._current_revision_shots(session, step.entity_id)
@@ -249,24 +266,29 @@ async def _estimate_step_item(
             )
             cost = plan["estimated_total_cost"]
             total += cost if cost is not None else VIDEO_FALLBACK_PRICE_PER_SECOND * dur
-            plans.append(ShotRoutePlan(
-                shot_id=s.id,
-                provider=plan["provider"],
-                model=plan["model"],
-                resolution=plan["resolution"],
-                protocol=plan.get("protocol", ""),
-                requested_duration=dur,
-                billable_duration=plan["billable_duration"],
-                estimated_total_cost=str(cost) if cost is not None else "0",
-                price_snapshot=plan["price_snapshot"],
-                price_table_version=plan["price_table_version"],
-            ))
+            plans.append(
+                ShotRoutePlan(
+                    shot_id=s.id,
+                    provider=plan["provider"],
+                    model=plan["model"],
+                    resolution=plan["resolution"],
+                    protocol=plan.get("protocol", ""),
+                    requested_duration=dur,
+                    billable_duration=plan["billable_duration"],
+                    estimated_total_cost=str(cost) if cost is not None else "0",
+                    price_snapshot=plan["price_snapshot"],
+                    price_table_version=plan["price_table_version"],
+                )
+            )
         first = plans[0] if plans else None
         return CostQuoteItem(
-            step_node_key=step.node_key, operation=operation,
-            provider=first.provider if first else "", model=first.model if first else "",
+            step_node_key=step.node_key,
+            operation=operation,
+            provider=first.provider if first else "",
+            model=first.model if first else "",
             resolution=first.resolution if first else "",
-            unit_count=len(shots), unit_price=str(total / len(shots)) if shots else "0",
+            unit_count=len(shots),
+            unit_price=str(total / len(shots)) if shots else "0",
             subtotal=str(total),
             route_plans=plans,
         )
@@ -277,8 +299,10 @@ async def _estimate_step_item(
         prov, model = _resolve_image_provider_model()
         subtotal = unit_price * count if unit_price is not None else None
         return CostQuoteItem(
-            step_node_key=step.node_key, operation=operation,
-            provider=prov, model=model,
+            step_node_key=step.node_key,
+            operation=operation,
+            provider=prov,
+            model=model,
             candidate_count=candidate_count,
             unit_count=count,
             unit_price=str(unit_price) if unit_price is not None else "unavailable",
@@ -288,8 +312,10 @@ async def _estimate_step_item(
         seconds = sum(_shot_tts_seconds(s) for s in shots)
         subtotal = (TTS_PRICE_PER_SECOND * seconds).quantize(Decimal("0.000001"))
         return CostQuoteItem(
-            step_node_key=step.node_key, operation=operation,
-            unit_count=seconds, unit_price=str(TTS_PRICE_PER_SECOND),
+            step_node_key=step.node_key,
+            operation=operation,
+            unit_count=seconds,
+            unit_price=str(TTS_PRICE_PER_SECOND),
             subtotal=str(subtotal),
         )
     return None
@@ -375,9 +401,7 @@ def _routing_config_fingerprint() -> dict:
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-    )
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -410,9 +434,7 @@ async def estimate_run_cost(session: AsyncSession, run: WorkflowRun) -> CostQuot
             total += Decimal(item.subtotal)
     # 明细只计未完成 steps；input_hash 与 validate 一致基于全量 steps，
     # 保证 quote 在部分 step 完成后仍可通过复核（仅分镜/参数变化才失效）。
-    payload, revision_ids = await _compute_input_payload(
-        session, run, await _run_all_job_steps(session, run)
-    )
+    payload, revision_ids = await _compute_input_payload(session, run, await _run_all_job_steps(session, run))
     now = datetime.now(timezone.utc)
     return CostQuote(
         quote_id=str(uuid.uuid4()),
@@ -440,9 +462,7 @@ async def create_cost_quote(session: AsyncSession, run_id: str) -> CostQuote:
     return quote
 
 
-async def validate_cost_quote(
-    session: AsyncSession, run: WorkflowRun, quote_id: str
-) -> tuple[bool, str]:
+async def validate_cost_quote(session: AsyncSession, run: WorkflowRun, quote_id: str) -> tuple[bool, str]:
     """确认费用/展开 job 前校验 quote（复审 0.6）：
 
     - quote 存在；
@@ -460,8 +480,7 @@ async def validate_cost_quote(
         return False, "缺少 quote_id：确认费用必须绑定具体报价（先获取 cost-quote）"
     if quote.get("quote_id") != quote_id:
         return False, (
-            f"quote_id 不匹配（当前最新报价 {quote.get('quote_id')}），"
-            "报价已被刷新，请使用最新 quote_id 确认"
+            f"quote_id 不匹配（当前最新报价 {quote.get('quote_id')}），报价已被刷新，请使用最新 quote_id 确认"
         )
     if quote.get("total") == "unavailable":
         return False, "报价包含 unavailable 价格，禁止按零成本确认或创建收费任务"
@@ -483,9 +502,7 @@ async def validate_cost_quote(
         )
     current_hash = await compute_input_hash(session, run)
     if quote.get("input_hash") != current_hash:
-        return False, (
-            "报价后分镜/时长/策略参数已变化，报价失效，请重新生成 cost-quote"
-        )
+        return False, ("报价后分镜/时长/策略参数已变化，报价失效，请重新生成 cost-quote")
     return True, ""
 
 

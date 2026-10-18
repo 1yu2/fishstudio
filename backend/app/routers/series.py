@@ -83,9 +83,7 @@ def _403(e: PermissionError) -> HTTPException:
 
 async def _owned_project(session: AsyncSession, project_id: str, user: User):
     try:
-        project = await series_service.get_project(
-            session, project_id, user.id, is_admin=user.is_admin
-        )
+        project = await series_service.get_project(session, project_id, user.id, is_admin=user.is_admin)
     except PermissionError as e:
         raise _403(e)
     if project is None:
@@ -109,18 +107,22 @@ async def _complete_episode_creative_steps(
 ) -> None:
     """Studio 与 Agent 共用的创作节点推进语义。"""
     steps = (
-        await session.execute(
-            select(WorkflowStep)
-            .join(WorkflowRun, WorkflowStep.run_id == WorkflowRun.id)
-            .where(
-                WorkflowRun.project_id == project_id,
-                WorkflowRun.status.notin_({"succeeded", "failed", "canceled"}),
-                WorkflowStep.entity_id == episode_id,
-                WorkflowStep.node_type == node_type,
-                WorkflowStep.status.in_({"draft", "ready", "waiting_approval"}),
+        (
+            await session.execute(
+                select(WorkflowStep)
+                .join(WorkflowRun, WorkflowStep.run_id == WorkflowRun.id)
+                .where(
+                    WorkflowRun.project_id == project_id,
+                    WorkflowRun.status.notin_({"succeeded", "failed", "canceled"}),
+                    WorkflowStep.entity_id == episode_id,
+                    WorkflowStep.node_type == node_type,
+                    WorkflowStep.status.in_({"draft", "ready", "waiting_approval"}),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for step in steps:
         await workflow_service.complete_step(session, step.id, output_snapshot)
 
@@ -162,9 +164,7 @@ async def list_projects(
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    return await series_service.list_projects(
-        session, user.id, project_type=project_type, status=status
-    )
+    return await series_service.list_projects(session, user.id, project_type=project_type, status=status)
 
 
 @router.get("/series/projects/{project_id}")
@@ -279,17 +279,48 @@ async def get_workspace_summary(
 ):
     project = await _owned_project(session, project_id, user)
     latest_run = await session.scalar(
-        select(WorkflowRun).where(WorkflowRun.project_id == project.id).order_by(WorkflowRun.created_at.desc()).limit(1)
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project.id)
+        .order_by(WorkflowRun.created_at.desc())
+        .limit(1)
     )
-    steps = [] if latest_run is None else list((await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == latest_run.id))).scalars())
-    jobs = list((await session.execute(select(GenerationJob).where(GenerationJob.project_id == project.id))).scalars())
-    qc_rows = list((await session.execute(select(QCReport).where(QCReport.project_id == project.id))).scalars())
-    invalidations = list((await session.execute(select(InvalidationEvent).where(InvalidationEvent.project_id == project.id))).scalars())
-    usage_rows = list((await session.execute(select(UsageEvent).where(UsageEvent.project_id == project.id))).scalars())
-    spent = sum(float(row.actual_cost if row.actual_cost is not None else row.estimated_cost or 0) for row in usage_rows)
+    steps = (
+        []
+        if latest_run is None
+        else list(
+            (
+                await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == latest_run.id))
+            ).scalars()
+        )
+    )
+    jobs = list(
+        (await session.execute(select(GenerationJob).where(GenerationJob.project_id == project.id))).scalars()
+    )
+    qc_rows = list(
+        (await session.execute(select(QCReport).where(QCReport.project_id == project.id))).scalars()
+    )
+    invalidations = list(
+        (
+            await session.execute(select(InvalidationEvent).where(InvalidationEvent.project_id == project.id))
+        ).scalars()
+    )
+    usage_rows = list(
+        (await session.execute(select(UsageEvent).where(UsageEvent.project_id == project.id))).scalars()
+    )
+    spent = sum(
+        float(row.actual_cost if row.actual_cost is not None else row.estimated_cost or 0)
+        for row in usage_rows
+    )
     stale_count = sum(len(row.affected_entities or []) for row in invalidations)
     completed = sum(step.status in {"succeeded", "skipped"} for step in steps)
-    stage = next((step.node_type for step in steps if step.status in {"ready", "queued", "running", "waiting_approval", "failed"}), project.status)
+    stage = next(
+        (
+            step.node_type
+            for step in steps
+            if step.status in {"ready", "queued", "running", "waiting_approval", "failed"}
+        ),
+        project.status,
+    )
     return {
         "project_id": project.id,
         "workspace_mode": (project.settings or {}).get("workspace_mode", "professional"),
@@ -462,12 +493,16 @@ async def list_invalidation_events(
 ):
     await _owned_project(session, project_id, user)
     rows = (
-        await session.execute(
-            select(InvalidationEvent)
-            .where(InvalidationEvent.project_id == project_id)
-            .order_by(InvalidationEvent.created_at.desc())
+        (
+            await session.execute(
+                select(InvalidationEvent)
+                .where(InvalidationEvent.project_id == project_id)
+                .order_by(InvalidationEvent.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [
         {
             "id": row.id,
@@ -569,16 +604,31 @@ async def get_current_script_revision(
 
 
 @router.post("/series/episodes/{episode_id}/director-plans", response_model=DirectorPlanOut)
-async def create_director_plan(episode_id: str, body: DirectorPlanCreate, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
+async def create_director_plan(
+    episode_id: str,
+    body: DirectorPlanCreate,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     episode, _ = await _owned_episode_project(session, episode_id, user)
     try:
         row = await director_service.create_plan(
-            session, episode.id, based_on_script_revision_id=body.based_on_script_revision_id,
-            payload=body.payload, asset_version_snapshot=body.asset_version_snapshot,
-            platform_constraints=body.platform_constraints, source_type=body.source_type,
+            session,
+            episode.id,
+            based_on_script_revision_id=body.based_on_script_revision_id,
+            payload=body.payload,
+            asset_version_snapshot=body.asset_version_snapshot,
+            platform_constraints=body.platform_constraints,
+            source_type=body.source_type,
             created_by=str(user.id),
         )
-        await _complete_episode_creative_steps(session, episode.project_id, episode.id, "director.plan.generate", {"director_plan_revision_id": row.id, "revision": row.revision})
+        await _complete_episode_creative_steps(
+            session,
+            episode.project_id,
+            episode.id,
+            "director.plan.generate",
+            {"director_plan_revision_id": row.id, "revision": row.revision},
+        )
         await session.commit()
         await session.refresh(row)
         return row
@@ -587,13 +637,20 @@ async def create_director_plan(episode_id: str, body: DirectorPlanCreate, sessio
 
 
 @router.get("/series/episodes/{episode_id}/director-plans", response_model=list[DirectorPlanOut])
-async def list_director_plans(episode_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
+async def list_director_plans(
+    episode_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)
+):
     await _owned_episode_project(session, episode_id, user)
     return await director_service.list_plans(session, episode_id)
 
 
 @router.post("/series/episodes/{episode_id}/observer-reviews", response_model=ObserverReviewOut)
-async def create_observer_review(episode_id: str, body: ObserverReviewCreate, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
+async def create_observer_review(
+    episode_id: str,
+    body: ObserverReviewCreate,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     episode, _ = await _owned_episode_project(session, episode_id, user)
     deterministic = [item.model_dump(mode="json") for item in body.deterministic_findings]
     if body.target_type == "script":
@@ -602,24 +659,49 @@ async def create_observer_review(episode_id: str, body: ObserverReviewCreate, se
             deterministic += director_service.deterministic_script_findings(target.structured_payload)
     elif body.target_type == "storyboard":
         target = await session.get(StoryboardRevision, body.target_id)
-        plan = (await session.execute(select(DirectorPlanRevision).where(DirectorPlanRevision.episode_id == episode_id).order_by(DirectorPlanRevision.revision.desc()).limit(1))).scalars().first()
+        plan = (
+            (
+                await session.execute(
+                    select(DirectorPlanRevision)
+                    .where(DirectorPlanRevision.episode_id == episode_id)
+                    .order_by(DirectorPlanRevision.revision.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
         intent_keys = {str(item.get("key")) for item in ((plan.payload if plan else {}).get("intents") or [])}
         if target is not None:
             deterministic += director_service.deterministic_continuity_findings(target.payload, intent_keys)
     try:
         row = await director_service.create_review(
-            session, episode, review_type=body.review_type, target_type=body.target_type,
-            target_id=body.target_id, target_revision=body.target_revision, score=body.score,
+            session,
+            episode,
+            review_type=body.review_type,
+            target_type=body.target_type,
+            target_id=body.target_id,
+            target_revision=body.target_revision,
+            score=body.score,
             deterministic_findings=deterministic,
             specialist_findings=[item.model_dump(mode="json") for item in body.specialist_findings],
             llm_findings=[item.model_dump(mode="json") for item in body.llm_findings],
-            summary=body.summary, model_invocation_id=body.model_invocation_id,
+            summary=body.summary,
+            model_invocation_id=body.model_invocation_id,
             review_scope=body.review_scope,
             created_by=str(user.id),
         )
         if not row.blocking:
-            node_type = "episode.script.review" if body.target_type == "script" else "storyboard.continuity.check"
-            await _complete_episode_creative_steps(session, episode.project_id, episode.id, node_type, {"observer_review_id": row.id, "score": row.score})
+            node_type = (
+                "episode.script.review" if body.target_type == "script" else "storyboard.continuity.check"
+            )
+            await _complete_episode_creative_steps(
+                session,
+                episode.project_id,
+                episode.id,
+                node_type,
+                {"observer_review_id": row.id, "score": row.score},
+            )
         await session.commit()
         await session.refresh(row)
         return row
@@ -628,27 +710,45 @@ async def create_observer_review(episode_id: str, body: ObserverReviewCreate, se
 
 
 @router.get("/series/episodes/{episode_id}/observer-reviews", response_model=list[ObserverReviewOut])
-async def list_observer_reviews(episode_id: str, review_type: Optional[str] = None, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
+async def list_observer_reviews(
+    episode_id: str,
+    review_type: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     await _owned_episode_project(session, episode_id, user)
     rows = await director_service.list_reviews(session, episode_id, review_type)
     invocation_ids = [row.model_invocation_id for row in rows if row.model_invocation_id]
     costs = {}
     if invocation_ids:
-        costs = dict((await session.execute(
-            select(UsageEvent.invocation_id, func.sum(UsageEvent.actual_cost))
-            .where(UsageEvent.invocation_id.in_(invocation_ids))
-            .group_by(UsageEvent.invocation_id)
-        )).all())
+        costs = dict(
+            (
+                await session.execute(
+                    select(UsageEvent.invocation_id, func.sum(UsageEvent.actual_cost))
+                    .where(UsageEvent.invocation_id.in_(invocation_ids))
+                    .group_by(UsageEvent.invocation_id)
+                )
+            ).all()
+        )
     return [
         ObserverReviewOut.model_validate(row).model_copy(
-            update={"model_cost_cny": float(costs[row.model_invocation_id]) if row.model_invocation_id in costs and costs[row.model_invocation_id] is not None else None}
+            update={
+                "model_cost_cny": float(costs[row.model_invocation_id])
+                if row.model_invocation_id in costs and costs[row.model_invocation_id] is not None
+                else None
+            }
         )
         for row in rows
     ]
 
 
 @router.post("/series/episodes/{episode_id}/observer-reviews/run", response_model=ObserverReviewOut)
-async def run_observer_review(episode_id: str, body: ObserverRunRequest, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
+async def run_observer_review(
+    episode_id: str,
+    body: ObserverRunRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     episode, _ = await _owned_episode_project(session, episode_id, user)
     if body.target_type == "script":
         target = await session.get(ScriptRevision, body.target_id)
@@ -657,7 +757,18 @@ async def run_observer_review(episode_id: str, body: ObserverRunRequest, session
     elif body.target_type == "storyboard":
         target = await session.get(StoryboardRevision, body.target_id)
         target_payload = target.payload if target else None
-        plan = (await session.execute(select(DirectorPlanRevision).where(DirectorPlanRevision.episode_id == episode_id).order_by(DirectorPlanRevision.revision.desc()).limit(1))).scalars().first()
+        plan = (
+            (
+                await session.execute(
+                    select(DirectorPlanRevision)
+                    .where(DirectorPlanRevision.episode_id == episode_id)
+                    .order_by(DirectorPlanRevision.revision.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
         intent_keys = {str(item.get("key")) for item in ((plan.payload if plan else {}).get("intents") or [])}
         deterministic = director_service.deterministic_continuity_findings(target_payload or {}, intent_keys)
     else:
@@ -665,31 +776,60 @@ async def run_observer_review(episode_id: str, body: ObserverRunRequest, session
     if target is None or target.episode_id != episode_id or target.revision != body.target_revision:
         raise HTTPException(status_code=400, detail="reviewed revision 不存在或不匹配")
     node_type = "episode.script.review" if body.target_type == "script" else "storyboard.continuity.check"
-    step = (await session.execute(
-        select(WorkflowStep).join(WorkflowRun, WorkflowStep.run_id == WorkflowRun.id).where(
-            WorkflowRun.project_id == episode.project_id,
-            WorkflowStep.entity_id == episode_id,
-            WorkflowStep.node_type == node_type,
-        ).order_by(WorkflowStep.created_at.desc()).limit(1)
-    )).scalars().first()
+    step = (
+        (
+            await session.execute(
+                select(WorkflowStep)
+                .join(WorkflowRun, WorkflowStep.run_id == WorkflowRun.id)
+                .where(
+                    WorkflowRun.project_id == episode.project_id,
+                    WorkflowStep.entity_id == episode_id,
+                    WorkflowStep.node_type == node_type,
+                )
+                .order_by(WorkflowStep.created_at.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
     try:
         score, summary, llm_findings, invocation_id = await observer_service.run_review(
-            project_id=episode.project_id, episode_id=episode_id,
-            workflow_step_id=step.id if step else None, review_type=body.review_type,
-            target_type=body.target_type, target_revision=body.target_revision,
-            target_payload=target_payload, issue_codes=body.issue_codes,
-            categories=body.categories, prompt_version=body.prompt_version,
+            project_id=episode.project_id,
+            episode_id=episode_id,
+            workflow_step_id=step.id if step else None,
+            review_type=body.review_type,
+            target_type=body.target_type,
+            target_revision=body.target_revision,
+            target_payload=target_payload,
+            issue_codes=body.issue_codes,
+            categories=body.categories,
+            prompt_version=body.prompt_version,
         )
         row = await director_service.create_review(
-            session, episode, review_type=body.review_type, target_type=body.target_type,
-            target_id=body.target_id, target_revision=body.target_revision, score=score,
-            deterministic_findings=deterministic, specialist_findings=[], llm_findings=llm_findings,
-            summary=summary, model_invocation_id=invocation_id,
+            session,
+            episode,
+            review_type=body.review_type,
+            target_type=body.target_type,
+            target_id=body.target_id,
+            target_revision=body.target_revision,
+            score=score,
+            deterministic_findings=deterministic,
+            specialist_findings=[],
+            llm_findings=llm_findings,
+            summary=summary,
+            model_invocation_id=invocation_id,
             review_scope={"issue_codes": body.issue_codes, "categories": body.categories},
             created_by="observer:model",
         )
         if not row.blocking:
-            await _complete_episode_creative_steps(session, episode.project_id, episode.id, node_type, {"observer_review_id": row.id, "score": row.score, "model_invocation_id": invocation_id})
+            await _complete_episode_creative_steps(
+                session,
+                episode.project_id,
+                episode.id,
+                node_type,
+                {"observer_review_id": row.id, "score": row.score, "model_invocation_id": invocation_id},
+            )
         await session.commit()
         await session.refresh(row)
         return row
@@ -710,9 +850,7 @@ async def get_storyboard(
     user: User = Depends(get_current_user),
 ):
     project = await _owned_project(session, project_id, user)
-    return await storyboard_service.list_episodes_with_storyboard(
-        session, project.id, episode_id=episode_id
-    )
+    return await storyboard_service.list_episodes_with_storyboard(session, project.id, episode_id=episode_id)
 
 
 class StoryboardSaveRequest(BaseModel):
@@ -833,11 +971,17 @@ class PublishPackageRequest(BaseModel):
 
 def _timeline_out(row: TimelineRevision) -> dict[str, Any]:
     return {
-        "id": row.id, "project_id": row.project_id, "episode_id": row.episode_id,
-        "revision": row.revision, "parent_revision_id": row.parent_revision_id,
-        "storyboard_revision_id": row.storyboard_revision_id, "status": row.status,
-        "schema_version": row.schema_version, "spec": row.spec,
-        "content_hash": row.content_hash, "created_by": row.created_by,
+        "id": row.id,
+        "project_id": row.project_id,
+        "episode_id": row.episode_id,
+        "revision": row.revision,
+        "parent_revision_id": row.parent_revision_id,
+        "storyboard_revision_id": row.storyboard_revision_id,
+        "status": row.status,
+        "schema_version": row.schema_version,
+        "spec": row.spec,
+        "content_hash": row.content_hash,
+        "created_by": row.created_by,
         "approved_by": row.approved_by,
         "approved_at": row.approved_at.isoformat() if row.approved_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -846,24 +990,36 @@ def _timeline_out(row: TimelineRevision) -> dict[str, Any]:
 
 def _qc_out(row: QCReport) -> dict[str, Any]:
     return {
-        "id": row.id, "episode_id": row.episode_id,
+        "id": row.id,
+        "episode_id": row.episode_id,
         "timeline_revision_id": row.timeline_revision_id,
-        "render_artifact_id": row.render_artifact_id, "phase": row.phase,
-        "status": row.status, "score": row.score,
-        "technical_checks": row.technical_checks, "semantic_checks": row.semantic_checks,
-        "issues": row.issues, "repair_targets": row.repair_targets,
+        "render_artifact_id": row.render_artifact_id,
+        "phase": row.phase,
+        "status": row.status,
+        "score": row.score,
+        "technical_checks": row.technical_checks,
+        "semantic_checks": row.semantic_checks,
+        "issues": row.issues,
+        "repair_targets": row.repair_targets,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
 
 def _publication_out(row: Publication, package: Optional[PublishPackage] = None) -> dict[str, Any]:
     return {
-        "id": row.id, "project_id": row.project_id, "episode_id": row.episode_id,
+        "id": row.id,
+        "project_id": row.project_id,
+        "episode_id": row.episode_id,
         "timeline_revision_id": row.timeline_revision_id,
-        "render_artifact_id": row.render_artifact_id, "cover_artifact_id": row.cover_artifact_id,
-        "qc_report_id": row.qc_report_id, "platform": row.platform,
-        "title": row.title, "description": row.description, "tags": row.tags,
-        "specifications": row.specifications, "status": row.status,
+        "render_artifact_id": row.render_artifact_id,
+        "cover_artifact_id": row.cover_artifact_id,
+        "qc_report_id": row.qc_report_id,
+        "platform": row.platform,
+        "title": row.title,
+        "description": row.description,
+        "tags": row.tags,
+        "specifications": row.specifications,
+        "status": row.status,
         "external_post_id": row.external_post_id,
         "package_id": package.id if package else None,
         "manifest_artifact_id": package.manifest_artifact_id if package else None,
@@ -872,11 +1028,17 @@ def _publication_out(row: Publication, package: Optional[PublishPackage] = None)
 
 def _candidate_out(candidate: ArtifactCandidate) -> dict[str, Any]:
     return {
-        "id": candidate.id, "project_id": candidate.project_id, "shot_id": candidate.shot_id,
-        "artifact_id": candidate.artifact_id, "job_id": candidate.job_id,
-        "candidate_index": candidate.candidate_index, "status": candidate.status,
-        "score": candidate.score, "qa_summary": candidate.qa_summary,
-        "qa_findings": candidate.qa_findings, "rejection_reason": candidate.rejection_reason,
+        "id": candidate.id,
+        "project_id": candidate.project_id,
+        "shot_id": candidate.shot_id,
+        "artifact_id": candidate.artifact_id,
+        "job_id": candidate.job_id,
+        "candidate_index": candidate.candidate_index,
+        "status": candidate.status,
+        "score": candidate.score,
+        "qa_summary": candidate.qa_summary,
+        "qa_findings": candidate.qa_findings,
+        "rejection_reason": candidate.rejection_reason,
         "evaluated_by": candidate.evaluated_by,
         "evaluated_at": candidate.evaluated_at.isoformat() if candidate.evaluated_at else None,
         "selected_by": candidate.selected_by,
@@ -912,8 +1074,11 @@ async def list_shot_candidates(
 
 @router.post("/series/shots/{shot_id}/candidates/{candidate_id}/evaluate")
 async def evaluate_shot_candidate(
-    shot_id: str, candidate_id: str, body: CandidateEvaluateRequest,
-    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    shot_id: str,
+    candidate_id: str,
+    body: CandidateEvaluateRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     candidate = await _owned_candidate(session, shot_id, candidate_id, user)
     try:
@@ -928,7 +1093,10 @@ async def evaluate_shot_candidate(
 
 @router.post("/series/shots/{shot_id}/candidates/{candidate_id}/promote")
 async def promote_shot_candidate(
-    shot_id: str, candidate_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)
+    shot_id: str,
+    candidate_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     candidate = await _owned_candidate(session, shot_id, candidate_id, user)
     try:
@@ -943,12 +1111,17 @@ async def promote_shot_candidate(
 
 @router.post("/series/shots/{shot_id}/candidates/{candidate_id}/reject")
 async def reject_shot_candidate(
-    shot_id: str, candidate_id: str, body: CandidateRejectRequest,
-    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    shot_id: str,
+    candidate_id: str,
+    body: CandidateRejectRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     candidate = await _owned_candidate(session, shot_id, candidate_id, user)
     try:
-        candidate = await candidate_service.reject_candidate(session, candidate, reason=body.reason, user_id=user.id)
+        candidate = await candidate_service.reject_candidate(
+            session, candidate, reason=body.reason, user_id=user.id
+        )
         await session.commit()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -957,14 +1130,21 @@ async def reject_shot_candidate(
 
 @router.post("/series/shots/{shot_id}/candidates/{candidate_id}/regenerate")
 async def regenerate_shot_candidate(
-    shot_id: str, candidate_id: str, body: CandidateRegenerateRequest,
-    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    shot_id: str,
+    candidate_id: str,
+    body: CandidateRegenerateRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     candidate = await _owned_candidate(session, shot_id, candidate_id, user)
     try:
         job = await candidate_service.create_regeneration_job(
-            session, candidate=candidate, reason=body.reason, instruction=body.instruction,
-            preserve_fields=body.preserve_fields, replace_fields=body.replace_fields,
+            session,
+            candidate=candidate,
+            reason=body.reason,
+            instruction=body.instruction,
+            preserve_fields=body.preserve_fields,
+            replace_fields=body.replace_fields,
             requested_by=user.id,
             confirmed_quote_id=body.confirmed_quote_id,
         )
@@ -976,29 +1156,40 @@ async def regenerate_shot_candidate(
 
 @router.post("/series/shots/{shot_id}/candidates/{candidate_id}/regeneration-quote")
 async def quote_shot_candidate_regeneration(
-    shot_id: str, candidate_id: str, body: CandidateRegenerateRequest,
-    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    shot_id: str,
+    candidate_id: str,
+    body: CandidateRegenerateRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     candidate = await _owned_candidate(session, shot_id, candidate_id, user)
     try:
         quote = await candidate_service.quote_regeneration(
-            session, candidate=candidate, reason=body.reason, instruction=body.instruction,
-            preserve_fields=body.preserve_fields, replace_fields=body.replace_fields,
+            session,
+            candidate=candidate,
+            reason=body.reason,
+            instruction=body.instruction,
+            preserve_fields=body.preserve_fields,
+            replace_fields=body.replace_fields,
             requested_by=user.id,
         )
         await session.commit()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {
-        "quote_id": quote.quote_id, "price": str(quote.quoted_cost or 0),
-        "currency": quote.currency, "price_table_version": quote.price_table_version,
+        "quote_id": quote.quote_id,
+        "price": str(quote.quoted_cost or 0),
+        "currency": quote.currency,
+        "price_table_version": quote.price_table_version,
         "expires_at": quote.quote_expires_at.isoformat() if quote.quote_expires_at else None,
     }
 
 
 @router.get("/series/episodes/{episode_id}/timeline-revisions")
 async def list_timeline_revisions(
-    episode_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    episode_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     await _owned_episode_project(session, episode_id, user)
     return [_timeline_out(row) for row in await timeline_service.list_revisions(session, episode_id)]
@@ -1006,7 +1197,9 @@ async def list_timeline_revisions(
 
 @router.post("/series/episodes/{episode_id}/timeline-revisions/plan")
 async def plan_timeline_revision(
-    episode_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    episode_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     _, project = await _owned_episode_project(session, episode_id, user)
     try:
@@ -1022,14 +1215,20 @@ async def plan_timeline_revision(
 
 @router.post("/series/episodes/{episode_id}/timeline-revisions")
 async def create_timeline_revision(
-    episode_id: str, body: TimelineRevisionCreateRequest,
-    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    episode_id: str,
+    body: TimelineRevisionCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     _, project = await _owned_episode_project(session, episode_id, user)
     try:
         row = await timeline_service.create_revision(
-            session, project_id=project.id, episode_id=episode_id, spec=body.spec,
-            created_by=user.id, parent_revision_id=body.parent_revision_id,
+            session,
+            project_id=project.id,
+            episode_id=episode_id,
+            spec=body.spec,
+            created_by=user.id,
+            parent_revision_id=body.parent_revision_id,
             storyboard_revision_id=body.storyboard_revision_id,
         )
         await session.commit()
@@ -1043,7 +1242,9 @@ async def create_timeline_revision(
 
 @router.post("/series/episodes/{episode_id}/timeline-revisions/{revision_id}/approve")
 async def approve_timeline_revision(
-    episode_id: str, revision_id: str, session: AsyncSession = Depends(get_session),
+    episode_id: str,
+    revision_id: str,
+    session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
     await _owned_episode_project(session, episode_id, user)
@@ -1052,9 +1253,15 @@ async def approve_timeline_revision(
         raise HTTPException(status_code=404, detail="Timeline revision 不存在")
     row = await timeline_service.approve_revision(session, row, user_id=user.id)
     await dependency_invalidation_service.apply_invalidation(
-        session, project_id=row.project_id, source_type="timeline", source_id=row.id,
-        changed_fields=["spec"], user_id=user.id, is_admin=user.is_admin,
-        reason="timeline_approved", change_token=row.content_hash,
+        session,
+        project_id=row.project_id,
+        source_type="timeline",
+        source_id=row.id,
+        changed_fields=["spec"],
+        user_id=user.id,
+        is_admin=user.is_admin,
+        reason="timeline_approved",
+        change_token=row.content_hash,
     )
     await _complete_episode_creative_steps(
         session, row.project_id, episode_id, "timeline.plan", {"timeline_revision_id": row.id}
@@ -1065,7 +1272,9 @@ async def approve_timeline_revision(
 
 @router.post("/series/episodes/{episode_id}/qc")
 async def run_episode_qc(
-    episode_id: str, body: QCRunRequest, session: AsyncSession = Depends(get_session),
+    episode_id: str,
+    body: QCRunRequest,
+    session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
     _, project = await _owned_episode_project(session, episode_id, user)
@@ -1073,8 +1282,12 @@ async def run_episode_qc(
         raise HTTPException(status_code=400, detail="phase must be director_review or final_qc")
     try:
         report = await publish_service.run_qc(
-            session, project_id=project.id, episode_id=episode_id,
-            render_artifact_id=body.render_artifact_id, phase=body.phase, created_by=user.id,
+            session,
+            project_id=project.id,
+            episode_id=episode_id,
+            render_artifact_id=body.render_artifact_id,
+            phase=body.phase,
+            created_by=user.id,
         )
         if report.status == "passed":
             node_type = "episode.director.review" if body.phase == "director_review" else "episode.final.qc"
@@ -1090,29 +1303,47 @@ async def run_episode_qc(
 
 @router.get("/series/episodes/{episode_id}/qc")
 async def list_episode_qc(
-    episode_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    episode_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     await _owned_episode_project(session, episode_id, user)
-    reports = (await session.execute(select(QCReport).where(
-        QCReport.episode_id == episode_id
-    ).order_by(QCReport.created_at.desc()))).scalars().all()
+    reports = (
+        (
+            await session.execute(
+                select(QCReport).where(QCReport.episode_id == episode_id).order_by(QCReport.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [_qc_out(row) for row in reports]
 
 
 @router.post("/series/episodes/{episode_id}/publish-package")
 async def create_episode_publish_package(
-    episode_id: str, body: PublishPackageRequest, session: AsyncSession = Depends(get_session),
+    episode_id: str,
+    body: PublishPackageRequest,
+    session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
     _, project = await _owned_episode_project(session, episode_id, user)
     try:
         publication, package = await publish_service.create_publish_package(
-            session, project_id=project.id, episode_id=episode_id,
-            platform=body.platform, title=body.title, description=body.description,
-            tags=body.tags, created_by=user.id,
+            session,
+            project_id=project.id,
+            episode_id=episode_id,
+            platform=body.platform,
+            title=body.title,
+            description=body.description,
+            tags=body.tags,
+            created_by=user.id,
         )
         await _complete_episode_creative_steps(
-            session, project.id, episode_id, "publish.package.generate",
+            session,
+            project.id,
+            episode_id,
+            "publish.package.generate",
             {"publication_id": publication.id, "publish_package_id": package.id},
         )
         await session.commit()
@@ -1123,7 +1354,9 @@ async def create_episode_publish_package(
 
 @router.get("/series/projects/{project_id}/publications")
 async def list_project_publications(
-    project_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     await _owned_project(session, project_id, user)
     return [_publication_out(row) for row in await publish_service.list_publications(session, project_id)]
@@ -1247,32 +1480,84 @@ async def bind_asset_to_shot(
     if asset is None:
         raise HTTPException(status_code=404, detail="资产不存在或无权访问")
     try:
-        if body.reference_type is None and body.artifact_id is None and body.subject == "" and body.weight == 1.0 and body.sort_order == 0 and body.usage == "identity":
+        if (
+            body.reference_type is None
+            and body.artifact_id is None
+            and body.subject == ""
+            and body.weight == 1.0
+            and body.sort_order == 0
+            and body.usage == "identity"
+        ):
             ref = await asset_service.bind_asset_to_shot(session, body.shot_id, asset_id, role=body.role)
         else:
             ref = await asset_service.bind_asset_to_shot(
-                session, body.shot_id, asset_id, role=body.role,
-                reference_type=body.reference_type, artifact_id=body.artifact_id,
-                subject=body.subject, weight=body.weight, sort_order=body.sort_order,
+                session,
+                body.shot_id,
+                asset_id,
+                role=body.role,
+                reference_type=body.reference_type,
+                artifact_id=body.artifact_id,
+                subject=body.subject,
+                weight=body.weight,
+                sort_order=body.sort_order,
                 usage=body.usage,
             )
     except PermissionError as e:
         raise _403(e)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"id": ref.id, "shot_id": ref.shot_id, "asset_id": ref.asset_id, "asset_version": getattr(ref, "asset_version", getattr(asset, "version", 1)), "role": ref.role, "reference_type": getattr(ref, "reference_type", ref.role), "artifact_id": getattr(ref, "artifact_id", None), "subject": getattr(ref, "subject", ""), "weight": getattr(ref, "weight", 1.0), "sort_order": getattr(ref, "sort_order", 0), "usage": getattr(ref, "usage", "identity")}
+    return {
+        "id": ref.id,
+        "shot_id": ref.shot_id,
+        "asset_id": ref.asset_id,
+        "asset_version": getattr(ref, "asset_version", getattr(asset, "version", 1)),
+        "role": ref.role,
+        "reference_type": getattr(ref, "reference_type", ref.role),
+        "artifact_id": getattr(ref, "artifact_id", None),
+        "subject": getattr(ref, "subject", ""),
+        "weight": getattr(ref, "weight", 1.0),
+        "sort_order": getattr(ref, "sort_order", 0),
+        "usage": getattr(ref, "usage", "identity"),
+    }
 
 
 @router.get("/series/shots/{shot_id}/references")
-async def list_shot_references(shot_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)):
+async def list_shot_references(
+    shot_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)
+):
     from app.db.models import ShotAssetRef
 
     project_id = await asset_service._shot_project_id(session, shot_id)
     if project_id is None:
         raise HTTPException(status_code=404, detail="镜头不存在")
     await _owned_project(session, project_id, user)
-    rows = (await session.execute(select(ShotAssetRef).where(ShotAssetRef.shot_id == shot_id).order_by(ShotAssetRef.sort_order, ShotAssetRef.id))).scalars().all()
-    return [{"id": row.id, "shot_id": row.shot_id, "asset_id": row.asset_id, "asset_version": row.asset_version, "role": row.role, "reference_type": row.reference_type, "artifact_id": row.artifact_id, "subject": row.subject, "weight": row.weight, "sort_order": row.sort_order, "usage": row.usage} for row in rows]
+    rows = (
+        (
+            await session.execute(
+                select(ShotAssetRef)
+                .where(ShotAssetRef.shot_id == shot_id)
+                .order_by(ShotAssetRef.sort_order, ShotAssetRef.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "shot_id": row.shot_id,
+            "asset_id": row.asset_id,
+            "asset_version": row.asset_version,
+            "role": row.role,
+            "reference_type": row.reference_type,
+            "artifact_id": row.artifact_id,
+            "subject": row.subject,
+            "weight": row.weight,
+            "sort_order": row.sort_order,
+            "usage": row.usage,
+        }
+        for row in rows
+    ]
 
 
 # ─────────────────────────────────────────
@@ -1485,9 +1770,7 @@ async def copy_asset_to_project(
     项目内版本演进独立于个人库（锁定版本语义见 service 注释）。"""
     await _owned_project(session, body.project_id, user)
     try:
-        return await asset_service.copy_personal_asset_to_project(
-            session, asset_id, body.project_id, user.id
-        )
+        return await asset_service.copy_personal_asset_to_project(session, asset_id, body.project_id, user.id)
     except PermissionError as e:
         raise _403(e)
     except ValueError as e:
@@ -1527,14 +1810,23 @@ class ReferenceBindRequest(BaseModel):
 
 def _reference_analysis_payload(row: ReferenceAnalysis) -> dict[str, Any]:
     return {
-        "id": row.id, "project_id": row.project_id, "artifact_id": row.artifact_id,
-        "revision": row.revision, "parent_revision_id": row.parent_revision_id,
-        "status": row.status, "duration_ms": row.duration_ms, "segments": row.segments,
-        "confidence": row.confidence, "prompt": row.prompt,
-        "model_invocation_id": row.model_invocation_id, "model_snapshot": row.model_snapshot,
+        "id": row.id,
+        "project_id": row.project_id,
+        "artifact_id": row.artifact_id,
+        "revision": row.revision,
+        "parent_revision_id": row.parent_revision_id,
+        "status": row.status,
+        "duration_ms": row.duration_ms,
+        "segments": row.segments,
+        "confidence": row.confidence,
+        "prompt": row.prompt,
+        "model_invocation_id": row.model_invocation_id,
+        "model_snapshot": row.model_snapshot,
         "usage_snapshot": row.usage_snapshot,
-        "estimated_cost": str(row.estimated_cost or 0), "source_uri": row.source_uri,
-        "authorization": row.authorization, "usage_scope": row.usage_scope,
+        "estimated_cost": str(row.estimated_cost or 0),
+        "source_uri": row.source_uri,
+        "authorization": row.authorization,
+        "usage_scope": row.usage_scope,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
@@ -1573,36 +1865,57 @@ async def upload_reference_video(
         detected_duration_ms = None
         scene_boundaries_ms: list[int] = []
         try:
-            detected_duration_ms, scene_boundaries_ms = (
-                reference_analysis_service.probe_reference_video(str(output_path))
+            detected_duration_ms, scene_boundaries_ms = reference_analysis_service.probe_reference_video(
+                str(output_path)
             )
         except Exception:
             pass
         artifact = await asset_service.create_artifact(
-            session, project_id=project.id, type="video",
-            storage_key=f"reference_videos/{filename}", mime_type=content_type or "video/mp4",
+            session,
+            project_id=project.id,
+            type="video",
+            storage_key=f"reference_videos/{filename}",
+            mime_type=content_type or "video/mp4",
             duration_ms=detected_duration_ms,
-            meta={"source": "reference_analysis_upload", "original_filename": original_name, "user_id": user.id, "scene_boundaries_ms": scene_boundaries_ms},
+            meta={
+                "source": "reference_analysis_upload",
+                "original_filename": original_name,
+                "user_id": user.id,
+                "scene_boundaries_ms": scene_boundaries_ms,
+            },
         )
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
     finally:
         await file.close()
-    return {"artifact_id": artifact.id, "type": artifact.type, "filename": original_name, "size": total_bytes, "duration_ms": artifact.duration_ms, "url": asset_service.artifact_url(artifact)}
+    return {
+        "artifact_id": artifact.id,
+        "type": artifact.type,
+        "filename": original_name,
+        "size": total_bytes,
+        "duration_ms": artifact.duration_ms,
+        "url": asset_service.artifact_url(artifact),
+    }
 
 
 @router.post("/series/projects/{project_id}/reference-analyses")
 async def analyze_reference_video(
-    project_id: str, body: ReferenceAnalyzeRequest,
-    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    project_id: str,
+    body: ReferenceAnalyzeRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     await _owned_project(session, project_id, user)
     try:
         row = await reference_analysis_service.create_analysis(
-            session, project_id=project_id, artifact_id=body.artifact_id,
-            duration_ms=body.duration_ms, source_uri=body.source_uri,
-            authorization=body.authorization, usage_scope=body.usage_scope,
+            session,
+            project_id=project_id,
+            artifact_id=body.artifact_id,
+            duration_ms=body.duration_ms,
+            source_uri=body.source_uri,
+            authorization=body.authorization,
+            usage_scope=body.usage_scope,
             created_by=user.id,
         )
     except ValueError as error:
@@ -1612,24 +1925,32 @@ async def analyze_reference_video(
 
 @router.get("/series/projects/{project_id}/reference-analyses")
 async def list_reference_analyses(
-    project_id: str, session: AsyncSession = Depends(get_session),
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
     await _owned_project(session, project_id, user)
-    return [_reference_analysis_payload(row) for row in await reference_analysis_service.list_analyses(session, project_id)]
+    return [
+        _reference_analysis_payload(row)
+        for row in await reference_analysis_service.list_analyses(session, project_id)
+    ]
 
 
 @router.post("/series/reference-analyses/{analysis_id}/revisions")
 async def revise_reference_analysis(
-    analysis_id: str, body: ReferenceRevisionRequest,
-    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    analysis_id: str,
+    body: ReferenceRevisionRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     row = await session.get(ReferenceAnalysis, analysis_id)
     if row is None:
         raise HTTPException(status_code=404, detail="拉片分析不存在")
     await _owned_project(session, row.project_id, user)
     try:
-        revised = await reference_analysis_service.revise_analysis(session, analysis_id, body.segments, created_by=user.id)
+        revised = await reference_analysis_service.revise_analysis(
+            session, analysis_id, body.segments, created_by=user.id
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     return _reference_analysis_payload(revised)
@@ -1637,8 +1958,10 @@ async def revise_reference_analysis(
 
 @router.post("/series/reference-analyses/{analysis_id}/bind")
 async def bind_reference_segment(
-    analysis_id: str, body: ReferenceBindRequest,
-    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user),
+    analysis_id: str,
+    body: ReferenceBindRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     row = await session.get(ReferenceAnalysis, analysis_id)
     if row is None:
@@ -1646,15 +1969,28 @@ async def bind_reference_segment(
     await _owned_project(session, row.project_id, user)
     try:
         ref = await reference_analysis_service.bind_segment(
-            session, analysis_id=analysis_id, segment_key=body.segment_key,
-            shot_id=body.shot_id, reference_type=body.reference_type,
-            weight=body.weight, replace_subject=body.replace_subject, created_by=user.id,
+            session,
+            analysis_id=analysis_id,
+            segment_key=body.segment_key,
+            shot_id=body.shot_id,
+            reference_type=body.reference_type,
+            weight=body.weight,
+            replace_subject=body.replace_subject,
+            created_by=user.id,
         )
     except PermissionError as error:
         raise _403(error)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
-    return {"id": ref.id, "shot_id": ref.shot_id, "analysis_id": ref.analysis_id, "analysis_revision": ref.analysis_revision, "segment_key": ref.segment_key, "reference_type": ref.reference_type, "replace_subject": ref.replace_subject}
+    return {
+        "id": ref.id,
+        "shot_id": ref.shot_id,
+        "analysis_id": ref.analysis_id,
+        "analysis_revision": ref.analysis_revision,
+        "segment_key": ref.segment_key,
+        "reference_type": ref.reference_type,
+        "replace_subject": ref.replace_subject,
+    }
 
 
 class CloneVoiceQuote(BaseModel):
@@ -1841,7 +2177,9 @@ async def create_clone_voice_job(
         raise HTTPException(status_code=400, detail="仅 voice 类型资产支持音色复刻")
 
     if not body.confirmed_quote_id:
-        raise HTTPException(status_code=400, detail="请先获取 clone-voice-quote 并确认费用后携带 confirmed_quote_id")
+        raise HTTPException(
+            status_code=400, detail="请先获取 clone-voice-quote 并确认费用后携带 confirmed_quote_id"
+        )
     import datetime as _dt
     from decimal import Decimal
 
@@ -1878,15 +2216,14 @@ async def create_clone_voice_job(
 
     storage_key = ref_artifact.storage_key
     from app.services.asset_service import STORAGE_DIR
+
     storage_root = STORAGE_DIR.resolve()
     ref_path = (storage_root / storage_key).resolve()
     if not ref_path.is_relative_to(storage_root) or not ref_path.is_file():
         raise HTTPException(status_code=400, detail="参考音频路径非法或文件不存在")
 
     idem_key = f"clone_voice:{asset_id}:{asset.version}:{ref_artifact.id}"
-    existing = await session.scalar(
-        select(GenerationJob.id).where(GenerationJob.idempotency_key == idem_key)
-    )
+    existing = await session.scalar(select(GenerationJob.id).where(GenerationJob.idempotency_key == idem_key))
     if existing:
         quote.consumed_at = now
         quote.consumed_job_id = existing

@@ -33,6 +33,8 @@ jobs:
 
     env:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/fishstudio_test
+      # 迁移 / 重试 / 多租户集成测试需要真实 PG，否则会被 skip
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/fishstudio_test
       JWT_SECRET: ci-jwt-secret-ci-jwt-secret-ci-jwt-secret
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: ci-admin-password
@@ -56,7 +58,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff coverage
+          # 固定版本：未固定时 ruff 升级会改变格式规则（0.17 起会格式化 Markdown 代码块）
+          pip install ruff==0.15.20 coverage
 
       - name: Ruff lint
         working-directory: backend
@@ -83,7 +86,7 @@ jobs:
 
   # ─── 前端：build + ts check ─────────────────────────────────────────
   frontend:
-    name: frontend build
+    name: frontend lint + test + build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -98,6 +101,14 @@ jobs:
       - name: Install
         working-directory: frontend
         run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: frontend
+        run: npm test
 
       - name: TS check + build
         working-directory: frontend

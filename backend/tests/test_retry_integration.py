@@ -150,12 +150,28 @@ async def _make_run_with_render_step(factory):
         return project.id, episode.id, run.id, step.id, job.id
 
 
-def test_step_retry_full_chain(pg):
+def test_step_retry_full_chain(pg, monkeypatch):
     """Job failed → Step/Run failed → retry_step → 新 Job succeeded → Step/Run succeeded。"""
     from sqlalchemy import select
 
     from app.db.models import GenerationJob, WorkflowRun, WorkflowStep
     from app.services import job_service, workflow_service
+
+    # episode.render 现需已审批 Timeline 才能展开；本用例只验证重试聚合语义，
+    # 审批 Gate 与 Timeline 查询都用桩替代。
+    async def _approved(session, run, step):
+        return True
+
+    monkeypatch.setattr(workflow_service, "_approval_passed", _approved)
+
+    from types import SimpleNamespace
+
+    from app.services import timeline_service
+
+    async def _render_revision(session, episode_id):
+        return SimpleNamespace(id="timeline-stub", content_hash="timeline-stub-hash")
+
+    monkeypatch.setattr(timeline_service, "get_render_revision", _render_revision)
 
     async def _run():
         project_id, episode_id, run_id, step_id, job_id = await _make_run_with_render_step(pg)
@@ -163,9 +179,7 @@ def test_step_retry_full_chain(pg):
         # 1) Job failed → Step failed(job_failed) → Run failed
         async with pg() as s:
             job = await s.get(GenerationJob, job_id)
-            await job_service.mark_failed(
-                s, job, error_code="render_failed", error="boom", retryable=False
-            )
+            await job_service.mark_failed(s, job, error_code="render_failed", error="boom", retryable=False)
             await workflow_service.on_job_finished(s, job)
         async with pg() as s:
             step = await s.get(WorkflowStep, step_id)
@@ -183,13 +197,17 @@ def test_step_retry_full_chain(pg):
             run = await s.get(WorkflowRun, run_id)
             assert run.status == "running"
             new_job = (
-                await s.execute(
-                    select(GenerationJob).where(
-                        GenerationJob.workflow_step_id == step_id,
-                        GenerationJob.step_attempt == 1,
+                (
+                    await s.execute(
+                        select(GenerationJob).where(
+                            GenerationJob.workflow_step_id == step_id,
+                            GenerationJob.step_attempt == 1,
+                        )
                     )
                 )
-            ).scalars().one()
+                .scalars()
+                .one()
+            )
 
         # 3) 新一代 Job succeeded → 旧 attempt 的 failed 不影响聚合 → Step/Run succeeded
         async with pg() as s:
@@ -216,9 +234,7 @@ def test_job_level_retry_supersedes_old_failed(pg):
         # 1) 旧 job failed → step failed(job_failed)
         async with pg() as s:
             job = await s.get(GenerationJob, job_id)
-            await job_service.mark_failed(
-                s, job, error_code="render_failed", error="boom", retryable=False
-            )
+            await job_service.mark_failed(s, job, error_code="render_failed", error="boom", retryable=False)
             await workflow_service.on_job_finished(s, job)
             step = await s.get(WorkflowStep, step_id)
             assert step.status == "failed"

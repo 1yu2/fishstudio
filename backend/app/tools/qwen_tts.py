@@ -29,9 +29,7 @@ if ENV_PATH.exists():
 # 从环境变量获取配置
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
 DASHSCOPE_BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com").strip()
-QWEN_VOICE_CLONE_TARGET_MODEL = os.getenv(
-    "QWEN_VOICE_CLONE_TARGET_MODEL", "qwen3-tts-vc-2026-01-22"
-).strip()
+QWEN_VOICE_CLONE_TARGET_MODEL = os.getenv("QWEN_VOICE_CLONE_TARGET_MODEL", "qwen3-tts-vc-2026-01-22").strip()
 
 # 音频存储目录
 STORAGE_DIR = BASE_DIR / "storage"

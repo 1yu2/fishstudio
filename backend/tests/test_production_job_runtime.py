@@ -44,14 +44,19 @@ def test_dead_letter_sets_terminal_timestamp_and_event():
             pass
 
     job = GenerationJob(
-        id="job-1", project_id="project-1", operation="generate_video",
-        idempotency_key="key", status="running", attempt=3, max_attempts=3,
+        id="job-1",
+        project_id="project-1",
+        operation="generate_video",
+        idempotency_key="key",
+        status="running",
+        attempt=3,
+        max_attempts=3,
         progress=20,
     )
     session = Session()
-    asyncio.run(job_service.mark_failed(
-        session, job, error_code="provider_error", error="boom", retryable=True
-    ))
+    asyncio.run(
+        job_service.mark_failed(session, job, error_code="provider_error", error="boom", retryable=True)
+    )
     assert job.status == "failed"
     assert job.dead_lettered_at is not None
     assert any(getattr(row, "event", "") == "job.dead_lettered" for row in session.rows)
@@ -59,12 +64,24 @@ def test_dead_letter_sets_terminal_timestamp_and_event():
 
 def test_job_event_contract_contains_required_context():
     row = SimpleNamespace(
-        id=7, event="job.running", project_id="p1", run_id="r1", step_id="s1",
-        job_id="j1", entity_type="shot", entity_id="shot-1", status="running",
-        progress=40, payload={}, occurred_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
+        id=7,
+        event="job.running",
+        project_id="p1",
+        run_id="r1",
+        step_id="s1",
+        job_id="j1",
+        entity_type="shot",
+        entity_id="shot-1",
+        status="running",
+        progress=40,
+        payload={},
+        occurred_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
     )
     payload = job_event_service.event_payload(row)
-    assert set(("event", "project_id", "run_id", "step_id", "job_id", "entity_id", "progress", "occurred_at")) <= payload.keys()
+    assert (
+        set(("event", "project_id", "run_id", "step_id", "job_id", "entity_id", "progress", "occurred_at"))
+        <= payload.keys()
+    )
 
 
 def test_local_storage_keeps_legacy_file_and_checksum(tmp_path, monkeypatch):

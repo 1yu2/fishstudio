@@ -4,7 +4,8 @@
 无价格条目返回 None（调用方需兜底，不得按 0 计费入账）。
 """
 
-from decimal import Decimal
+import os
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 PRICE_TABLE_VERSION = "2026-08-03"
@@ -76,6 +77,45 @@ def estimate_image_cost(provider: str, model: str, *, count: int = 1) -> Optiona
 
 
 def _lookup(provider: str, model: str, resolution: str) -> Optional[dict]:
+    # 新配置优先：只要 Catalog 中存在对应 Deployment，价格为空就明确表示
+    # unavailable，不再误退回静态价格或零成本。
+    try:
+        from app.model_runtime.catalog import get_catalog
+
+        matches = [
+            item
+            for item in get_catalog().snapshot.list()
+            if item.model == model
+            and (item.driver == provider or getattr(item.instance, "name", "") == provider)
+        ]
+        if matches:
+            pricing = dict(matches[0].pricing)
+            if not pricing.get("output_per_second") and not pricing.get("per_piece"):
+                # bootstrap 的按条价格采用扁平字段，兼容原有计算结构。
+                pieces = {
+                    int(key.removeprefix("per_piece_")): Decimal(str(value))
+                    for key, value in pricing.items()
+                    if key.startswith("per_piece_")
+                }
+                if pieces:
+                    pricing["per_piece"] = pieces
+            converted = {
+                key: Decimal(str(value))
+                if key not in {"currency", "version", "unit", "source", "status", "per_piece"}
+                else value
+                for key, value in pricing.items()
+                if not key.startswith("per_piece_")
+            }
+            if "per_piece" in pricing:
+                converted["per_piece"] = pricing["per_piece"]
+            return converted or None
+    except (InvalidOperation, ValueError):
+        return None
+    if provider == "local_h3":
+        raw = os.getenv("LOCAL_H3_COST_CNY_PER_SECOND", "").strip()
+        if not raw:
+            return None
+        return {"output_per_second": Decimal(raw), "cost_source": "hardware_profile"}
     entry = PRICE_TABLE.get((provider, model, resolution))
     if entry is None:
         entry = PRICE_TABLE.get((provider, model, "*"))
@@ -115,9 +155,7 @@ def estimate_video_cost(
     total += entry.get("image_over_price", _ZERO) * billable_images
 
     total += entry.get("input_audio_per_second", _ZERO) * Decimal(str(input_audio_seconds))
-    total += entry.get("regeneration_per_second", _ZERO) * Decimal(
-        str(regeneration_output_seconds)
-    )
+    total += entry.get("regeneration_per_second", _ZERO) * Decimal(str(regeneration_output_seconds))
     return total.quantize(Decimal("0.000001"))
 
 
@@ -153,6 +191,9 @@ def resolve_video_routing(
     from app.tools import volcano_video_generation as vvg
 
     minimax = MiniMaxVideoProvider()
+    from app.providers.local_h3 import LocalH3Provider
+
+    local_h3 = LocalH3Provider()
     v1_ok = duration in (6, 10)
     h3_on = h3_experimental_enabled()
     volcano_ok = 4 <= duration <= 12
@@ -164,6 +205,18 @@ def resolve_video_routing(
         if not explicit_provider:
             raise ValueError("explicit policy requires explicit_provider")
         prov = explicit_provider.lower()
+        if prov in ("local_h3", "local-h3", local_h3.deployment_name.lower()):
+            if not local_h3.is_available():
+                raise ValueError("Local H3 Deployment 未启用或配置不完整")
+            if not local_h3.min_duration <= duration <= local_h3.max_duration:
+                raise ValueError(f"Local H3 仅支持 {local_h3.min_duration}-{local_h3.max_duration} 秒")
+            return _make_plan(
+                "local_h3",
+                local_h3.model_name,
+                "preview" if resolution.lower() == "preview" else "standard",
+                duration,
+                "local_h3_v1",
+            )
         if prov in ("volcano", "volcano_image"):
             if not volcano_ok:
                 raise ValueError(f"Volcano 仅支持 4-12 秒，当前 {duration}s 超限")
@@ -173,11 +226,17 @@ def resolve_video_routing(
                 return _make_plan("minimax", "MiniMax-Hailuo-02", "512P", duration, "v1")
             if h3_on and h3_ok:
                 return _make_plan("minimax", h3_model, resolution, duration, "h3")
-            raise ValueError(
-                f"explicit minimax 不支持 {duration}s（V1 仅 6/10s，H3 仅 4-15s）"
-            )
+            raise ValueError(f"explicit minimax 不支持 {duration}s（V1 仅 6/10s，H3 仅 4-15s）")
         raise ValueError(f"explicit provider {explicit_provider} 未注册")
     elif provider_policy in ("balanced", "quality"):
+        if local_h3.is_available() and local_h3.min_duration <= duration <= local_h3.max_duration:
+            return _make_plan(
+                "local_h3",
+                local_h3.model_name,
+                "preview" if resolution.lower() == "preview" else "standard",
+                duration,
+                "local_h3_v1",
+            )
         if volcano_ok:
             return _make_plan("volcano", volcano_model, resolution, duration, "volcano")
         if h3_on and h3_ok:
@@ -215,7 +274,7 @@ def _make_plan(provider: str, model: str, resolution: str, duration: int, protoc
         raise ValueError(f"缺少视频定价配置: {provider}/{model}/{resolution}")
 
     snapshot = snapshot_price(provider, model, resolution)
-    return {
+    plan = {
         "provider": provider,
         "model": model,
         "resolution": resolution,
@@ -225,3 +284,29 @@ def _make_plan(provider: str, model: str, resolution: str, duration: int, protoc
         "price_snapshot": snapshot,
         "price_table_version": PRICE_TABLE_VERSION,
     }
+    try:
+        from app.model_runtime.catalog import get_catalog
+
+        catalog = get_catalog().snapshot
+        deployment = next(
+            (
+                item
+                for item in catalog.list("video")
+                if item.model == model
+                and (item.driver == provider or getattr(item.instance, "name", "") == provider)
+            ),
+            None,
+        )
+        if deployment is not None:
+            plan.update(
+                {
+                    "deployment_name": deployment.slug,
+                    "deployment_revision": deployment.revision,
+                    "deployment_config_hash": deployment.config_hash,
+                    "catalog_revision": catalog.catalog_revision,
+                }
+            )
+    except Exception:
+        # 兼容期 Catalog 尚未加载时继续生成旧格式快照。
+        pass
+    return plan

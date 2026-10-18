@@ -122,9 +122,7 @@ class MiniMaxVideoProvider(VideoProvider):
     name = "minimax"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = (
-            api_key if api_key is not None else os.getenv("MINIMAX_API_KEY", "")
-        ).strip()
+        self.api_key = (api_key if api_key is not None else os.getenv("MINIMAX_API_KEY", "")).strip()
         self.base_url = (
             (base_url if base_url is not None else os.getenv("MINIMAX_BASE_URL", DEFAULT_BASE_URL))
             .strip()
@@ -311,28 +309,43 @@ class MiniMaxVideoProvider(VideoProvider):
             url, body, protocol = self._submit_endpoint_and_body(req, locked_model)
         except Exception as e:
             return ProviderResult(
-                success=False, provider=self.name, model=locked_model,
-                error_code="invalid_request", error_message=f"输入素材读取失败: {e}",
+                success=False,
+                provider=self.name,
+                model=locked_model,
+                error_code="invalid_request",
+                error_message=f"输入素材读取失败: {e}",
             )
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(url, headers=self._headers(), json=body)
         except httpx.TimeoutException as e:
             return ProviderResult(
-                success=False, provider=self.name, model=locked_model,
-                error_code="timeout", error_message=str(e), retryable=True,
+                success=False,
+                provider=self.name,
+                model=locked_model,
+                error_code="timeout",
+                error_message=str(e),
+                retryable=True,
             )
         except httpx.HTTPError as e:
             return ProviderResult(
-                success=False, provider=self.name, model=locked_model,
-                error_code="server_error", error_message=str(e), retryable=True,
+                success=False,
+                provider=self.name,
+                model=locked_model,
+                error_code="server_error",
+                error_message=str(e),
+                retryable=True,
             )
 
         if resp.status_code != 200:
             retryable, code = self._classify_http_error(resp.status_code, resp.text)
             return ProviderResult(
-                success=False, provider=self.name, model=locked_model,
-                error_code=code, error_message=resp.text[:500], retryable=retryable,
+                success=False,
+                provider=self.name,
+                model=locked_model,
+                error_code=code,
+                error_message=resp.text[:500],
+                retryable=retryable,
                 raw_metadata={"status_code": resp.status_code},
             )
         data = resp.json()
@@ -345,19 +358,29 @@ class MiniMaxVideoProvider(VideoProvider):
         if biz_code not in (0, None):
             retryable, code = self._classify_biz_error(int(biz_code), str(status_msg))
             return ProviderResult(
-                success=False, provider=self.name, model=locked_model,
-                error_code=code, error_message=str(status_msg)[:500], retryable=retryable,
+                success=False,
+                provider=self.name,
+                model=locked_model,
+                error_code=code,
+                error_message=str(status_msg)[:500],
+                retryable=retryable,
                 raw_metadata=data,
             )
         task_id = data.get("task_id") or (data.get("task") or {}).get("id") or ""
         if not task_id:
             return ProviderResult(
-                success=False, provider=self.name, model=locked_model,
-                error_code="server_error", error_message="响应中无 task_id",
-                retryable=True, raw_metadata=data,
+                success=False,
+                provider=self.name,
+                model=locked_model,
+                error_code="server_error",
+                error_message="响应中无 task_id",
+                retryable=True,
+                raw_metadata=data,
             )
         return ProviderResult(
-            success=True, provider=self.name, model=locked_model,
+            success=True,
+            provider=self.name,
+            model=locked_model,
             external_request_id=str(task_id),
             usage=self._usage_for(req),
             raw_metadata={
@@ -389,31 +412,45 @@ class MiniMaxVideoProvider(VideoProvider):
                 resp = await self._query_task(client, external_task_id, protocol)
         except httpx.TimeoutException as e:
             return ProviderResult(
-                success=False, provider=self.name, external_request_id=external_task_id,
-                error_code="timeout", error_message=str(e), retryable=True,
+                success=False,
+                provider=self.name,
+                external_request_id=external_task_id,
+                error_code="timeout",
+                error_message=str(e),
+                retryable=True,
             )
         except httpx.HTTPError as e:
             return ProviderResult(
-                success=False, provider=self.name, external_request_id=external_task_id,
-                error_code="server_error", error_message=str(e), retryable=True,
+                success=False,
+                provider=self.name,
+                external_request_id=external_task_id,
+                error_code="server_error",
+                error_message=str(e),
+                retryable=True,
             )
         if resp.status_code != 200:
             retryable, code = self._classify_http_error(resp.status_code, resp.text)
             return ProviderResult(
-                success=False, provider=self.name, external_request_id=external_task_id,
-                error_code=code, error_message=resp.text[:500], retryable=retryable,
+                success=False,
+                provider=self.name,
+                external_request_id=external_task_id,
+                error_code=code,
+                error_message=resp.text[:500],
+                retryable=retryable,
             )
         data = resp.json()
         base_resp = data.get("base_resp") or {}
         biz_code = base_resp.get("status_code")
         if biz_code not in (0, None):
-            retryable, code = self._classify_biz_error(
-                int(biz_code), str(base_resp.get("status_msg", ""))
-            )
+            retryable, code = self._classify_biz_error(int(biz_code), str(base_resp.get("status_msg", "")))
             return ProviderResult(
-                success=False, provider=self.name, external_request_id=external_task_id,
-                error_code=code, error_message=str(base_resp.get("status_msg", ""))[:500],
-                retryable=retryable, raw_metadata={"raw": data},
+                success=False,
+                provider=self.name,
+                external_request_id=external_task_id,
+                error_code=code,
+                error_message=str(base_resp.get("status_msg", ""))[:500],
+                retryable=retryable,
+                raw_metadata={"raw": data},
             )
         if protocol == "h3":
             task = data.get("task") if isinstance(data.get("task"), dict) else data
@@ -432,14 +469,18 @@ class MiniMaxVideoProvider(VideoProvider):
                 raw["video_width"] = task.get("video_width")
                 raw["video_height"] = task.get("video_height")
             return ProviderResult(
-                success=True, provider=self.name, external_request_id=external_task_id,
+                success=True,
+                provider=self.name,
+                external_request_id=external_task_id,
                 raw_metadata=raw,
             )
         if status in ("fail", "failed", "error", "cancelled", "canceled"):
             err = task.get("error") or base_resp.get("status_msg") or data
             retryable, code = self._classify_http_error(400, str(err))
             return ProviderResult(
-                success=False, provider=self.name, external_request_id=external_task_id,
+                success=False,
+                provider=self.name,
+                external_request_id=external_task_id,
                 error_code=code if code == "content_rejected" else "task_failed",
                 error_message=str(err)[:500],
                 retryable=False if code == "content_rejected" else retryable,
@@ -447,14 +488,16 @@ class MiniMaxVideoProvider(VideoProvider):
             )
         # Preparing / Queueing / Processing 等：进行中
         return ProviderResult(
-            success=False, provider=self.name, external_request_id=external_task_id,
-            error_code="pending", error_message=f"任务进行中: {status or 'unknown'}",
-            retryable=True, raw_metadata={"raw": data},
+            success=False,
+            provider=self.name,
+            external_request_id=external_task_id,
+            error_code="pending",
+            error_message=f"任务进行中: {status or 'unknown'}",
+            retryable=True,
+            raw_metadata={"raw": data},
         )
 
-    async def _retrieve_download_url(
-        self, client: httpx.AsyncClient, file_id: str
-    ) -> str:
+    async def _retrieve_download_url(self, client: httpx.AsyncClient, file_id: str) -> str:
         """官方 V1：GET /v1/files/retrieve?file_id=... -> file.download_url。"""
         resp = await client.get(
             f"{self.base_url}/v1/files/retrieve",
@@ -466,8 +509,7 @@ class MiniMaxVideoProvider(VideoProvider):
         base_resp = data.get("base_resp") or {}
         if base_resp.get("status_code") not in (0, None):
             raise RuntimeError(
-                f"files/retrieve 业务错误: {base_resp.get('status_code')} "
-                f"{base_resp.get('status_msg', '')}"
+                f"files/retrieve 业务错误: {base_resp.get('status_code')} {base_resp.get('status_msg', '')}"
             )
         return str((data.get("file") or {}).get("download_url") or "")
 
@@ -494,7 +536,8 @@ class MiniMaxVideoProvider(VideoProvider):
                     file_id = str(task.get("file_id") or "")
                     if not file_id:
                         return ProviderResult(
-                            success=False, provider=self.name,
+                            success=False,
+                            provider=self.name,
                             external_request_id=external_task_id,
                             error_code="invalid_request",
                             error_message="任务完成但无 file_id",
@@ -503,8 +546,11 @@ class MiniMaxVideoProvider(VideoProvider):
                     download_url = await self._retrieve_download_url(client, file_id)
                 if not download_url:
                     return ProviderResult(
-                        success=False, provider=self.name, external_request_id=external_task_id,
-                        error_code="invalid_request", error_message="未能获取下载地址",
+                        success=False,
+                        provider=self.name,
+                        external_request_id=external_task_id,
+                        error_code="invalid_request",
+                        error_message="未能获取下载地址",
                         raw_metadata={"raw": data},
                     )
                 async with httpx.AsyncClient(timeout=300) as dl_client:
@@ -512,8 +558,12 @@ class MiniMaxVideoProvider(VideoProvider):
                     vresp.raise_for_status()
         except httpx.HTTPError as e:
             return ProviderResult(
-                success=False, provider=self.name, external_request_id=external_task_id,
-                error_code="server_error", error_message=str(e), retryable=True,
+                success=False,
+                provider=self.name,
+                external_request_id=external_task_id,
+                error_code="server_error",
+                error_message=str(e),
+                retryable=True,
             )
         VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
         # regenerate 独立文件名，避免覆盖源视频产物
@@ -521,7 +571,9 @@ class MiniMaxVideoProvider(VideoProvider):
         filename = f"{prefix}{external_task_id}.mp4"
         (VIDEOS_DIR / filename).write_bytes(vresp.content)
         return ProviderResult(
-            success=True, provider=self.name, external_request_id=external_task_id,
+            success=True,
+            provider=self.name,
+            external_request_id=external_task_id,
             artifacts=[{"storage_key": f"videos/{filename}", "type": "video"}],
             raw_metadata={
                 "protocol": protocol,

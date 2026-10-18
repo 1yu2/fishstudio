@@ -17,9 +17,7 @@ def test_chat_returns_403_when_canvas_belongs_to_other_user(monkeypatch):
     async def fake_get_canvas_owner(session, canvas_id):
         return 999  # 与 fake user（id=1）不同
 
-    monkeypatch.setattr(
-        "app.routers.chat.history_service.get_canvas_owner", fake_get_canvas_owner
-    )
+    monkeypatch.setattr("app.routers.chat.history_service.get_canvas_owner", fake_get_canvas_owner)
 
     client = TestClient(app)
     response = client.post("/api/chat", json={"message": "hi", "canvas_id": "someone-elses-canvas"})

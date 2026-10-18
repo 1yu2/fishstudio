@@ -12,9 +12,11 @@ type ThemeMode = 'dark' | 'light'
 export default function StudioHome({
   theme,
   onToggleTheme,
+  managedByAppShell = false,
 }: {
   theme: ThemeMode
   onToggleTheme: () => void
+  managedByAppShell?: boolean
 }) {
   const [projects, setProjects] = useState<SeriesProject[]>([])
   const [loading, setLoading] = useState(true)
@@ -67,8 +69,8 @@ export default function StudioHome({
   }
 
   return (
-    <div className="studio">
-      <PageHeader title="短剧工作台" subtitle="系列视频 · 从大纲到成片" theme={theme} onToggleTheme={onToggleTheme} variant="home" />
+    <div className={`studio${managedByAppShell ? ' studio--embedded' : ''}`}>
+      {!managedByAppShell && <PageHeader title="短剧工作台" subtitle="系列视频 · 从大纲到成片" theme={theme} onToggleTheme={onToggleTheme} variant="home" />}
       <main className="studio__main">
         <section className="studio__card studio-home__create">
           <div className="studio__section-title" style={{ margin: 0 }}>

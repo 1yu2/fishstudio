@@ -18,7 +18,8 @@ class ObjectStorage:
         import boto3
 
         return boto3.client(
-            "s3", endpoint_url=os.getenv("S3_ENDPOINT") or None,
+            "s3",
+            endpoint_url=os.getenv("S3_ENDPOINT") or None,
             aws_access_key_id=os.getenv("S3_ACCESS_KEY") or None,
             aws_secret_access_key=os.getenv("S3_SECRET_KEY") or None,
             region_name=os.getenv("S3_REGION", "us-east-1"),
@@ -39,9 +40,11 @@ class ObjectStorage:
             extra["ContentType"] = mime_type
         client.upload_file(str(path), self.bucket, temporary, ExtraArgs=extra)
         client.copy_object(
-            Bucket=self.bucket, Key=storage_key,
+            Bucket=self.bucket,
+            Key=storage_key,
             CopySource={"Bucket": self.bucket, "Key": temporary},
-            MetadataDirective="COPY", TaggingDirective="REPLACE",
+            MetadataDirective="COPY",
+            TaggingDirective="REPLACE",
             Tagging="lifecycle=managed",
         )
         client.delete_object(Bucket=self.bucket, Key=temporary)
@@ -50,12 +53,17 @@ class ObjectStorage:
             try:
                 client.put_bucket_lifecycle_configuration(
                     Bucket=self.bucket,
-                    LifecycleConfiguration={"Rules": [{
-                        "ID": "fishstudio-managed-artifacts", "Status": "Enabled",
-                        "Filter": {"Tag": {"Key": "lifecycle", "Value": "managed"}},
-                        "Expiration": {"Days": lifecycle_days},
-                        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
-                    }]},
+                    LifecycleConfiguration={
+                        "Rules": [
+                            {
+                                "ID": "fishstudio-managed-artifacts",
+                                "Status": "Enabled",
+                                "Filter": {"Tag": {"Key": "lifecycle", "Value": "managed"}},
+                                "Expiration": {"Days": lifecycle_days},
+                                "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
+                            }
+                        ]
+                    },
                 )
             except Exception:
                 # 部分托管 S3 账号不允许改 bucket policy，不阻断已经完成的晋升。
@@ -66,7 +74,8 @@ class ObjectStorage:
         if self.backend not in {"s3", "minio"}:
             return None
         return self._client().generate_presigned_url(
-            "get_object", Params={"Bucket": self.bucket, "Key": storage_key},
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": storage_key},
             ExpiresIn=expires_seconds,
         )
 

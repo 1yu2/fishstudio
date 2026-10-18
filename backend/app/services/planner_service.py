@@ -182,9 +182,7 @@ async def plan_with_llm(
     )
     try:
         ctx = get_execution_context()
-        ctx_token = set_execution_context(
-            replace(ctx, creative_role="planner", prompt_version="planner_v1")
-        )
+        ctx_token = set_execution_context(replace(ctx, creative_role="planner", prompt_version="planner_v1"))
         try:
             if runtime_invocation:
                 ctx = get_execution_context()

@@ -1,4 +1,5 @@
 """Model Runtime 调用生命周期账本。"""
+
 from __future__ import annotations
 
 import logging

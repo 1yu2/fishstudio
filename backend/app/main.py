@@ -29,6 +29,8 @@ from app.routers import auth as auth_router
 from app.routers import chat
 from app.routers import eval as eval_router
 from app.routers import jobs as jobs_router
+from app.routers import model_deployments as model_deployments_router
+from app.routers import model_routes as model_routes_router
 from app.routers import model_runtime as model_runtime_router
 from app.routers import series as series_router
 from app.routers import settings as settings_router
@@ -158,7 +160,7 @@ else:
         if not token:
             auth = request.headers.get("Authorization", "")
             if auth.startswith("Bearer "):
-                token = auth[len("Bearer "):]
+                token = auth[len("Bearer ") :]
         payload = decode_token(token) if token else None
         if not payload or "sub" not in payload:
             return JSONResponse(status_code=401, content={"detail": "unauthorized"})
@@ -179,9 +181,7 @@ else:
                 return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
             artifact = (
-                await session.execute(
-                    select(Artifact).where(Artifact.storage_key == path).limit(1)
-                )
+                await session.execute(select(Artifact).where(Artifact.storage_key == path).limit(1))
             ).scalar_one_or_none()
             if artifact is None:
                 # 无 artifact 记录的老文件（历史聊天上传）：默认拒绝；legacy 开关打开时
@@ -207,6 +207,7 @@ else:
             return JSONResponse(status_code=404, content={"detail": "not found"})
         return FileResponse(str(full))
 
+
 # 注册路由
 app.include_router(artifacts_router.router, prefix="/api", tags=["artifacts"])
 app.include_router(assets_router.router, prefix="/api", tags=["assets"])
@@ -214,6 +215,16 @@ app.include_router(auth_router.router, prefix="/api", tags=["auth"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(jobs_router.router, prefix="/api", tags=["jobs"])
+app.include_router(
+    model_deployments_router.router,
+    prefix="/api/model-deployments",
+    tags=["model-deployments"],
+)
+app.include_router(
+    model_routes_router.router,
+    prefix="/api/model-routes",
+    tags=["model-routes"],
+)
 app.include_router(series_router.router, prefix="/api", tags=["series"])
 app.include_router(workflow_router.router, prefix="/api", tags=["workflow"])
 app.include_router(model_runtime_router.router, prefix="/api", tags=["model-runtime"])

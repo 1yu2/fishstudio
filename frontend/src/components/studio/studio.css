@@ -5,6 +5,10 @@
   color: var(--text-primary, #1f2328);
 }
 
+.studio--embedded {
+  min-height: 100%;
+}
+
 .studio__main {
   max-width: 1200px;
   margin: 0 auto;

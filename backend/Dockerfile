@@ -40,9 +40,7 @@ COPY --chown=app:app app/ ./app/
 COPY --chown=app:app skills/ ./skills/
 COPY --chown=app:app alembic.ini ./
 COPY --chown=app:app alembic/ ./alembic/
-# 默认配置（含 API 密钥），容器内 pydantic-settings 自动读取；
-# docker-compose environment / env_file 可在运行时覆盖
-COPY --chown=app:app .env ./
+# 配置和密钥只允许在运行时通过 environment/env_file 注入，禁止烘焙进镜像。
 
 # 运行时挂卷：storage（产物 + 旧迁移备份）+ workspace（用户记忆 md）+ logs
 RUN mkdir -p /app/storage /app/workspace /app/logs && chown -R app:app /app

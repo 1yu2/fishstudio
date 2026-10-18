@@ -121,9 +121,7 @@ def parse_legacy_storyboard_text(text: str, series_id: str = "") -> dict[str, An
 
 
 async def _next_revision(session: AsyncSession, episode_id: str) -> int:
-    stmt = select(func.max(StoryboardRevision.revision)).where(
-        StoryboardRevision.episode_id == episode_id
-    )
+    stmt = select(func.max(StoryboardRevision.revision)).where(StoryboardRevision.episode_id == episode_id)
     current = (await session.execute(stmt)).scalar_one_or_none()
     return (current or 0) + 1
 
@@ -138,20 +136,22 @@ async def _supersede_storyboard_approvals(session: AsyncSession, episode_id: str
     for row in (await session.execute(stmt)).scalars().all():
         row.status = "superseded"
     revisions = (
-        await session.execute(
-            select(StoryboardRevision).where(
-                StoryboardRevision.episode_id == episode_id,
-                StoryboardRevision.status == "approved",
+        (
+            await session.execute(
+                select(StoryboardRevision).where(
+                    StoryboardRevision.episode_id == episode_id,
+                    StoryboardRevision.status == "approved",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for revision in revisions:
         revision.status = "stale"
 
 
-def _find_episode_spec(
-    payload: StoryboardPayload, episode: Episode
-) -> Optional[Any]:
+def _find_episode_spec(payload: StoryboardPayload, episode: Episode) -> Optional[Any]:
     """在 payload.episodes 里找对应本 episode 的 spec：先按 episode_id，再按 number。"""
     for ep in payload.episodes:
         if ep.episode_id and ep.episode_id == episode.id:
@@ -172,19 +172,19 @@ async def _materialize(
 ) -> None:
     """把 payload 的 scene/shot 物化为 ORM 行（更新或新建），并清理消失的 pending shot。"""
     director_plan = (
-        await session.execute(
-            select(DirectorPlanRevision)
-            .where(DirectorPlanRevision.episode_id == episode.id)
-            .order_by(DirectorPlanRevision.revision.desc())
-            .limit(1)
+        (
+            await session.execute(
+                select(DirectorPlanRevision)
+                .where(DirectorPlanRevision.episode_id == episode.id)
+                .order_by(DirectorPlanRevision.revision.desc())
+                .limit(1)
+            )
         )
-    ).scalars().first()
-    # 现有场景（按 id 索引）
-    scene_rows = (
-        (await session.execute(select(Scene).where(Scene.episode_id == episode.id)))
         .scalars()
-        .all()
+        .first()
     )
+    # 现有场景（按 id 索引）
+    scene_rows = (await session.execute(select(Scene).where(Scene.episode_id == episode.id))).scalars().all()
     scenes_by_id = {s.id: s for s in scene_rows}
 
     keep_shot_ids: set[str] = set()
@@ -208,11 +208,7 @@ async def _materialize(
             session.add(scene)
             await session.flush()
 
-        shot_rows = (
-            (await session.execute(select(Shot).where(Shot.scene_id == scene.id)))
-            .scalars()
-            .all()
-        )
+        shot_rows = (await session.execute(select(Shot).where(Shot.scene_id == scene.id))).scalars().all()
         shots_by_id = {s.id: s for s in shot_rows}
         payload_shot_ids: set[str] = set()
 
@@ -317,13 +313,17 @@ async def save_storyboard(
             raise ValueError("based_on_script_revision_id 不属于当前集")
     else:
         script_revision = (
-            await session.execute(
-                select(ScriptRevision)
-                .where(ScriptRevision.episode_id == episode_id)
-                .order_by(ScriptRevision.revision.desc())
-                .limit(1)
+            (
+                await session.execute(
+                    select(ScriptRevision)
+                    .where(ScriptRevision.episode_id == episode_id)
+                    .order_by(ScriptRevision.revision.desc())
+                    .limit(1)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if script_revision is not None:
             based_on_script_revision_id = script_revision.id
 
@@ -381,11 +381,7 @@ async def list_episodes_with_storyboard(
     session: AsyncSession, project_id: str, episode_id: Optional[str] = None
 ) -> list[dict[str, Any]]:
     """集 → 场景 → 镜头 层级结构输出（API 渲染用），每集附当前 revision 信息。"""
-    stmt = (
-        select(Episode)
-        .where(Episode.project_id == project_id)
-        .order_by(Episode.episode_no)
-    )
+    stmt = select(Episode).where(Episode.project_id == project_id).order_by(Episode.episode_no)
     if episode_id:
         stmt = stmt.where(Episode.id == episode_id)
     episodes = (await session.execute(stmt)).scalars().all()
@@ -394,11 +390,7 @@ async def list_episodes_with_storyboard(
     for ep in episodes:
         revision_row, _ = await get_current_storyboard(session, ep.id)
         scenes = (
-            (
-                await session.execute(
-                    select(Scene).where(Scene.episode_id == ep.id).order_by(Scene.sort_order)
-                )
-            )
+            (await session.execute(select(Scene).where(Scene.episode_id == ep.id).order_by(Scene.sort_order)))
             .scalars()
             .all()
         )

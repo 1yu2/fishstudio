@@ -59,25 +59,21 @@ async def create_revision(
             f"{payload.schema_version} 不一致"
         )
     latest = (
-        await session.execute(
-            select(model)
-            .where(model.project_id == project_id)
-            .order_by(model.revision.desc())
-            .limit(1)
+        (
+            await session.execute(
+                select(model).where(model.project_id == project_id).order_by(model.revision.desc()).limit(1)
+            )
         )
-    ).scalars().first()
-    if based_on_revision is not None and (
-        latest is None or latest.revision != based_on_revision
-    ):
+        .scalars()
+        .first()
+    )
+    if based_on_revision is not None and (latest is None or latest.revision != based_on_revision):
         raise ValueError(
-            f"based_on_revision {based_on_revision} 不是当前版本 "
-            f"{latest.revision if latest else None}"
+            f"based_on_revision {based_on_revision} 不是当前版本 {latest.revision if latest else None}"
         )
     if based_on_revision is None and latest is not None:
         based_on_revision = latest.revision
-    current = await session.scalar(
-        select(func.max(model.revision)).where(model.project_id == project_id)
-    )
+    current = await session.scalar(select(func.max(model.revision)).where(model.project_id == project_id))
     row = model(
         project_id=project_id,
         revision=(current or 0) + 1,
@@ -93,14 +89,18 @@ async def create_revision(
         latest.status = "superseded"
     # 只有同一草稿链上的旧审批失效；已批准 Bible 在新草稿获批前仍然有效。
     approvals = (
-        await session.execute(
-            select(Approval).where(
-                Approval.target_type == approval_type,
-                Approval.target_id == project_id,
-                Approval.status == "rejected",
+        (
+            await session.execute(
+                select(Approval).where(
+                    Approval.target_type == approval_type,
+                    Approval.target_id == project_id,
+                    Approval.status == "rejected",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for approval in approvals:
         approval.status = "superseded"
     await session.commit()
@@ -135,10 +135,11 @@ async def get_current_revision(
     await _owned_project(session, project_id, user_id, is_admin)
     model, _, _ = _spec(kind)
     return (
-        await session.execute(
-            select(model)
-            .where(model.project_id == project_id)
-            .order_by(model.revision.desc())
-            .limit(1)
+        (
+            await session.execute(
+                select(model).where(model.project_id == project_id).order_by(model.revision.desc()).limit(1)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )

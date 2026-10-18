@@ -66,9 +66,7 @@ class _MockLLM:
 
 class TestLLMPlannerContract:
     def test_success_records_planner_model_and_extra_nodes(self):
-        llm = _MockLLM(
-            '{"episodes": 2, "shots_per_episode": 4, "extra_nodes": ["storyboard.approve"]}'
-        )
+        llm = _MockLLM('{"episodes": 2, "shots_per_episode": 4, "extra_nodes": ["storyboard.approve"]}')
         plan = asyncio.run(planner_service.plan_with_llm("拍个短剧", {}, llm=llm))
         assert plan["planner_model"] == "mock-planner-v1"
         assert plan["extra_nodes"] == ["storyboard.approve"]
@@ -100,9 +98,7 @@ class TestLLMPlannerContract:
 
 class TestApplyExtraNodes:
     def test_linear_insert_before_render(self):
-        graph = workflow_service.apply_extra_nodes(
-            SHORT_DRAMA_TEMPLATE_GRAPH, ["storyboard.approve"]
-        )
+        graph = workflow_service.apply_extra_nodes(SHORT_DRAMA_TEMPLATE_GRAPH, ["storyboard.approve"])
         keys = [n["node_key"] for n in graph["nodes"]]
         assert "extra.storyboard.approve" in keys
         edges = [tuple(e) for e in graph["edges"]]
@@ -163,12 +159,8 @@ class TestCreateRunUseLlmPlanner:
         async def _noop(*a, **k):
             return None
 
-        monkeypatch.setattr(
-            "app.routers.workflow.series_service.get_project", fake_get_project
-        )
-        monkeypatch.setattr(
-            "app.routers.workflow.workflow_service.seed_builtin_templates", _noop
-        )
+        monkeypatch.setattr("app.routers.workflow.series_service.get_project", fake_get_project)
+        monkeypatch.setattr("app.routers.workflow.workflow_service.seed_builtin_templates", _noop)
         monkeypatch.setattr("app.routers.workflow.workflow_service.advance_run", _noop)
 
     def test_llm_planner_flow(self, client, monkeypatch):
@@ -187,12 +179,8 @@ class TestCreateRunUseLlmPlanner:
             captured.update(kwargs)
             return SimpleNamespace(id="r1", status="ready")
 
-        monkeypatch.setattr(
-            "app.routers.workflow.planner_service.plan_with_llm", fake_plan_with_llm
-        )
-        monkeypatch.setattr(
-            "app.routers.workflow.workflow_service.create_run", fake_create_run
-        )
+        monkeypatch.setattr("app.routers.workflow.planner_service.plan_with_llm", fake_plan_with_llm)
+        monkeypatch.setattr("app.routers.workflow.workflow_service.create_run", fake_create_run)
         resp = client.post(
             "/api/workflow/runs",
             json={"project_id": "p1", "goal": "2集短剧", "use_llm_planner": True},
@@ -216,12 +204,8 @@ class TestCreateRunUseLlmPlanner:
             captured.update(kwargs)
             return SimpleNamespace(id="r1", status="ready")
 
-        monkeypatch.setattr(
-            "app.routers.workflow.planner_service.plan_with_llm", fake_plan_with_llm
-        )
-        monkeypatch.setattr(
-            "app.routers.workflow.workflow_service.create_run", fake_create_run
-        )
+        monkeypatch.setattr("app.routers.workflow.planner_service.plan_with_llm", fake_plan_with_llm)
+        monkeypatch.setattr("app.routers.workflow.workflow_service.create_run", fake_create_run)
         resp = client.post("/api/workflow/runs", json={"project_id": "p1"})
         assert resp.status_code == 200
         assert called["llm"] is False
@@ -243,12 +227,8 @@ class TestCreateRunUseLlmPlanner:
             captured.update(kwargs)
             return SimpleNamespace(id="r1", status="ready")
 
-        monkeypatch.setattr(
-            "app.routers.workflow.planner_service.plan_with_llm", fake_plan_with_llm
-        )
-        monkeypatch.setattr(
-            "app.routers.workflow.workflow_service.create_run", fake_create_run
-        )
+        monkeypatch.setattr("app.routers.workflow.planner_service.plan_with_llm", fake_plan_with_llm)
+        monkeypatch.setattr("app.routers.workflow.workflow_service.create_run", fake_create_run)
         resp = client.post(
             "/api/workflow/runs",
             json={"project_id": "p1", "use_llm_planner": True},
@@ -299,9 +279,7 @@ class TestPersonalAssetRouter:
             captured.update(project_id=project_id, user_id=user_id, **kwargs)
             return _fake_card()
 
-        monkeypatch.setattr(
-            "app.routers.assets.asset_service.create_asset_card", fake_create
-        )
+        monkeypatch.setattr("app.routers.assets.asset_service.create_asset_card", fake_create)
         resp = client.post(
             "/api/assets/personal",
             json={"type": "character", "name": "主角", "tags": ["古风"]},
@@ -332,9 +310,7 @@ class TestPersonalAssetRouter:
         async def fake_get(session, asset_id, user_id):
             return None
 
-        monkeypatch.setattr(
-            "app.routers.assets.asset_service.get_personal_asset_for_user", fake_get
-        )
+        monkeypatch.setattr("app.routers.assets.asset_service.get_personal_asset_for_user", fake_get)
         resp = client.post("/api/assets/personal/a1/versions", json={"updates": {}})
         assert resp.status_code == 404
 
@@ -345,12 +321,8 @@ class TestPersonalAssetRouter:
         async def fake_new_version(session, asset_id, user_id, updates):
             return _fake_card(version=2)
 
-        monkeypatch.setattr(
-            "app.routers.assets.asset_service.get_personal_asset_for_user", fake_get
-        )
-        monkeypatch.setattr(
-            "app.routers.assets.asset_service.new_asset_version", fake_new_version
-        )
+        monkeypatch.setattr("app.routers.assets.asset_service.get_personal_asset_for_user", fake_get)
+        monkeypatch.setattr("app.routers.assets.asset_service.new_asset_version", fake_new_version)
         resp = client.post("/api/assets/personal/a1/versions", json={"updates": {}})
         assert resp.status_code == 200
         assert resp.json()["version"] == 2
@@ -359,12 +331,8 @@ class TestPersonalAssetRouter:
         async def fake_get_project(session, project_id, user_id=None, is_admin=False):
             raise PermissionError("project belongs to another user")
 
-        monkeypatch.setattr(
-            "app.routers.assets.series_service.get_project", fake_get_project
-        )
-        resp = client.post(
-            "/api/assets/personal/a1/copy-to-project", json={"project_id": "p2"}
-        )
+        monkeypatch.setattr("app.routers.assets.series_service.get_project", fake_get_project)
+        resp = client.post("/api/assets/personal/a1/copy-to-project", json={"project_id": "p2"})
         assert resp.status_code == 403
 
     def test_copy_to_project_not_owner_asset_403(self, client, monkeypatch):
@@ -374,15 +342,9 @@ class TestPersonalAssetRouter:
         async def fake_copy(session, asset_id, project_id, user_id):
             raise PermissionError("只能复制自己的个人资产")
 
-        monkeypatch.setattr(
-            "app.routers.assets.series_service.get_project", fake_get_project
-        )
-        monkeypatch.setattr(
-            "app.routers.assets.asset_service.copy_personal_asset_to_project", fake_copy
-        )
-        resp = client.post(
-            "/api/assets/personal/a1/copy-to-project", json={"project_id": "p1"}
-        )
+        monkeypatch.setattr("app.routers.assets.series_service.get_project", fake_get_project)
+        monkeypatch.setattr("app.routers.assets.asset_service.copy_personal_asset_to_project", fake_copy)
+        resp = client.post("/api/assets/personal/a1/copy-to-project", json={"project_id": "p1"})
         assert resp.status_code == 403
 
     def test_copy_to_project_ok(self, client, monkeypatch):
@@ -392,15 +354,9 @@ class TestPersonalAssetRouter:
         async def fake_copy(session, asset_id, project_id, user_id):
             return _fake_card(project_id=project_id, scope="project", source=asset_id)
 
-        monkeypatch.setattr(
-            "app.routers.assets.series_service.get_project", fake_get_project
-        )
-        monkeypatch.setattr(
-            "app.routers.assets.asset_service.copy_personal_asset_to_project", fake_copy
-        )
-        resp = client.post(
-            "/api/assets/personal/a1/copy-to-project", json={"project_id": "p1"}
-        )
+        monkeypatch.setattr("app.routers.assets.series_service.get_project", fake_get_project)
+        monkeypatch.setattr("app.routers.assets.asset_service.copy_personal_asset_to_project", fake_copy)
+        resp = client.post("/api/assets/personal/a1/copy-to-project", json={"project_id": "p1"})
         assert resp.status_code == 200
         assert resp.json()["scope"] == "project"
         assert resp.json()["source"] == "a1"
@@ -416,9 +372,7 @@ class TestProjectAssetsIncludePersonal:
         async def fake_get_project(session, project_id, user_id=None, is_admin=False):
             return SimpleNamespace(id=project_id)
 
-        monkeypatch.setattr(
-            "app.routers.series.series_service.get_project", fake_get_project
-        )
+        monkeypatch.setattr("app.routers.series.series_service.get_project", fake_get_project)
 
     def test_default_only_project_assets(self, client, monkeypatch):
         self._stub_project(monkeypatch)
@@ -445,9 +399,7 @@ class TestProjectAssetsIncludePersonal:
             return [_fake_card(id="pr1", project_id="p1", scope="project")]
 
         monkeypatch.setattr("app.routers.series.asset_service.list_assets", fake_list)
-        resp = client.get(
-            "/api/series/projects/p1/assets", params={"include_personal": True}
-        )
+        resp = client.get("/api/series/projects/p1/assets", params={"include_personal": True})
         assert resp.status_code == 200
         assert len(calls) == 2
         personal_call = [c for c in calls if c.get("scope") == "personal"][0]

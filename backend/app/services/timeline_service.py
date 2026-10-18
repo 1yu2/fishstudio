@@ -79,12 +79,14 @@ class TimelineSpec(BaseModel):
     audio_tracks: list[dict[str, Any]] = Field(default_factory=list)
     subtitle_tracks: list[dict[str, Any]] = Field(default_factory=list)
     overlay_tracks: list[dict[str, Any]] = Field(default_factory=list)
-    export_profiles: dict[str, dict[str, Any]] = Field(default_factory=lambda: {
-        "preview": {"burn_subtitles": True, "allow_placeholders": True},
-        "review": {"burn_subtitles": True, "watermark": True},
-        "no-subtitle": {"burn_subtitles": False},
-        "final": {"burn_subtitles": True, "allow_placeholders": False},
-    })
+    export_profiles: dict[str, dict[str, Any]] = Field(
+        default_factory=lambda: {
+            "preview": {"burn_subtitles": True, "allow_placeholders": True},
+            "review": {"burn_subtitles": True, "watermark": True},
+            "no-subtitle": {"burn_subtitles": False},
+            "final": {"burn_subtitles": True, "allow_placeholders": False},
+        }
+    )
 
 
 def canonical_hash(spec: dict[str, Any]) -> str:
@@ -117,8 +119,13 @@ async def validate_artifacts(session: AsyncSession, project_id: str, spec: dict[
 
 
 async def create_revision(
-    session: AsyncSession, *, project_id: str, episode_id: str, spec: dict[str, Any],
-    created_by: Optional[int], parent_revision_id: Optional[str] = None,
+    session: AsyncSession,
+    *,
+    project_id: str,
+    episode_id: str,
+    spec: dict[str, Any],
+    created_by: Optional[int],
+    parent_revision_id: Optional[str] = None,
     storyboard_revision_id: Optional[str] = None,
 ) -> TimelineRevision:
     episode = await session.get(Episode, episode_id)
@@ -134,13 +141,24 @@ async def create_revision(
     for track in validated.get("overlay_tracks", []):
         [OverlayClip.model_validate(item) for item in track.get("clips", [])]
     await validate_artifacts(session, project_id, validated)
-    revision = int(await session.scalar(select(func.max(TimelineRevision.revision)).where(
-        TimelineRevision.episode_id == episode_id
-    )) or 0) + 1
+    revision = (
+        int(
+            await session.scalar(
+                select(func.max(TimelineRevision.revision)).where(TimelineRevision.episode_id == episode_id)
+            )
+            or 0
+        )
+        + 1
+    )
     row = TimelineRevision(
-        project_id=project_id, episode_id=episode_id, revision=revision,
-        parent_revision_id=parent_revision_id, storyboard_revision_id=storyboard_revision_id,
-        spec=validated, content_hash=canonical_hash(validated), created_by=created_by,
+        project_id=project_id,
+        episode_id=episode_id,
+        revision=revision,
+        parent_revision_id=parent_revision_id,
+        storyboard_revision_id=storyboard_revision_id,
+        spec=validated,
+        content_hash=canonical_hash(validated),
+        created_by=created_by,
     )
     session.add(row)
     await session.flush()
@@ -150,9 +168,18 @@ async def create_revision(
 async def plan_from_storyboard(
     session: AsyncSession, *, project_id: str, episode_id: str, created_by: Optional[int]
 ) -> TimelineRevision:
-    shots = (await session.execute(select(Shot).join(Scene, Shot.scene_id == Scene.id).where(
-        Scene.episode_id == episode_id
-    ).order_by(Scene.sort_order, Shot.sort_order, Shot.shot_no))).scalars().all()
+    shots = (
+        (
+            await session.execute(
+                select(Shot)
+                .join(Scene, Shot.scene_id == Scene.id)
+                .where(Scene.episode_id == episode_id)
+                .order_by(Scene.sort_order, Shot.sort_order, Shot.shot_no)
+            )
+        )
+        .scalars()
+        .all()
+    )
     clips: list[dict[str, Any]] = []
     audio_clips: list[dict[str, Any]] = []
     cues: list[dict[str, Any]] = []
@@ -166,12 +193,19 @@ async def plan_from_storyboard(
         if artifact is None:
             continue
         duration = min(shot.duration_ms, artifact.duration_ms or shot.duration_ms)
-        clips.append({
-            "id": f"video-{shot.id}", "shot_id": shot.id, "artifact_id": artifact.id,
-            "artifact_hash": artifact.content_hash, "source_in_ms": 0,
-            "source_out_ms": duration, "timeline_start_ms": cursor, "speed": 1,
-            "transition": shot.transition or {},
-        })
+        clips.append(
+            {
+                "id": f"video-{shot.id}",
+                "shot_id": shot.id,
+                "artifact_id": artifact.id,
+                "artifact_hash": artifact.content_hash,
+                "source_in_ms": 0,
+                "source_out_ms": duration,
+                "timeline_start_ms": cursor,
+                "speed": 1,
+                "transition": shot.transition or {},
+            }
+        )
         for kind, tracks in (("dialogue", shot.dialogue_tracks), ("narration", shot.narration_tracks)):
             for index, item in enumerate(tracks or []):
                 audio_artifact = None
@@ -179,31 +213,50 @@ async def plan_from_storyboard(
                 if artifact_id:
                     audio_artifact = await session.get(Artifact, artifact_id)
                 elif item.get("audio_storage_key"):
-                    audio_artifact = (await session.execute(select(Artifact).where(
-                        Artifact.project_id == project_id,
-                        Artifact.storage_key == item["audio_storage_key"],
-                        Artifact.type == "audio",
-                    ).limit(1))).scalars().first()
+                    audio_artifact = (
+                        (
+                            await session.execute(
+                                select(Artifact)
+                                .where(
+                                    Artifact.project_id == project_id,
+                                    Artifact.storage_key == item["audio_storage_key"],
+                                    Artifact.type == "audio",
+                                )
+                                .limit(1)
+                            )
+                        )
+                        .scalars()
+                        .first()
+                    )
                 if audio_artifact:
                     start = max(0, cursor + int(item.get("start_ms") or 0))
-                    audio_clips.append({
-                        "id": f"{kind}-{shot.id}-{index}", "kind": kind,
-                        "artifact_id": audio_artifact.id, "artifact_hash": audio_artifact.content_hash,
-                        "source_in_ms": 0, "source_out_ms": audio_artifact.duration_ms,
-                        "timeline_start_ms": start,
-                        "volume_keyframes": item.get("volume_keyframes") or [],
-                        "ducking": item.get("ducking") or {}, "edit": item.get("edit", "normal"),
-                    })
+                    audio_clips.append(
+                        {
+                            "id": f"{kind}-{shot.id}-{index}",
+                            "kind": kind,
+                            "artifact_id": audio_artifact.id,
+                            "artifact_hash": audio_artifact.content_hash,
+                            "source_in_ms": 0,
+                            "source_out_ms": audio_artifact.duration_ms,
+                            "timeline_start_ms": start,
+                            "volume_keyframes": item.get("volume_keyframes") or [],
+                            "ducking": item.get("ducking") or {},
+                            "edit": item.get("edit", "normal"),
+                        }
+                    )
         for index, subtitle in enumerate(shot.subtitle_tracks or []):
             text = str(subtitle.get("text") or "").strip()
             if text:
-                cues.append({
-                    "id": f"subtitle-{shot.id}-{index}", "text": text,
-                    "start_ms": cursor + int(subtitle.get("start_ms") or 0),
-                    "end_ms": cursor + int(subtitle.get("end_ms") or duration),
-                    "style": subtitle.get("style") or {},
-                    "safe_area": subtitle.get("safe_area") or {"bottom_percent": 8},
-                })
+                cues.append(
+                    {
+                        "id": f"subtitle-{shot.id}-{index}",
+                        "text": text,
+                        "start_ms": cursor + int(subtitle.get("start_ms") or 0),
+                        "end_ms": cursor + int(subtitle.get("end_ms") or duration),
+                        "style": subtitle.get("style") or {},
+                        "safe_area": subtitle.get("safe_area") or {"bottom_percent": 8},
+                    }
+                )
         cursor += duration
     spec = TimelineSpec(
         aspect_ratio=shots[0].aspect_ratio if shots else "9:16",
@@ -212,44 +265,78 @@ async def plan_from_storyboard(
         subtitle_tracks=[{"id": "subtitle-main", "cues": cues}],
     ).model_dump(mode="json")
     return await create_revision(
-        session, project_id=project_id, episode_id=episode_id, spec=spec,
-        created_by=created_by, storyboard_revision_id=storyboard_revision_id,
+        session,
+        project_id=project_id,
+        episode_id=episode_id,
+        spec=spec,
+        created_by=created_by,
+        storyboard_revision_id=storyboard_revision_id,
     )
 
 
 async def list_revisions(session: AsyncSession, episode_id: str) -> list[TimelineRevision]:
-    return list((await session.execute(select(TimelineRevision).where(
-        TimelineRevision.episode_id == episode_id
-    ).order_by(TimelineRevision.revision.desc()))).scalars().all())
+    return list(
+        (
+            await session.execute(
+                select(TimelineRevision)
+                .where(TimelineRevision.episode_id == episode_id)
+                .order_by(TimelineRevision.revision.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 async def approve_revision(
     session: AsyncSession, revision: TimelineRevision, *, user_id: Optional[int]
 ) -> TimelineRevision:
-    previous = (await session.execute(select(TimelineRevision).where(
-        TimelineRevision.episode_id == revision.episode_id,
-        TimelineRevision.status == "approved",
-        TimelineRevision.id != revision.id,
-    ))).scalars().all()
+    previous = (
+        (
+            await session.execute(
+                select(TimelineRevision).where(
+                    TimelineRevision.episode_id == revision.episode_id,
+                    TimelineRevision.status == "approved",
+                    TimelineRevision.id != revision.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     for row in previous:
         row.status = "stale"
-    approvals = (await session.execute(select(Approval).where(
-        Approval.project_id == revision.project_id,
-        Approval.target_type == "timeline",
-        Approval.target_id == revision.episode_id,
-        Approval.status == "approved",
-    ))).scalars().all()
+    approvals = (
+        (
+            await session.execute(
+                select(Approval).where(
+                    Approval.project_id == revision.project_id,
+                    Approval.target_type == "timeline",
+                    Approval.target_id == revision.episode_id,
+                    Approval.status == "approved",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     for approval in approvals:
         approval.status = "superseded"
     revision.status = "approved"
     revision.approved_by = user_id
     revision.approved_at = datetime.now(timezone.utc)
-    session.add(Approval(
-        project_id=revision.project_id, target_type="timeline",
-        target_id=revision.episode_id, target_revision=revision.revision,
-        status="approved", approved_by=user_id, approved_at=revision.approved_at,
-        comment=f"timeline_revision_id={revision.id}",
-    ))
+    session.add(
+        Approval(
+            project_id=revision.project_id,
+            target_type="timeline",
+            target_id=revision.episode_id,
+            target_revision=revision.revision,
+            status="approved",
+            approved_by=user_id,
+            approved_at=revision.approved_at,
+            comment=f"timeline_revision_id={revision.id}",
+        )
+    )
     await session.flush()
     return revision
 
@@ -260,6 +347,15 @@ async def get_render_revision(
     if revision_id:
         row = await session.get(TimelineRevision, revision_id)
         return row if row and row.episode_id == episode_id else None
-    return (await session.execute(select(TimelineRevision).where(
-        TimelineRevision.episode_id == episode_id, TimelineRevision.status == "approved"
-    ).order_by(TimelineRevision.revision.desc()).limit(1))).scalars().first()
+    return (
+        (
+            await session.execute(
+                select(TimelineRevision)
+                .where(TimelineRevision.episode_id == episode_id, TimelineRevision.status == "approved")
+                .order_by(TimelineRevision.revision.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )

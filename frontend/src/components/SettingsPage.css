@@ -15,6 +15,10 @@
   color: var(--text-primary);
 }
 
+.settings-page--embedded {
+  height: 100%;
+}
+
 /* ─── 背景光晕（装饰性渐变，双主题共用） ─── */
 .settings-page__bg {
   position: absolute;
@@ -845,6 +849,98 @@
 .env-row__eye-btn:hover {
   background: var(--surface-2);
   color: var(--text-primary);
+}
+
+/* ─── Model Services ─────────────────────────────────────────────── */
+.model-services__toolbar,
+.model-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.model-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.model-action--danger { color: #ef4444; }
+
+.model-form {
+  padding: 18px;
+  margin: 14px 0 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.model-form__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.model-form label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 12px; }
+.model-form__wide { grid-column: 1 / -1; }
+.model-form details { margin: 14px 0; }
+.model-form summary { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.model-form .settings-textarea { min-height: 82px; margin: 6px 0 10px; font-family: monospace; }
+.model-address { margin: 8px 0; color: var(--text-tertiary); font-size: 12px; }
+.model-card-actions { margin: 12px 0 0; flex-wrap: wrap; }
+.model-reload-error { display: flex; gap: 6px; margin: 10px 0; color: #ef4444; font-size: 12px; }
+
+.runtime-model-card__state--unset { color: #d97706; }
+.runtime-model-card__state--error { color: #ef4444; }
+
+.model-routes { margin-top: 28px; }
+.model-routes h3 { margin-bottom: 4px; }
+.model-routes > p { color: var(--text-tertiary); font-size: 12px; }
+.model-route-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr);
+  gap: 18px;
+  align-items: center;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.model-route-row small { display: block; margin-top: 3px; color: var(--text-tertiary); }
+.model-route-selects { display: grid; gap: 6px; }
+
+@media (max-width: 760px) {
+  .model-form__grid, .model-route-row { grid-template-columns: 1fr; }
+
+  .settings-page__body {
+    flex-direction: column;
+  }
+
+  .settings-page__sidebar {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-page__tab {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .settings-page__content {
+    padding: 20px 14px;
+  }
 }
 
 /* ─── Installed Skills Section ───────────────────────────────────── */

@@ -26,9 +26,7 @@ async def test_workspace_mode_switch_only_updates_settings(monkeypatch):
         return project
 
     monkeypatch.setattr(series_service, "get_project", fake_get_project)
-    result = await series_service.set_workspace_mode(
-        session, "project-1", "professional", user_id=1
-    )
+    result = await series_service.set_workspace_mode(session, "project-1", "professional", user_id=1)
 
     assert result is project
     assert project.settings == {"story": "原故事", "workspace_mode": "professional"}
