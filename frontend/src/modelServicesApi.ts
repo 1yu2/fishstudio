@@ -77,7 +77,11 @@ export const modelServicesApi = {
   health: (slug: string) => json<Record<string, unknown>>(`/api/model-runtime/deployments/${slug}/health`),
   routes: () => json<ModelRoute[]>('/api/model-routes'),
   purposes: () => json<PurposeDefinition[]>('/api/model-routes/purposes'),
-  saveRoute: (route: Omit<ModelRoute, 'revision'>) => json<ModelRoute>(`/api/model-routes/${route.purpose}`, {
+  saveRoute: (route: Omit<ModelRoute, 'revision'>) => json<ModelRoute>(`/api/model-routes/${route.purpose}?tier=${route.tier}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(route),
   }),
+  removeRoute: async (purpose: string, tier: RouteTier) => {
+    const response = await apiFetch(`/api/model-routes/${purpose}?tier=${tier}`, { method: 'DELETE' })
+    if (!response.ok && response.status !== 404) throw new Error('清除档位绑定失败')
+  },
 }

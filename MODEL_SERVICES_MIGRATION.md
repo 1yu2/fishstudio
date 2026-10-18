@@ -65,6 +65,26 @@ DashScope TTS 和腾讯 3D。Local H3 的地址、模型、并发、时长、Art
 - 本地 H3 若想按电费计实际成本，在其 Deployment 价格里加 `gpu_per_second`
   （例如 300W、0.6 元/kWh ≈ `0.00005`）；报价仍按 `output_per_second` 估算。
 
+## 设置页：厂商 → 模型 + 用途 × 档位
+
+「设置 → 模型服务」改为两级：
+
+- **厂商**：火山方舟、自建 GPU（H3 Gateway）、MiniMax、阿里云百炼、硅基流动、腾讯混元 3D，
+  以及自定义 OpenAI 兼容厂商（DeepSeek、Kimi、OpenRouter、自部署 vLLM 等）。同一厂商下的
+  模型共用一把 Key；自定义厂商按服务地址得到独立的密钥变量（如
+  `FS_API_DEEPSEEK_COM_API_KEY`），不再与其他 OpenAI 兼容服务共用 `OPENAI_API_KEY`。
+  已有 Deployment 按服务地址与 Driver 自动归入厂商。
+- **模型**：在厂商下添加，表单按类型给出价格输入（视频/图片为单位 + 单价，对话模型为
+  输入/输出/缓存命中每百万 Token 价）。编辑时不再改写密钥引用和 Driver。
+- **用途 × 档位矩阵**：每个用途在草稿 / 预览 / 终版三档分别选择主模型与最多两个备用；
+  草稿 / 预览留空即沿用终版，可一键清除。
+
+对话模型的 Token 成本现在优先使用该模型 Deployment 的价格
+（`input_per_million_tokens` / `cached_input_per_million_tokens` / `output_per_million_tokens`），
+未配置时才回退到全局 `LLM_*_PRICE_CNY_PER_MILLION`。
+
+厂商级并发 / 限流（账号维度）尚未实现，计划随全局限流一起提供。
+
 ## 兼容边界
 
 - 兼容周期：保留到下一个模型配置大版本；数据库没有任何 Deployment 时，Runtime

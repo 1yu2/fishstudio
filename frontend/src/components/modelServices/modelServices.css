@@ -1,0 +1,96 @@
+/* ─── 模型服务：厂商 → 模型 两级 + 用途 × 档位矩阵 ─────────────────── */
+.model-form__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+
+.vendor-list { display: grid; gap: 14px; margin-top: 4px; }
+
+.vendor-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.vendor-card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.vendor-card__name { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text-primary); }
+.vendor-card__desc { margin-top: 3px; color: var(--text-tertiary); font-size: 12px; }
+.vendor-card__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vendor-card__key { display: flex; gap: 8px; margin-top: 12px; }
+.vendor-card__key .settings-input { flex: 1; }
+.vendor-card__empty { margin-top: 12px; color: var(--text-tertiary); font-size: 13px; }
+.vendor-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.vendor-models { display: grid; gap: 1px; margin-top: 12px; border-top: 1px solid var(--border); }
+.vendor-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.vendor-model:last-child { border-bottom: none; }
+.vendor-model__main { min-width: 0; }
+.vendor-model__title { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text-primary); }
+.vendor-model__meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; color: var(--text-tertiary); font-size: 12px; }
+.vendor-model__meta code { font-size: 12px; overflow-wrap: anywhere; }
+.vendor-model__price--missing { color: #d97706; }
+.vendor-model .model-card-actions { margin: 0; flex-shrink: 0; }
+
+.vendor-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.vendor-picker__item,
+.vendor-picker__custom {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-primary);
+  text-align: left;
+}
+.vendor-picker__item { cursor: pointer; }
+.vendor-picker__item:hover { border-color: var(--accent); }
+.vendor-picker__item small { color: var(--text-tertiary); font-size: 12px; }
+.vendor-picker__custom { gap: 6px; }
+
+.routing-matrix { margin-top: 28px; }
+.routing-matrix h3 { margin-bottom: 4px; }
+.routing-matrix > p { margin-bottom: 12px; color: var(--text-tertiary); font-size: 12px; line-height: 1.6; }
+.routing-matrix__table { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.routing-matrix__row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.1fr) repeat(3, minmax(150px, 1fr));
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.routing-matrix__row:last-child { border-bottom: none; }
+.routing-matrix__row--head { background: var(--surface-2); color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.routing-matrix__row small { display: block; margin-top: 3px; color: var(--text-tertiary); font-size: 11px; }
+.routing-cell { display: grid; gap: 5px; }
+/* 宽屏时表头已标明档位；窄屏单列时在每格内显示 */
+.routing-cell__tier { display: none; color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.routing-cell__fallback { opacity: 0.85; }
+.routing-cell__hint { display: flex; align-items: center; justify-content: space-between; min-height: 16px; color: var(--text-tertiary); font-size: 11px; }
+.routing-cell--inherited .settings-input { color: var(--text-tertiary); }
+.routing-cell__clear { display: inline-flex; padding: 2px; border: none; background: none; color: var(--text-tertiary); cursor: pointer; }
+.routing-cell__clear:hover { color: var(--text-primary); }
+
+@media (max-width: 900px) {
+  .routing-matrix__row { grid-template-columns: 1fr; }
+  .routing-matrix__row--head { display: none; }
+  .routing-cell__tier { display: block; }
+  .vendor-model { flex-direction: column; align-items: flex-start; }
+}
