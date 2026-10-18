@@ -86,7 +86,11 @@ class _FakeSession:
                 scalar_one=lambda: len(rows),
             )
         value = self.execute_counts.pop(0) if self.execute_counts else 0
-        return SimpleNamespace(scalar_one=lambda: value)
+        # 列表查询（如视频 Route 指纹）在 stub 中视为空表。
+        return SimpleNamespace(
+            scalar_one=lambda: value,
+            scalars=lambda: SimpleNamespace(all=lambda: [], first=lambda: None),
+        )
 
 
 def _fake_job(**over):
@@ -453,8 +457,15 @@ class TestCostQuoteAndBudget:
             ),
         ]
         shots = [
-            SimpleNamespace(id="sh1", duration_ms=5000, dialogue_tracks=[], narration_tracks=[]),
-            SimpleNamespace(id="sh2", duration_ms=5000, dialogue_tracks=[], narration_tracks=[]),
+            SimpleNamespace(
+                id=shot_id,
+                duration_ms=5000,
+                visual_prompt="p",
+                aspect_ratio="9:16",
+                dialogue_tracks=[],
+                narration_tracks=[],
+            )
+            for shot_id in ("sh1", "sh2")
         ]
 
         async def _fake_steps(session, run):
@@ -463,9 +474,13 @@ class TestCostQuoteAndBudget:
         async def _fake_shots(session, episode_id):
             return shots
 
+        async def _no_inputs(session, shot):
+            return None, None  # 无首帧、无参考图 → 文生视频
+
         monkeypatch.setattr(cost_service, "_run_pending_job_steps", _fake_steps)
         monkeypatch.setattr(cost_service, "_run_all_job_steps", _fake_steps)
         monkeypatch.setattr(cost_service.job_planner, "_current_revision_shots", _fake_shots)
+        monkeypatch.setattr(cost_service.job_planner, "load_shot_video_inputs", _no_inputs)
 
         run = SimpleNamespace(id="r1", input_snapshot={"default_policy": {}})
         quote = asyncio.run(cost_service.estimate_run_cost(_FakeSession(), run))
@@ -1039,8 +1054,9 @@ class TestLogicalJobKey:
         # 本用例只验证 step_attempt / logical_job_key；路由与 Provider 能力固定为桩，
         # 不随本机 .env 中配置了哪些厂商而变化。
         from app.model_runtime import media as media_module
+        from app.model_runtime import video as video_module
 
-        def _fake_routing(provider_policy, resolution, *, duration=6, explicit_provider=""):
+        async def _fake_routing(session, *, duration, resolution="768P", **kwargs):
             return {
                 "provider": "stub",
                 "model": "stub-video",
@@ -1056,7 +1072,7 @@ class TestLogicalJobKey:
             video_router=lambda: None,
             get=lambda modality, name: SimpleNamespace(provider=stub_provider),
         )
-        monkeypatch.setattr(pricing, "resolve_video_routing", _fake_routing)
+        monkeypatch.setattr(video_module, "resolve_video_plan", _fake_routing)
         monkeypatch.setattr(media_module, "get_media_runtime", lambda: stub_runtime)
 
         class _PlanSession(_FakeSession):

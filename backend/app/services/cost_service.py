@@ -30,7 +30,6 @@ from app.providers.pricing import (
     PRICE_TABLE_VERSION,
     estimate_image_cost,
     estimate_video_cost,
-    resolve_video_routing,
 )
 from app.services import job_planner
 
@@ -83,6 +82,12 @@ class ShotRoutePlan(BaseModel):
     estimated_total_cost: str  # Decimal 字符串
     price_snapshot: dict = Field(default_factory=dict)
     price_table_version: str = ""
+    # 视频 Route 锁定的 Deployment；Worker 据此区分同一 Driver 的多个 Deployment。
+    deployment_name: str = ""
+    deployment_revision: Optional[int] = None
+    deployment_config_hash: str = ""
+    catalog_revision: str = ""
+    route: dict = Field(default_factory=dict)
 
 
 class CostQuoteItem(BaseModel):
@@ -160,30 +165,6 @@ async def reserve_budget(session: AsyncSession, run_id: str, amount: Decimal) ->
     return True
 
 
-def _video_unit_price(policy: dict[str, Any]) -> tuple[Decimal, str, str, str]:
-    """按 run default_policy 解析视频路由和单价（R6.3：使用统一 VideoRoutePlan）。"""
-    resolution = policy.get("resolution", "768P")
-    provider_policy = policy.get("provider_policy", "balanced")
-    routing = resolve_video_routing(
-        provider_policy,
-        resolution,
-        duration=6,
-        explicit_provider=policy.get("explicit_provider", ""),
-    )
-    price = routing["estimated_total_cost"]
-    per_second = (
-        (price / routing["billable_duration"])
-        if (price and routing["billable_duration"])
-        else VIDEO_FALLBACK_PRICE_PER_SECOND
-    )
-    return (
-        per_second,
-        routing["provider"],
-        routing["model"],
-        routing["resolution"],
-    )
-
-
 def _estimate_tts_seconds(text: str) -> int:
     return max(1, round(len(text.strip()) / _TTS_CHARS_PER_SECOND))
 
@@ -258,14 +239,13 @@ async def _estimate_step_item(
         plans: list[ShotRoutePlan] = []
         for s in shots:
             dur = int(max(1, s.duration_ms) / 1000)
-            plan = resolve_video_routing(
-                policy.get("provider_policy", "balanced"),
-                policy.get("resolution", "768P"),
-                duration=dur,
-                explicit_provider=policy.get("explicit_provider", ""),
+            # 按镜头真实请求形态（首帧/参考图）路由，与 Job 规划保持一致。
+            first_frame, compiled = await job_planner.load_shot_video_inputs(session, s)
+            plan = await job_planner.resolve_shot_video_plan(
+                session, s, policy, first_frame=first_frame, compiled=compiled
             )
-            cost = plan["estimated_total_cost"]
-            total += cost if cost is not None else VIDEO_FALLBACK_PRICE_PER_SECOND * dur
+            cost = Decimal(str(plan["estimated_total_cost"]))
+            total += cost
             plans.append(
                 ShotRoutePlan(
                     shot_id=s.id,
@@ -275,9 +255,14 @@ async def _estimate_step_item(
                     protocol=plan.get("protocol", ""),
                     requested_duration=dur,
                     billable_duration=plan["billable_duration"],
-                    estimated_total_cost=str(cost) if cost is not None else "0",
+                    estimated_total_cost=str(cost),
                     price_snapshot=plan["price_snapshot"],
                     price_table_version=plan["price_table_version"],
+                    deployment_name=plan.get("deployment_name", ""),
+                    deployment_revision=plan.get("deployment_revision"),
+                    deployment_config_hash=plan.get("deployment_config_hash", ""),
+                    catalog_revision=plan.get("catalog_revision", ""),
+                    route=plan.get("route", {}),
                 )
             )
         first = plans[0] if plans else None
@@ -330,8 +315,6 @@ async def _compute_input_payload(
     canonical JSON 的 sha256 即 input_hash；报价后任何一项变化 → hash 变化 → quote 失效。
     """
     policy = (run.input_snapshot or {}).get("default_policy") or {}
-    # 解析实际视频路由信息（与报价 _video_unit_price 一致，用于 input_hash）
-    _vp, _vprov, _vmodel, _vres = _video_unit_price(policy)
     payload_steps: list[dict[str, Any]] = []
     revision_ids: dict[str, Optional[str]] = {}
     for step in steps:
@@ -364,12 +347,30 @@ async def _compute_input_payload(
             "provider_policy": policy.get("provider_policy", "balanced"),
             "candidate_count": int(policy.get("candidate_count", 1)),
             "explicit_provider": policy.get("explicit_provider", ""),
+            "explicit_deployment": policy.get("explicit_deployment", ""),
+            "video_tier": policy.get("video_tier", "final"),
         },
         "price_table_version": PRICE_TABLE_VERSION,
         # R8.3：路由版本包含 H3 开关和 Provider 模型配置，H3 变化时 hash 改变
         "routing_config": _routing_config_fingerprint(),
+        # 模型服务配置或视频用途 Route 改动后，旧报价必须失效。
+        "video_routes": await _video_route_fingerprint(session),
     }
     return payload, revision_ids
+
+
+async def _video_route_fingerprint(session: AsyncSession) -> dict[str, Any]:
+    from app.db.models import ModelRoute
+    from app.model_runtime.catalog import get_catalog
+    from app.model_runtime.video import VIDEO_PURPOSE
+
+    rows = (
+        (await session.execute(select(ModelRoute).where(ModelRoute.purpose == VIDEO_PURPOSE))).scalars().all()
+    )
+    return {
+        "catalog_revision": get_catalog().snapshot.catalog_revision,
+        "routes": sorted([row.tier, row.revision, bool(row.enabled)] for row in rows),
+    }
 
 
 def _routing_config_fingerprint() -> dict:

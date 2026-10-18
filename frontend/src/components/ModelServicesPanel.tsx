@@ -95,13 +95,14 @@ export default function ModelServicesPanel() {
     purposes.map((purpose) => [purpose.purpose, items.filter((item) => item.enabled && item.modality === purpose.modality)])
   ), [items, purposes])
 
-  const routeFor = (purpose: PurposeDefinition) => routes.find((route) => route.purpose === purpose.purpose)
+  // 当前页面只编辑 final 档；draft/preview 档位的编辑随设置页改版一起提供。
+  const routeFor = (purpose: PurposeDefinition) => routes.find((route) => route.purpose === purpose.purpose && route.tier === 'final')
   const saveBinding = async (purpose: PurposeDefinition, primary: string) => {
     if (!primary) return
     const current = routeFor(purpose)
     try {
       await modelServicesApi.saveRoute({
-        purpose: purpose.purpose, modality: purpose.modality, primary_deployment: primary,
+        purpose: purpose.purpose, tier: 'final', modality: purpose.modality, primary_deployment: primary,
         fallback_deployments: (current?.fallback_deployments || []).filter((slug) => slug !== primary), enabled: true,
       })
       await load(); setNotice({ ok: true, text: `${purpose.purpose} 用途已更新` })
@@ -119,7 +120,7 @@ export default function ModelServicesPanel() {
     )
     try {
       await modelServicesApi.saveRoute({
-        purpose: purpose.purpose, modality: purpose.modality,
+        purpose: purpose.purpose, tier: 'final', modality: purpose.modality,
         primary_deployment: current.primary_deployment,
         fallback_deployments: normalized, enabled: true,
       })

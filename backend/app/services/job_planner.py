@@ -257,6 +257,53 @@ def build_video_job_params(
     return params
 
 
+async def load_shot_video_inputs(session: AsyncSession, shot: Shot) -> tuple[Optional[str], Any]:
+    """读取镜头的首帧与编译后的参考输入；报价与规划共用，保证两者按同一请求形态路由。"""
+    from app.services.prompt_compiler import compile_shot_input
+
+    first_frame = await find_first_frame_storage_key(session, shot.id)
+    compiled = await compile_shot_input(session, shot)
+    return first_frame, compiled
+
+
+async def resolve_shot_video_plan(
+    session: AsyncSession,
+    shot: Shot,
+    policy: dict[str, Any],
+    *,
+    first_frame: Optional[str],
+    compiled: Any,
+) -> dict[str, Any]:
+    """按镜头的真实请求形态（文生 / 首帧 / 首尾帧 / 参考）选择视频 Deployment 并报价。
+
+    policy.video_tier 选择质量档位（draft / preview / final，默认 final）。
+    """
+    from app.model_runtime.video import resolve_video_plan
+
+    shape = build_video_job_params(
+        shot_id=shot.id,
+        step_id="",
+        run_id="",
+        prompt=shot.visual_prompt or "",
+        duration_ms=shot.duration_ms,
+        aspect_ratio=shot.aspect_ratio,
+        policy=policy,
+        first_frame=first_frame,
+        compiled=compiled,
+    )
+    return await resolve_video_plan(
+        session,
+        duration=int(max(1, shot.duration_ms) / 1000),
+        resolution=policy.get("resolution", "768P"),
+        tier=policy.get("video_tier", "final"),
+        mode=shape["mode"],
+        aspect_ratio=shot.aspect_ratio or "9:16",
+        reference_count=len(shape.get("reference_images") or []),
+        explicit_deployment=policy.get("explicit_deployment") or policy.get("explicit_provider", ""),
+        provider_policy=policy.get("provider_policy", "balanced"),
+    )
+
+
 async def plan_shot_video_jobs(
     session: AsyncSession, *, run: WorkflowRun, step: WorkflowStep, episode_id: str
 ) -> list[GenerationJob]:
@@ -268,12 +315,13 @@ async def plan_shot_video_jobs(
     """
     shots = await _current_revision_shots(session, episode_id)
     policy = _run_policy(run)
-    from app.providers.pricing import estimate_video_cost, resolve_video_routing
+    from app.model_runtime.video import VideoRoutingError
+
+    # 每个镜头只读取一次首帧与参考输入，路由与 Job 参数使用同一份。
+    inputs = {shot.id: await load_shot_video_inputs(session, shot) for shot in shots}
 
     # R8.3：优先消费已确认 Quote 中的路由计划，不再独立解析
     confirmed_plans = _confirmed_shot_plans(run, step.node_key)
-    resolution = policy.get("resolution", "768P")
-    provider_policy = policy.get("provider_policy", "balanced")
 
     estimated = Decimal("0")
     shot_plans: dict[str, dict] = {}
@@ -284,16 +332,19 @@ async def plan_shot_video_jobs(
             estimated += Decimal(cost) if cost else Decimal("0")
     else:
         for s in shots:
-            dur = int(max(1, s.duration_ms) / 1000)
-            routing = resolve_video_routing(
-                provider_policy,
-                resolution,
-                duration=dur,
-                explicit_provider=policy.get("explicit_provider", ""),
-            )
+            first_frame, compiled = inputs[s.id]
+            try:
+                routing = await resolve_shot_video_plan(
+                    session, s, policy, first_frame=first_frame, compiled=compiled
+                )
+            except VideoRoutingError as error:
+                step.status = "failed"
+                step.error_code = "no_video_deployment"
+                step.error = str(error)
+                await session.flush()
+                return []
             shot_plans[s.id] = routing
-            cost = routing["estimated_total_cost"]
-            estimated += cost if cost is not None else (Decimal("0.50") * Decimal(str(dur)))
+            estimated += Decimal(str(routing["estimated_total_cost"]))
     # R9.7：已确认 Quote 的 route plans 必须覆盖所有 shot，不一致时报失效并重新报价
     if confirmed_plans and len(shot_plans) != len(shots):
         step.status = "failed"
@@ -316,18 +367,13 @@ async def plan_shot_video_jobs(
     for shot in shots:
         # R8.3：优先使用已确认 Quote plan，不再独立解析
         plan = shot_plans.get(shot.id)
-        if not plan:
-            dur = int(max(1, shot.duration_ms) / 1000)
-            plan = resolve_video_routing(
-                provider_policy,
-                resolution,
-                duration=dur,
-                explicit_provider=policy.get("explicit_provider", ""),
-            )
-        first_frame = await find_first_frame_storage_key(session, shot.id)
-        from app.services.prompt_compiler import compile_shot_input
-
-        compiled = await compile_shot_input(session, shot)
+        if plan is None:
+            step.status = "failed"
+            step.error_code = "cost_quote_invalid"
+            step.error = f"已确认报价缺少镜头 {shot.id} 的 Route Plan，请重新确认费用"
+            await session.flush()
+            return []
+        first_frame, compiled = inputs[shot.id]
         if not first_frame and not compiled.first_frame:
             fallback_count += 1
         key = make_job_idempotency_key("video", run.id, step.node_key, shot.id, step.attempt)
@@ -353,6 +399,7 @@ async def plan_shot_video_jobs(
                 "deployment_revision": plan.get("deployment_revision"),
                 "deployment_config_hash": plan.get("deployment_config_hash", ""),
                 "catalog_revision": plan.get("catalog_revision", ""),
+                "route": plan.get("route", {}),
             },
             compiled=compiled,
         )
@@ -361,7 +408,8 @@ async def plan_shot_video_jobs(
 
         runtime = get_media_runtime()
         runtime.video_router()
-        deployment = runtime.get("video", plan["provider"])
+        # 优先按锁定的 Deployment slug 查找；旧快照只有 Provider 名。
+        deployment = runtime.get("video", plan.get("deployment_name") or plan["provider"])
         request_data = {k: v for k, v in params.items() if k in VideoGenerationRequest.model_fields}
         request_data["duration"] = max(1, shot.duration_ms // 1000)
         request = VideoGenerationRequest(**request_data)

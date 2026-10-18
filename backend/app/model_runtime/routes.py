@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -22,9 +22,15 @@ PURPOSES: dict[str, tuple[str, frozenset[str]]] = {
     "model_3d": ("model_3d", frozenset()),
 }
 
+# 质量档位：draft 试错 / preview 预览挑选 / final 终版。未配置的档位回退到 final。
+TIERS: tuple[str, ...] = ("draft", "preview", "final")
+Tier = Literal["draft", "preview", "final"]
+DEFAULT_TIER: Tier = "final"
+
 
 class ModelRouteInput(BaseModel):
     purpose: str = Field(min_length=1, max_length=64)
+    tier: Tier = DEFAULT_TIER
     modality: str = Field(min_length=1, max_length=32)
     primary_deployment: str = Field(min_length=1, max_length=128)
     fallback_deployments: list[str] = Field(default_factory=list, max_length=16)
@@ -73,6 +79,7 @@ class DeploymentRouteSnapshot:
 class PurposeRoutingSnapshot:
     purpose: str
     modality: str
+    tier: str
     route_revision: int
     catalog_revision: str
     candidates: tuple[DeploymentRouteSnapshot, ...]
@@ -120,6 +127,7 @@ def resolve_route(
     payload = ModelRouteInput.model_validate(
         {
             "purpose": route.purpose,
+            "tier": getattr(route, "tier", DEFAULT_TIER),
             "modality": route.modality,
             "primary_deployment": route.primary_deployment,
             "fallback_deployments": route.fallback_deployments,
@@ -155,6 +163,7 @@ def resolve_route(
     return PurposeRoutingSnapshot(
         purpose=payload.purpose,
         modality=payload.modality,
+        tier=payload.tier,
         route_revision=route.revision,
         catalog_revision=catalog.catalog_revision,
         candidates=candidates,

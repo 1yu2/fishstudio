@@ -251,7 +251,9 @@ async def bootstrap_default_routes(session: AsyncSession) -> int:
         .scalars()
         .all()
     )
-    existing = set((await session.execute(select(ModelRoute.purpose))).scalars().all())
+    existing = set(
+        (await session.execute(select(ModelRoute.purpose).where(ModelRoute.tier == "final"))).scalars().all()
+    )
     by_modality: dict[str, list[ModelDeployment]] = {}
     for deployment in deployments:
         by_modality.setdefault(deployment.modality, []).append(deployment)
@@ -281,6 +283,7 @@ async def bootstrap_default_routes(session: AsyncSession) -> int:
         session.add(
             ModelRoute(
                 purpose=purpose,
+                tier="final",
                 modality=primary.modality,
                 primary_deployment=primary.slug,
                 fallback_deployments=[item.slug for item in items[1:]],

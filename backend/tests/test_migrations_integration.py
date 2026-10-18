@@ -162,12 +162,12 @@ def _tables_and_revision():
 
 
 def test_empty_database_upgrades_to_head(mig_env):
-    """(a) 空库 → upgrade head → 全部表存在，版本 0022。"""
+    """(a) 空库 → upgrade head → 全部表存在，版本 0023。"""
     asyncio.run(mig_env.bootstrap_and_upgrade())
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0022"
+    assert revision == "0023"
 
     # 0006 新列：shots 拆分选择槽 + usage_events.cost_source
     def _columns(table):
@@ -245,7 +245,7 @@ def test_legacy_0001_database_stamps_0001_then_upgrades(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0022"
+    assert revision == "0023"
 
     async def _legacy_rows():
         engine = create_async_engine(TEST_DATABASE_URL)
@@ -276,7 +276,7 @@ def test_bootstrap_is_idempotent(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0022"
+    assert revision == "0023"
 
 
 def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
@@ -319,7 +319,7 @@ def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
 
     command.upgrade(cfg, "head")
     tables, revision = _tables_and_revision()
-    assert revision == "0022"
+    assert revision == "0023"
     assert "clone_voice_quotes" in tables
     assert "script_revisions" in tables
     assert "series_bible_revisions" in tables
@@ -337,3 +337,42 @@ def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
             await engine.dispose()
 
     assert asyncio.run(_project_title()) == "迁移回归项目"
+
+
+def test_model_route_tiers_upgrade_and_downgrade(mig_env):
+    """0023：同一用途可按 draft/preview/final 分别绑定；降级只保留 final 档。"""
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from alembic import command
+
+    cfg = mig_env._get_alembic_config()
+    command.upgrade(cfg, "0022")
+
+    async def _exec(*statements):
+        engine = create_async_engine(TEST_DATABASE_URL)
+        try:
+            async with engine.begin() as conn:
+                results = [await conn.execute(text(sql)) for sql in statements]
+                return [row for row in results[-1]] if results[-1].returns_rows else None
+        finally:
+            await engine.dispose()
+
+    insert = (
+        "INSERT INTO model_routes (purpose, {extra}modality, primary_deployment, fallback_deployments) "
+        "VALUES ('shot_video', {value}'video', '{primary}', '[]'::jsonb)"
+    )
+    asyncio.run(_exec(insert.format(extra="", value="", primary="seedance")))
+
+    command.upgrade(cfg, "head")
+    assert asyncio.run(_exec("SELECT purpose, tier, primary_deployment FROM model_routes")) == [
+        ("shot_video", "final", "seedance")
+    ]
+    asyncio.run(_exec(insert.format(extra="tier, ", value="'preview', ", primary="local-h3")))
+    rows = asyncio.run(_exec("SELECT tier, primary_deployment FROM model_routes ORDER BY tier"))
+    assert rows == [("final", "seedance"), ("preview", "local-h3")]
+
+    command.downgrade(cfg, "0022")
+    assert asyncio.run(_exec("SELECT purpose, primary_deployment FROM model_routes")) == [
+        ("shot_video", "seedance")
+    ]

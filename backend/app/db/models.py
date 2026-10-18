@@ -110,11 +110,12 @@ class ModelDeployment(Base):
 
 
 class ModelRoute(Base):
-    """业务用途到主 Deployment / 有序备用 Deployment 的最小绑定。"""
+    """业务用途 × 质量档位 → 主 Deployment / 有序备用 Deployment 的绑定。"""
 
     __tablename__ = "model_routes"
 
     purpose: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tier: Mapped[str] = mapped_column(String(16), primary_key=True, default="final", server_default="final")
     modality: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     primary_deployment: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     fallback_deployments: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)

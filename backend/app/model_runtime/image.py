@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import mock_providers_enabled
 from app.db.models import ModelRoute
 from app.model_runtime.catalog import CatalogDeployment, CatalogManager, get_catalog
-from app.model_runtime.routes import PURPOSES
+from app.model_runtime.routes import DEFAULT_TIER, PURPOSES
 from app.providers.base import ProviderResult
 from app.providers.image_base import ImageGenerationRequest, ImageProvider, MockImageProvider
 
@@ -82,7 +82,8 @@ class ImageResolver:
     async def _configured_candidates(
         self, session: AsyncSession, purpose: str
     ) -> tuple[list[CatalogDeployment], dict[str, Any]] | None:
-        route = await session.get(ModelRoute, purpose)
+        # 图片暂只使用 final 档；按档位选择图片模型随关键帧流程一起接入。
+        route = await session.get(ModelRoute, (purpose, DEFAULT_TIER))
         snapshot = self.catalog.snapshot
         image_deployments = snapshot.list("image")
 
