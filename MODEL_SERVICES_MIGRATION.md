@@ -48,6 +48,23 @@ DashScope TTS 和腾讯 3D。Local H3 的地址、模型、并发、时长、Art
 - 首次启动迁移：直连方舟（非 DMXAPI）的 `VOLCANO_API_KEY` 现在创建 `ark_video`
   Deployment；已存在的 `volcano-video` 不会被改写，可在设置页改用新 Driver。
 
+## 节点级成本追踪（Alembic 0024）
+
+`usage_events` 即成本追踪记录：每次模型调用或渲染一条，现在额外记录所属的集
+（`episode_id`）、镜头（`shot_id`）、工作流 Run/Step、用途、档位、Deployment，以及
+输入/输出/缓存 Token 与 GPU 秒。不设外键，删除镜头或 Run 后成本历史仍可查。
+
+- **实际成本**：视频任务成功后按厂商返回的用量计算——Token（`output_per_million_tokens`）
+  > GPU 秒（`gpu_per_second`，自建算力）> 视频秒（`output_per_second`）；按条计费或缺少
+  用量时只保留估算，`cost_source=estimate`。
+- **成本报告**：`GET /api/usage/report?project_id=…&episode_id=…` 返回总计（估算 / 实际 /
+  有效成本、Token、GPU 秒、视频秒、失败次数、无价格调用数、估算偏差百分比），并按用途、
+  Deployment、档位、镜头（前 20）、自建 vs 云端、操作拆分。
+- **调用树**：`GET /api/workflow/runs/{run_id}/trace` 返回 步骤 → 任务 → 模型调用 → 用量，
+  每层带成本小计；不挂在任务上的 LLM 调用挂在所属步骤上。
+- 本地 H3 若想按电费计实际成本，在其 Deployment 价格里加 `gpu_per_second`
+  （例如 300W、0.6 元/kWh ≈ `0.00005`）；报价仍按 `output_per_second` 估算。
+
 ## 兼容边界
 
 - 兼容周期：保留到下一个模型配置大版本；数据库没有任何 Deployment 时，Runtime

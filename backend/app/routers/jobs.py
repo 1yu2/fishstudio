@@ -299,3 +299,17 @@ async def usage_summary(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"group_by": group_by, "rows": rows}
+
+
+@router.get("/usage/report")
+async def usage_report(
+    project_id: str,
+    episode_id: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """项目/单集成本报告：总计、估算 vs 实际偏差，以及按用途/Deployment/档位/镜头/自建与云端拆分。"""
+    from app.services import cost_report_service
+
+    await _check_project_access(session, project_id, user)
+    return await cost_report_service.cost_report(session, project_id=project_id, episode_id=episode_id)

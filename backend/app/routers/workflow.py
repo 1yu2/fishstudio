@@ -86,6 +86,19 @@ async def get_run(
     return await workflow_service.get_run_with_steps(session, run_id)
 
 
+@router.get("/workflow/runs/{run_id}/trace")
+async def get_run_trace(
+    run_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """调用树：步骤 → 任务 → 模型调用 → 用量与成本。"""
+    from app.services import cost_report_service
+
+    run = await _owned_run(session, run_id, user)
+    return await cost_report_service.run_trace(session, run)
+
+
 @router.post("/workflow/runs/{run_id}/pause")
 async def pause_run(
     run_id: str,
