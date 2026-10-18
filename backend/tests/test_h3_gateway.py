@@ -98,3 +98,238 @@ def test_comfy_history_helpers():
     assert "CUDA OOM" in _history_error(
         {"status": {"messages": [["execution_error", {"exception_message": "CUDA OOM"}]]}}
     )
+
+
+# ── 图生视频（首帧 / 首尾帧） ─────────────────────────────────────────────
+
+import asyncio  # noqa: E402
+import base64  # noqa: E402
+
+from gateway.h3_gateway import (  # noqa: E402
+    GatewayService,
+    decode_image_reference,
+    detect_frame_inputs,
+)
+
+PNG = "data:image/png;base64," + base64.b64encode(b"\x89PNG-frame").decode()
+
+
+def _i2v_settings(monkeypatch, tmp_path, modes="text,first_frame,first_last_frame", **env):
+    monkeypatch.setenv("H3_GATEWAY_MODES", modes)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return _settings(monkeypatch, tmp_path)
+
+
+def _i2v_request(mode="first_frame", references=None):
+    if references is None:
+        references = [{"type": "image", "role": "first_frame", "url": PNG}]
+        if mode == "first_last_frame":
+            references.append({"type": "image", "role": "last_frame", "url": PNG})
+    return GenerationRequest(
+        deployment="h3-fl2va-int8-convrot",
+        prompt="cat turns around",
+        duration=4,
+        mode=mode,
+        aspect_ratio="9:16",
+        references=references,
+    )
+
+
+def test_modes_are_opt_in_and_validated(monkeypatch, tmp_path):
+    assert _settings(monkeypatch, tmp_path).modes == ("text",)
+    monkeypatch.setenv("H3_GATEWAY_MODES", "text,reference")
+    with pytest.raises(RuntimeError, match="未知模式"):
+        Settings()
+
+
+@pytest.mark.parametrize(
+    ("mode", "references", "message"),
+    [
+        ("first_frame", [], "缺少参考图"),
+        ("first_last_frame", [{"role": "first_frame", "url": PNG}], "last_frame"),
+        ("first_frame", [{"role": "reference_image", "url": PNG}], "不接受"),
+        ("text", [{"role": "first_frame", "url": PNG}], "不接受"),
+        ("first_frame", [{"role": "first_frame", "url": "https://example.com/a.png"}], "data:image"),
+        ("first_frame", [{"role": "first_frame", "url": "data:image/gif;base64,AA=="}], "PNG"),
+        ("first_frame", [{"role": "first_frame", "url": "data:image/png;base64,!!!"}], "解码"),
+        (
+            "first_frame",
+            [{"role": "first_frame", "url": PNG}, {"role": "first_frame", "url": PNG}],
+            "重复",
+        ),
+    ],
+)
+def test_frame_reference_validation(monkeypatch, tmp_path, mode, references, message):
+    builder = WorkflowBuilder(_i2v_settings(monkeypatch, tmp_path))
+    with pytest.raises(ValueError, match=message):
+        builder.build("task", _i2v_request(mode, references))
+
+
+def test_image_size_limit(monkeypatch, tmp_path):
+    with pytest.raises(ValueError, match="大小"):
+        decode_image_reference(PNG, max_bytes=4)
+
+
+def test_build_wires_uploaded_frames_into_h3_node(monkeypatch, tmp_path):
+    builder = WorkflowBuilder(_i2v_settings(monkeypatch, tmp_path))
+
+    workflow, width, height = builder.build(
+        "task-9",
+        _i2v_request("first_last_frame"),
+        frame_inputs={"first_frame": "start_image", "last_frame": "end_image"},
+        uploaded_frames={"first_frame": "fs/first.png", "last_frame": "fs/last.png"},
+    )
+
+    assert (width, height) == (288, 512)  # 默认 preview 档位
+    h3 = workflow["140:131"]["inputs"]
+    assert h3["start_image"] == ["fishstudio_frame_first_frame", 0]
+    assert h3["end_image"] == ["fishstudio_frame_last_frame", 0]
+    assert workflow["fishstudio_frame_first_frame"] == {
+        "class_type": "LoadImage",
+        "inputs": {"image": "fs/first.png"},
+        "_meta": {"title": "FishStudio first_frame"},
+    }
+    # 模板本身不被修改
+    assert "start_image" not in builder.template["140:131"]["inputs"]
+
+
+def test_build_fails_when_node_has_no_image_input(monkeypatch, tmp_path):
+    builder = WorkflowBuilder(_i2v_settings(monkeypatch, tmp_path))
+    with pytest.raises(ValueError, match="图片输入"):
+        builder.build("t", _i2v_request(), frame_inputs={}, uploaded_frames={"first_frame": "a.png"})
+
+
+@pytest.mark.parametrize(
+    ("optional", "expected"),
+    [
+        (
+            {"start_image": ["IMAGE"], "end_image": ["IMAGE"], "seed": ["INT", {}]},
+            {"first_frame": "start_image", "last_frame": "end_image"},
+        ),
+        (
+            {"first_frame": ["IMAGE"], "last_frame": ["IMAGE"]},
+            {"first_frame": "first_frame", "last_frame": "last_frame"},
+        ),
+        ({"image": ["IMAGE"]}, {"first_frame": "image"}),
+        ({"mask": ["MASK"]}, {}),
+    ],
+)
+def test_detect_frame_inputs(optional, expected):
+    info = {"input": {"required": {"prompt": ["STRING", {}]}, "optional": optional}}
+    assert detect_frame_inputs(info) == expected
+
+
+class FakeComfy:
+    def __init__(self, info=None):
+        self.info = (
+            info
+            if info is not None
+            else {"input": {"optional": {"start_image": ["IMAGE"], "end_image": ["IMAGE"]}}}
+        )
+        self.uploads = []
+        self.submitted = []
+        self.object_info_calls = 0
+
+    async def object_info(self, class_type):
+        self.object_info_calls += 1
+        assert class_type == "MiniMaxH3ImageToVideo"
+        return self.info
+
+    async def upload_image(self, data, filename):
+        self.uploads.append((data, filename))
+        return f"fishstudio/{filename}"
+
+    async def submit(self, workflow, client_id):
+        self.submitted.append(workflow)
+        return "prompt-1"
+
+
+def _service(settings, comfy):
+    return GatewayService(settings, GatewayStore(settings.db_path), comfy)
+
+
+def test_submit_uploads_frames_and_submits_wired_workflow(monkeypatch, tmp_path):
+    settings = _i2v_settings(monkeypatch, tmp_path)
+    comfy = FakeComfy()
+    service = _service(settings, comfy)
+
+    async def _run():
+        task = await service.store.create("key-1", _i2v_request("first_last_frame").model_dump())
+        await service._submit(task)
+        await service._submit(await service.store.create("key-2", _i2v_request().model_dump()))
+        return await service.store.get(task["task_id"])
+
+    stored = asyncio.run(_run())
+
+    assert stored["status"] == "running" and stored["prompt_id"] == "prompt-1"
+    assert [data for data, _ in comfy.uploads[:2]] == [b"\x89PNG-frame", b"\x89PNG-frame"]
+    assert comfy.uploads[0][1].endswith("_first_frame.png")
+    h3 = comfy.submitted[0]["140:131"]["inputs"]
+    assert h3["start_image"] == ["fishstudio_frame_first_frame", 0]
+    assert h3["end_image"] == ["fishstudio_frame_last_frame", 0]
+    assert comfy.object_info_calls == 1  # 识别结果缓存
+
+
+def test_configured_input_names_skip_detection(monkeypatch, tmp_path):
+    settings = _i2v_settings(
+        monkeypatch,
+        tmp_path,
+        H3_GATEWAY_FIRST_FRAME_INPUT="image_first",
+        H3_GATEWAY_LAST_FRAME_INPUT="image_last",
+    )
+    comfy = FakeComfy(info={})
+    service = _service(settings, comfy)
+
+    async def _run():
+        task = await service.store.create("key", _i2v_request("first_last_frame").model_dump())
+        await service._submit(task)
+
+    asyncio.run(_run())
+
+    assert comfy.object_info_calls == 0
+    assert comfy.submitted[0]["140:131"]["inputs"]["image_first"] == ["fishstudio_frame_first_frame", 0]
+
+
+def test_submit_fails_clearly_when_frame_input_unknown(monkeypatch, tmp_path):
+    settings = _i2v_settings(monkeypatch, tmp_path)
+    service = _service(settings, FakeComfy(info={"input": {"optional": {}}}))
+
+    async def _run():
+        task = await service.store.create("key", _i2v_request().model_dump())
+        await service._submit(task)
+        return await service.store.get(task["task_id"])
+
+    stored = asyncio.run(_run())
+
+    assert stored["status"] == "failed"
+    assert stored["error"]["code"] == "invalid_request"
+    assert "图片输入" in stored["error"]["message"]
+
+
+def test_fishstudio_local_h3_payload_is_accepted_by_gateway(monkeypatch, tmp_path):
+    """合同测试：FishStudio 侧 LocalH3Provider 构造的首帧请求能通过 Gateway 校验。"""
+    from app.providers import local_h3
+    from app.providers.base import VideoGenerationRequest
+
+    storage = tmp_path / "storage" / "images"
+    storage.mkdir(parents=True)
+    (storage / "first.png").write_bytes(b"\x89PNG-frame")
+    monkeypatch.setattr(local_h3, "BASE_DIR", tmp_path)
+    provider = local_h3.LocalH3Provider(
+        base_url="http://h3.test",
+        api_key="secret",
+        model_name="MiniMax-H3",
+        deployment_name="h3-fl2va-int8-convrot",
+        capabilities={"modes": ["text", "first_frame"]},
+        enabled=True,
+    )
+    payload = provider._payload(
+        VideoGenerationRequest(prompt="cat", duration=4, mode="first_frame", first_frame="images/first.png"),
+        "MiniMax-H3",
+    )
+
+    builder = WorkflowBuilder(_i2v_settings(monkeypatch, tmp_path / "gw"))
+    frames = builder.frame_references(GenerationRequest.model_validate(payload))
+
+    assert decode_image_reference(frames["first_frame"], max_bytes=1024)[0] == b"\x89PNG-frame"
