@@ -276,6 +276,7 @@ def test_provider_lifecycle_and_sync(pg):
             )
             second_sf = await service.create_provider(s, "siliconflow")
             third_sf = await service.create_provider(s, "siliconflow")
+            names = (second_sf.name, third_sf.name)
             chat = await service.add_model(
                 s,
                 deepseek,
@@ -315,6 +316,7 @@ def test_provider_lifecycle_and_sync(pg):
                     chat.revision > revision_before,
                 ),
                 "catalog_enabled": snapshot.get(chat.slug).enabled,
+                "names": names,
             }
 
     result = asyncio.run(_run())
@@ -340,6 +342,7 @@ def test_provider_lifecycle_and_sync(pg):
         True,
     )
     assert result["catalog_enabled"] is False
+    assert result["names"] == ("硅基流动", "硅基流动 2")
 
 
 @requires_pg

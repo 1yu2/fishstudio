@@ -100,6 +100,13 @@ async def create_provider(
     if preset.custom and not base_url:
         raise ProviderError("自定义供应商需要填写 API 地址")
     display = name.strip() or (host_of(base_url) if preset.custom else preset.name)
+    # 同名供应商（如同一厂商的第二个账号）自动编号，列表里才能区分。
+    names = set((await session.execute(select(ModelProvider.name))).scalars().all())
+    if display in names:
+        index = 2
+        while f"{display} {index}" in names:
+            index += 1
+        display = f"{display} {index}"
     slug_base = slugify(display if preset.custom else preset.id)
     slug = await _unique_slug(session, ModelProvider, slug_base)
     provider = ModelProvider(

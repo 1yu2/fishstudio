@@ -1,106 +1,120 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Check, Plus, RefreshCw } from 'lucide-react'
-import { ModelDeployment, ModelRoute, PurposeDefinition, modelServicesApi } from '../../modelServicesApi'
-import ModelForm from './ModelForm'
-import RoutingMatrix from './RoutingMatrix'
-import VendorCard from './VendorCard'
-import { VENDOR_PRESETS, Vendor, customVendor, groupByVendor } from './vendors'
+import { AlertCircle, Check, Plus, Search, X } from 'lucide-react'
+import { ModelProvider, ModelRoute, ProviderPreset, PurposeDefinition, modelServicesApi, providersApi } from '../../modelServicesApi'
+import DefaultModels from './DefaultModels'
+import ProviderDetail from './ProviderDetail'
 import './modelServices.css'
 
-interface FormTarget {
-  vendor: Vendor
-  editing?: ModelDeployment
+type View = 'providers' | 'defaults'
+
+function statusTone(provider: ModelProvider): 'on' | 'off' | 'unset' {
+  if (!provider.enabled) return 'off'
+  return provider.credential_configured ? 'on' : 'unset'
 }
 
 export default function ModelServicesPanel() {
-  const [items, setItems] = useState<ModelDeployment[]>([])
-  const [availability, setAvailability] = useState<Record<string, boolean>>({})
+  const [view, setView] = useState<View>('providers')
+  const [providers, setProviders] = useState<ModelProvider[]>([])
+  const [presets, setPresets] = useState<ProviderPreset[]>([])
   const [routes, setRoutes] = useState<ModelRoute[]>([])
   const [purposes, setPurposes] = useState<PurposeDefinition[]>([])
+  const [selected, setSelected] = useState<string>('')
+  const [query, setQuery] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [custom, setCustom] = useState({ name: '', baseUrl: '' })
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
   const [reloadError, setReloadError] = useState('')
-  const [formTarget, setFormTarget] = useState<FormTarget | null>(null)
-  const [pickingVendor, setPickingVendor] = useState(false)
-  const [custom, setCustom] = useState({ name: '', baseUrl: '' })
-  // 尚未有模型、但用户刚选择接入的厂商，先显示为空卡片
-  const [pendingVendors, setPendingVendors] = useState<Vendor[]>([])
 
   const notify = useCallback((ok: boolean, text: string) => setNotice({ ok, text }), [])
 
   const load = useCallback(async () => {
     try {
-      const [deployments, runtime, routeRows, purposeRows] = await Promise.all([
-        modelServicesApi.deployments(), modelServicesApi.runtime(), modelServicesApi.routes(), modelServicesApi.purposes(),
+      const [providerRows, presetRows, routeRows, purposeRows, runtime] = await Promise.all([
+        providersApi.list(), providersApi.presets(), modelServicesApi.routes(), modelServicesApi.purposes(), modelServicesApi.runtime(),
       ])
-      setItems(deployments)
-      setAvailability(Object.fromEntries(runtime.items.map((item) => [item.slug, item.available])))
+      setProviders(providerRows); setPresets(presetRows); setRoutes(routeRows); setPurposes(purposeRows)
       setReloadError(runtime.last_reload_failure?.reason || '')
-      setRoutes(routeRows)
-      setPurposes(purposeRows)
+      setSelected((current) => current && providerRows.some((item) => item.slug === current) ? current : providerRows[0]?.slug || '')
     } catch (error) { notify(false, error instanceof Error ? error.message : '加载失败') }
   }, [notify])
 
   useEffect(() => { void load() }, [load])
 
-  const groups = useMemo(() => {
-    const existing = groupByVendor(items)
-    const shown = new Set(existing.map((group) => group.vendor.id))
-    return [...existing, ...pendingVendors.filter((vendor) => !shown.has(vendor.id)).map((vendor) => ({ vendor, items: [] }))]
-  }, [items, pendingVendors])
-  const shownIds = new Set(groups.map((group) => group.vendor.id))
+  const filtered = useMemo(() => {
+    const keyword = query.trim().toLowerCase()
+    if (!keyword) return providers
+    return providers.filter((provider) => provider.name.toLowerCase().includes(keyword)
+      || provider.models.some((model) => model.model.toLowerCase().includes(keyword) || model.name.toLowerCase().includes(keyword)))
+  }, [providers, query])
+  const current = providers.find((provider) => provider.slug === selected)
 
-  const startVendor = (vendor: Vendor) => {
-    setPendingVendors((current) => current.some((item) => item.id === vendor.id) ? current : [...current, vendor])
-    setPickingVendor(false)
-    setFormTarget({ vendor })
+  const addProvider = async (preset: string, name = '', baseUrl = '') => {
+    try {
+      const created = await providersApi.create({ preset, name, base_url: baseUrl })
+      setAdding(false); setCustom({ name: '', baseUrl: '' })
+      notify(true, `已添加 ${created.name}，填写 API 密钥后点击「检查」`)
+      await load()
+      setSelected(created.slug)
+    } catch (error) { notify(false, error instanceof Error ? error.message : '添加失败') }
   }
 
   return <div className="model-services">
     <div className="settings-panel__title">模型服务</div>
-    <div className="settings-panel__desc">先接入厂商（一个账号 / 一把 Key），再在厂商下添加模型；最后在下方为每个用途按档位绑定模型。密钥只写入，不会返回到页面。</div>
-    <div className="model-services__toolbar">
-      <button className="settings-save-btn" onClick={() => setPickingVendor(!pickingVendor)}><Plus size={15} />接入厂商</button>
-      <button className="model-action" onClick={() => void load()}><RefreshCw size={14} />刷新状态</button>
+    <div className="ms-tabs" role="tablist">
+      <button role="tab" aria-selected={view === 'providers'} className={view === 'providers' ? 'ms-tab ms-tab--on' : 'ms-tab'} onClick={() => setView('providers')}>模型供应商</button>
+      <button role="tab" aria-selected={view === 'defaults'} className={view === 'defaults' ? 'ms-tab ms-tab--on' : 'ms-tab'} onClick={() => setView('defaults')}>默认模型</button>
     </div>
     {notice && <div className={`settings-toast settings-toast--${notice.ok ? 'success' : 'error'}`}>{notice.ok ? <Check size={14} /> : <AlertCircle size={14} />}{notice.text}</div>}
-    {reloadError && <div className="model-reload-error"><AlertCircle size={14} />最近一次加载失败：{reloadError}</div>}
+    {reloadError && <div className="model-reload-error"><AlertCircle size={14} />最近一次加载模型配置失败：{reloadError}</div>}
 
-    {pickingVendor && <div className="vendor-picker" aria-label="选择厂商">
-      {VENDOR_PRESETS.filter((vendor) => !shownIds.has(vendor.id)).map((vendor) => <button key={vendor.id} className="vendor-picker__item" onClick={() => startVendor(vendor)}>
-        <strong>{vendor.name}</strong><small>{vendor.description}</small>
-      </button>)}
-      <div className="vendor-picker__custom">
-        <strong>自定义 OpenAI 兼容厂商</strong>
-        <input className="settings-input" placeholder="名称，如 DeepSeek" value={custom.name} onChange={(e) => setCustom({ ...custom, name: e.target.value })} />
-        <input className="settings-input" placeholder="https://api.deepseek.com/v1" value={custom.baseUrl} onChange={(e) => setCustom({ ...custom, baseUrl: e.target.value })} />
-        <button className="model-action" disabled={!/^https?:\/\/[^/]+/.test(custom.baseUrl.trim())}
-          onClick={() => { startVendor(customVendor(custom.baseUrl.trim(), custom.name)); setCustom({ name: '', baseUrl: '' }) }}>接入</button>
+    {view === 'providers' ? <div className="ms-layout">
+      <aside className="ms-sidebar" aria-label="供应商列表">
+        <div className="ms-search"><Search size={14} /><input placeholder="搜索供应商或模型" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+        <div className="ms-provider-list">
+          {filtered.map((provider) => <button key={provider.slug} aria-current={provider.slug === selected ? 'true' : undefined}
+            aria-label={`${provider.name}，${provider.models.length} 个模型，${{ on: '已配置', off: '已停用', unset: '缺少密钥' }[statusTone(provider)]}`}
+            className={`ms-provider${provider.slug === selected ? ' ms-provider--on' : ''}`} onClick={() => setSelected(provider.slug)}>
+            <span className="ms-provider__name">{provider.name}</span>
+            <span className="ms-provider__count">{provider.models.length}</span>
+            <span className={`ms-dot ms-dot--${statusTone(provider)}`} aria-hidden="true" />
+          </button>)}
+          {filtered.length === 0 && <div className="ms-empty">{providers.length ? '没有匹配的供应商' : '还没有供应商'}</div>}
+        </div>
+        <button className="ms-add-provider" onClick={() => setAdding(true)}><Plus size={14} />添加供应商</button>
+      </aside>
+      <div className="ms-main">
+        {current ? <ProviderDetail key={current.slug} provider={current} notify={notify} onChanged={load} onDeleted={async () => { setSelected(''); await load() }} />
+          : <div className="ms-empty ms-empty--center">添加一个供应商开始，例如火山方舟（Seedance）、DeepSeek 或自建 GPU。</div>}
+      </div>
+    </div> : <DefaultModels providers={providers} purposes={purposes} routes={routes} onChanged={load} notify={notify} />}
+
+    {adding && <div className="ms-dialog" role="dialog" aria-label="添加供应商">
+      <div className="ms-dialog__panel ms-dialog__panel--wide">
+        <div className="ms-dialog__head"><strong>添加供应商</strong><button className="ms-icon-btn" aria-label="关闭" onClick={() => setAdding(false)}><X size={16} /></button></div>
+        <div className="ms-preset-grid">
+          {presets.filter((preset) => !preset.custom).map((preset) => {
+            const existing = providers.find((provider) => provider.preset.id === preset.id)
+            return <div key={preset.id} className="ms-preset">
+              {/* 已添加的预设：点击跳到已有供应商，避免误建重复账号；确需第二个账号用下方按钮。 */}
+              <button className="ms-preset__main" onClick={() => existing ? (setSelected(existing.slug), setAdding(false)) : void addProvider(preset.id)}>
+                <strong>{preset.name}{existing && <span className="ms-tag">已添加</span>}</strong>
+                <small>{preset.description}</small>
+                <span className="ms-preset__tags">{preset.tags.map((tag) => <span className="ms-tag ms-tag--muted" key={tag}>{tag}</span>)}</span>
+              </button>
+              {existing && <button className="ms-preset__extra" onClick={() => void addProvider(preset.id)}>再添加一个账号</button>}
+            </div>
+          })}
+        </div>
+        <div className="ms-custom">
+          <strong>自定义 OpenAI 兼容</strong>
+          <div className="ms-field__row">
+            <input className="settings-input" placeholder="名称，例如 公司网关" value={custom.name} onChange={(e) => setCustom({ ...custom, name: e.target.value })} />
+            <input className="settings-input" placeholder="https://api.example.com/v1" value={custom.baseUrl} onChange={(e) => setCustom({ ...custom, baseUrl: e.target.value })} />
+            <button className="settings-save-btn" disabled={!/^https?:\/\/[^/\s]+/.test(custom.baseUrl.trim())}
+              onClick={() => void addProvider('openai-compatible', custom.name, custom.baseUrl.trim())}>添加</button>
+          </div>
+        </div>
       </div>
     </div>}
-
-    {formTarget && <ModelForm
-      key={`${formTarget.vendor.id}:${formTarget.editing?.slug || 'new'}`}
-      vendor={formTarget.vendor}
-      editing={formTarget.editing}
-      onCancel={() => setFormTarget(null)}
-      onError={(text) => notify(false, text)}
-      onSaved={async (text) => { notify(true, text); setFormTarget(null); await load() }}
-    />}
-
-    <div className="vendor-list">
-      {groups.length === 0 && <div className="vendor-card__empty">还没有接入任何厂商。点击「接入厂商」开始，例如火山方舟（Seedance）或自建 GPU。</div>}
-      {groups.map((group) => <VendorCard
-        key={group.vendor.id}
-        vendor={group.vendor}
-        items={group.items}
-        availability={availability}
-        notify={notify}
-        onChanged={load}
-        onAddModel={() => setFormTarget({ vendor: group.vendor })}
-        onEdit={(item) => setFormTarget({ vendor: group.vendor, editing: item })}
-      />)}
-    </div>
-
-    <RoutingMatrix purposes={purposes} routes={routes} deployments={items} onChanged={load} notify={notify} />
   </div>
 }

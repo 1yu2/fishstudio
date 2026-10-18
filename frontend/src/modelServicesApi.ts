@@ -33,6 +33,52 @@ export interface ModelRoute {
   revision: number
 }
 
+export interface ProviderPreset {
+  id: string
+  name: string
+  description: string
+  drivers: string[]
+  default_base_url: string
+  check: string
+  lists_models: boolean
+  self_hosted: boolean
+  custom: boolean
+  tags: string[]
+}
+
+export interface ProviderModel extends ModelDeployment {
+  available?: boolean | null
+}
+
+export interface ModelProvider {
+  id: string
+  slug: string
+  name: string
+  preset: ProviderPreset
+  base_url: string
+  credential_configured: boolean
+  enabled: boolean
+  revision: number
+  models: ProviderModel[]
+}
+
+export interface RemoteModel {
+  model: string
+  driver: string
+  modality: string
+  added: boolean
+}
+
+export interface ModelInput {
+  driver: string
+  model: string
+  name?: string
+  config?: Record<string, unknown>
+  capabilities?: Record<string, unknown>
+  pricing?: Record<string, unknown>
+  enabled?: boolean
+}
+
 export interface PurposeDefinition {
   purpose: string
   modality: string
@@ -46,6 +92,32 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(body?.error?.message || body?.detail?.message || body?.detail || '请求失败')
   }
   return response.json()
+}
+
+const jsonBody = (method: string, body: unknown): RequestInit => ({
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+})
+
+export const providersApi = {
+  list: () => json<ModelProvider[]>('/api/model-providers'),
+  presets: () => json<ProviderPreset[]>('/api/model-providers/presets'),
+  create: (body: { preset: string; name?: string; base_url?: string }) => json<ModelProvider>('/api/model-providers', jsonBody('POST', body)),
+  update: (slug: string, body: { name?: string; base_url?: string; enabled?: boolean }) =>
+    json<ModelProvider>(`/api/model-providers/${slug}`, jsonBody('PATCH', body)),
+  remove: async (slug: string) => {
+    const response = await apiFetch(`/api/model-providers/${slug}`, { method: 'DELETE' })
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}))
+      throw new Error(body?.error?.message || body?.detail || '删除失败')
+    }
+  },
+  credential: async (slug: string, apiKey: string) => {
+    const response = await apiFetch(`/api/model-providers/${slug}/credential`, jsonBody('PUT', { api_key: apiKey }))
+    if (!response.ok) throw new Error('API 密钥保存失败')
+  },
+  check: (slug: string) => json<{ ok: boolean; message: string }>(`/api/model-providers/${slug}/check`, { method: 'POST' }),
+  remoteModels: (slug: string) => json<RemoteModel[]>(`/api/model-providers/${slug}/remote-models`),
+  addModel: (slug: string, body: ModelInput) => json<ModelProvider>(`/api/model-providers/${slug}/models`, jsonBody('POST', body)),
 }
 
 export const modelServicesApi = {
