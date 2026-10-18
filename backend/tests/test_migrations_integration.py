@@ -162,12 +162,12 @@ def _tables_and_revision():
 
 
 def test_empty_database_upgrades_to_head(mig_env):
-    """(a) 空库 → upgrade head → 全部表存在，版本 0023。"""
+    """(a) 空库 → upgrade head → 全部表存在，版本 0024。"""
     asyncio.run(mig_env.bootstrap_and_upgrade())
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0023"
+    assert revision == "0024"
 
     # 0006 新列：shots 拆分选择槽 + usage_events.cost_source
     def _columns(table):
@@ -245,7 +245,7 @@ def test_legacy_0001_database_stamps_0001_then_upgrades(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0023"
+    assert revision == "0024"
 
     async def _legacy_rows():
         engine = create_async_engine(TEST_DATABASE_URL)
@@ -276,7 +276,7 @@ def test_bootstrap_is_idempotent(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0023"
+    assert revision == "0024"
 
 
 def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
@@ -319,7 +319,7 @@ def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
 
     command.upgrade(cfg, "head")
     tables, revision = _tables_and_revision()
-    assert revision == "0023"
+    assert revision == "0024"
     assert "clone_voice_quotes" in tables
     assert "script_revisions" in tables
     assert "series_bible_revisions" in tables

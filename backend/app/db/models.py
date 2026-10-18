@@ -1108,6 +1108,22 @@ class UsageEvent(Base):
     project_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("series_projects.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # 节点级成本追踪的业务上下文（0024）；不设外键，删除镜头/Run 后成本历史仍可查。
+    episode_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    shot_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    workflow_run_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    workflow_step_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    purpose: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default="", index=True
+    )
+    tier: Mapped[str] = mapped_column(String(16), nullable=False, default="", server_default="")
+    deployment_name: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default="", index=True
+    )
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    cached_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    gpu_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0, server_default="0")
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
     provider: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     model: Mapped[str] = mapped_column(String(128), nullable=False, default="")

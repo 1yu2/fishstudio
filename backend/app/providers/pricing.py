@@ -205,6 +205,32 @@ def estimate_video_cost_from_entry(
     return total.quantize(Decimal("0.000001"))
 
 
+def actual_video_cost(
+    unit_prices: Mapping[str, Any], usage: Mapping[str, Any]
+) -> tuple[Optional[Decimal], str]:
+    """按厂商返回的实际用量计算成本，返回 (金额, 依据)。
+
+    依据优先级：tokens（按 Token 计费模型）> gpu_seconds（自建算力，pricing.gpu_per_second）
+    > video_seconds（按秒计费）。按条计费或缺少用量时返回 (None, "")，调用方保留估算值。
+    """
+    entry = pricing_entry(unit_prices)
+    if not entry:
+        return None, ""
+    tokens = usage.get("completion_tokens") or usage.get("total_tokens")
+    if entry.get("output_per_million_tokens") is not None and tokens:
+        cost = entry["output_per_million_tokens"] * Decimal(int(tokens)) / Decimal(1_000_000)
+        return cost.quantize(Decimal("0.000001")), "tokens"
+    gpu_seconds = usage.get("gpu_seconds")
+    if entry.get("gpu_per_second") is not None and gpu_seconds:
+        cost = entry["gpu_per_second"] * Decimal(str(float(gpu_seconds)))
+        return cost.quantize(Decimal("0.000001")), "gpu_seconds"
+    seconds = usage.get("output_video_seconds")
+    if entry.get("per_piece") is None and entry.get("output_per_second") is not None and seconds:
+        cost = entry["output_per_second"] * Decimal(str(float(seconds)))
+        return cost.quantize(Decimal("0.000001")), "video_seconds"
+    return None, ""
+
+
 def snapshot_price(provider: str, model: str, resolution: str) -> dict:
     """价格快照（写入 job.params / usage event_metadata，便于审计回溯）。"""
     return snapshot_entry(_lookup(provider, model, resolution))

@@ -22,7 +22,7 @@ from app.db.database import SessionLocal
 from app.db.models import GenerationJob, RegenerationRequest, SeriesProject, WorkflowRun
 from app.model_runtime.media import get_media_runtime
 from app.providers.base import VideoGenerationRequest, VideoProvider
-from app.providers.pricing import PRICE_TABLE_VERSION, estimate_video_cost
+from app.providers.pricing import PRICE_TABLE_VERSION, actual_video_cost, estimate_video_cost
 from app.providers.video_router import NoProviderError, RouteDecision
 from app.services import (
     asset_service,
@@ -118,6 +118,38 @@ async def _job_user_id(session: AsyncSession, job: GenerationJob) -> Optional[in
     return await session.scalar(select(SeriesProject.user_id).where(SeriesProject.id == job.project_id))
 
 
+_PURPOSE_BY_OPERATION = {
+    "generate_video": "shot_video",
+    "generate_image": "image_generation",
+    "tts": "speech",
+    "clone_voice": "speech",
+    "render_episode": "render",
+}
+
+
+async def _job_trace_context(session: AsyncSession, job: GenerationJob) -> dict:
+    """用量记录的业务上下文：归属的集/镜头/工作流节点、用途、档位与 Deployment。"""
+    params = job.params or {}
+    routing = params.get("routing_snapshot") or {}
+    shot_id = job.shot_id or params.get("shot_id") or None
+    episode_id = params.get("episode_id") or None
+    if episode_id is None and shot_id:
+        from app.db.models import Scene, Shot
+
+        episode_id = await session.scalar(
+            select(Scene.episode_id).join(Shot, Shot.scene_id == Scene.id).where(Shot.id == shot_id)
+        )
+    return {
+        "shot_id": shot_id,
+        "episode_id": episode_id,
+        "workflow_run_id": job.workflow_run_id,
+        "workflow_step_id": job.workflow_step_id,
+        "purpose": _PURPOSE_BY_OPERATION.get(job.operation, job.operation),
+        "tier": str((routing.get("route") or {}).get("tier") or ""),
+        "deployment_name": str(routing.get("deployment_name") or ""),
+    }
+
+
 async def _record_job_usage(
     session: AsyncSession,
     job: GenerationJob,
@@ -133,9 +165,16 @@ async def _record_job_usage(
     provider_request_id: str = "",
     error_code: str = "",
     event_metadata: Optional[dict] = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    gpu_seconds: float = 0,
 ) -> None:
     await usage_service.record_usage(
         session,
+        **await _job_trace_context(session, job),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        gpu_seconds=gpu_seconds,
         job_id=job.id,
         invocation_id=(job.params or {}).get("model_invocation_id"),
         project_id=job.project_id,
@@ -631,6 +670,10 @@ async def _finish_job(
         break  # MVP 单产物
 
     usage = result.usage or {}
+    mocked = result.raw_metadata.get("mocked", False)
+    # 按厂商返回的实际用量（Token / GPU 秒 / 视频秒）计算实际成本；算不出时只保留估算。
+    unit_prices = ((job.params or {}).get("price_snapshot") or {}).get("unit_prices") or {}
+    actual, actual_basis = (None, "") if mocked else actual_video_cost(unit_prices, usage)
     await finalize_job(
         session,
         job,
@@ -639,7 +682,7 @@ async def _finish_job(
             "provider": result.provider,
             "model": result.model,
             "external_task_id": result.external_request_id,
-            "mocked": result.raw_metadata.get("mocked", False),
+            "mocked": mocked,
         },
         artifact={"artifact_id": artifact_id, "storage_key": storage_key, "url": url},
         usage_fields={
@@ -647,10 +690,13 @@ async def _finish_job(
             "status": "success",
             "latency_ms": int((time.monotonic() - started) * 1000),
             "estimated_cost": estimated,
-            "cost_source": "estimate",
+            "actual_cost": actual,
+            "cost_source": "provider_usage" if actual is not None else "estimate",
             "output_units": float(usage.get("output_video_seconds", 0) or 0),
+            "output_tokens": int(usage.get("completion_tokens") or 0),
+            "gpu_seconds": float(usage.get("gpu_seconds") or 0),
             "provider_request_id": result.external_request_id,
-            "event_metadata": {"mocked": result.raw_metadata.get("mocked", False)},
+            "event_metadata": {"mocked": mocked, "actual_cost_basis": actual_basis},
         },
     )
 
@@ -883,6 +929,7 @@ async def execute_render_episode(session: AsyncSession, job: GenerationJob) -> N
 
     await usage_service.record_usage(
         session,
+        **await _job_trace_context(session, job),
         job_id=job.id,
         project_id=job.project_id,
         user_id=await _job_user_id(session, job),
