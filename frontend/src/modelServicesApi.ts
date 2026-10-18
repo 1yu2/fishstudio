@@ -21,8 +21,11 @@ export interface RuntimeDeployment extends ModelDeployment {
   available: boolean
 }
 
+export type RouteTier = 'draft' | 'preview' | 'final'
+
 export interface ModelRoute {
   purpose: string
+  tier: RouteTier
   modality: string
   primary_deployment: string
   fallback_deployments: string[]

@@ -76,9 +76,17 @@ async def _resolve_worker_image(session, req, purpose: str):
     return await resolve_and_generate_image(session, req, purpose=purpose)
 
 
-def _resolve_locked_video_provider(provider_name: str) -> tuple[Optional[VideoProvider], bool]:
-    """解析报价锁定 Provider；显式 Mock 模式下允许不可用真实 Provider 降级。"""
-    deployment = _media_runtime.get("video", provider_name)
+def _resolve_locked_video_provider(
+    provider_name: str, deployment_name: str = ""
+) -> tuple[Optional[VideoProvider], bool]:
+    """解析报价锁定 Provider；显式 Mock 模式下允许不可用真实 Provider 降级。
+
+    新快照带 deployment_name（slug），同一 Driver 配了多个 Deployment 时据此区分；
+    旧快照只有 Provider 名，按名称查找。
+    """
+    deployment = _media_runtime.get("video", deployment_name) if deployment_name else None
+    if deployment is None:
+        deployment = _media_runtime.get("video", provider_name)
     provider = deployment.provider if deployment else None
     if provider is not None and provider.name == "mock":
         return (provider, True) if mock_providers_enabled() else (None, False)
@@ -311,7 +319,9 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
         if routing_snapshot:
             # 使用已锁定 Provider/Model
             locked_prov_name = routing_snapshot.get("provider", job.provider)
-            decision_prov, mocked = _resolve_locked_video_provider(locked_prov_name)
+            decision_prov, mocked = _resolve_locked_video_provider(
+                locked_prov_name, routing_snapshot.get("deployment_name", "")
+            )
             if decision_prov is None:
                 await finalize_job(
                     session,

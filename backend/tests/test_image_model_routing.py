@@ -13,7 +13,9 @@ class FakeSession:
         self.routes = routes
 
     async def get(self, model, key):
-        return self.routes.get(key)
+        # ModelRoute 主键为 (purpose, tier)；本文件的用例只配置 final 档。
+        purpose, tier = key
+        return self.routes.get(purpose) if tier == "final" else None
 
 
 class FakeImageProvider(ImageProvider):

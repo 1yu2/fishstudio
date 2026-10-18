@@ -15,6 +15,21 @@ FishStudio 自 2026-09-20 起使用数据库中的 `model_deployments` 和 `mode
 DashScope TTS 和腾讯 3D。Local H3 的地址、模型、并发、时长、Artifact 限制和自托管
 成本会一并迁移，密钥只保存为 `env:LOCAL_H3_API_KEY` 引用。
 
+## 质量档位与视频路由（Alembic 0023）
+
+`model_routes` 主键改为 `(purpose, tier)`，`tier` 取 `draft` / `preview` / `final`；
+升级后已有绑定全部成为 `final` 档。某档位未配置时回退到 `final`。
+
+视频镜头（`shot_video`）的报价与 Job 规划现在按数据库 Route 选择 Deployment，
+不再使用代码里的静态路由：
+
+- 按镜头真实请求形态路由：有首帧走图生视频能力，有参考图按参考图数量判断；
+- 跳过未启用、密钥缺失、能力不满足、没有价格或该时长无价格的候选，并在计划的
+  `route.skipped` 中记录原因；没有可用候选时报错，不再静默选中未配置的服务；
+- 单价只取 Deployment 的 `pricing`；
+- Run 策略可用 `video_tier` 选择档位、`explicit_deployment` 指定 Deployment；
+- Catalog 中尚无任何视频 Deployment 时，仍沿用旧静态路由（兼容期）。
+
 ## 兼容边界
 
 - 兼容周期：保留到下一个模型配置大版本；数据库没有任何 Deployment 时，Runtime

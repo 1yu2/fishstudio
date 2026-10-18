@@ -6,7 +6,7 @@
 
 import os
 from decimal import Decimal, InvalidOperation
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 PRICE_TABLE_VERSION = "2026-08-03"
 VIDEO_ROUTING_VERSION = "2026-08-05.3"
@@ -76,41 +76,50 @@ def estimate_image_cost(provider: str, model: str, *, count: int = 1) -> Optiona
     return (unit * count).quantize(Decimal("0.000001"))
 
 
+_TEXT_PRICING_KEYS = {"currency", "version", "unit", "source", "status", "per_piece"}
+
+
+def pricing_entry(pricing: Mapping[str, Any]) -> Optional[dict]:
+    """把 Deployment.pricing（JSON，数字可能是字符串）转成计价条目；空或非法返回 None。
+
+    bootstrap 写入的按条价格是扁平字段 per_piece_<秒数>，这里还原为 per_piece 字典。
+    """
+    raw = dict(pricing)
+    try:
+        if not raw.get("output_per_second") and not raw.get("per_piece"):
+            pieces = {
+                int(key.removeprefix("per_piece_")): Decimal(str(value))
+                for key, value in raw.items()
+                if key.startswith("per_piece_")
+            }
+            if pieces:
+                raw["per_piece"] = pieces
+        converted = {
+            key: Decimal(str(value)) if key not in _TEXT_PRICING_KEYS else value
+            for key, value in raw.items()
+            if not key.startswith("per_piece_")
+        }
+        if isinstance(converted.get("per_piece"), dict):
+            converted["per_piece"] = {
+                int(seconds): Decimal(str(price)) for seconds, price in converted["per_piece"].items()
+            }
+    except (InvalidOperation, ValueError):
+        return None
+    return converted or None
+
+
 def _lookup(provider: str, model: str, resolution: str) -> Optional[dict]:
     # 新配置优先：只要 Catalog 中存在对应 Deployment，价格为空就明确表示
     # unavailable，不再误退回静态价格或零成本。
-    try:
-        from app.model_runtime.catalog import get_catalog
+    from app.model_runtime.catalog import get_catalog
 
-        matches = [
-            item
-            for item in get_catalog().snapshot.list()
-            if item.model == model
-            and (item.driver == provider or getattr(item.instance, "name", "") == provider)
-        ]
-        if matches:
-            pricing = dict(matches[0].pricing)
-            if not pricing.get("output_per_second") and not pricing.get("per_piece"):
-                # bootstrap 的按条价格采用扁平字段，兼容原有计算结构。
-                pieces = {
-                    int(key.removeprefix("per_piece_")): Decimal(str(value))
-                    for key, value in pricing.items()
-                    if key.startswith("per_piece_")
-                }
-                if pieces:
-                    pricing["per_piece"] = pieces
-            converted = {
-                key: Decimal(str(value))
-                if key not in {"currency", "version", "unit", "source", "status", "per_piece"}
-                else value
-                for key, value in pricing.items()
-                if not key.startswith("per_piece_")
-            }
-            if "per_piece" in pricing:
-                converted["per_piece"] = pricing["per_piece"]
-            return converted or None
-    except (InvalidOperation, ValueError):
-        return None
+    matches = [
+        item
+        for item in get_catalog().snapshot.list()
+        if item.model == model and (item.driver == provider or getattr(item.instance, "name", "") == provider)
+    ]
+    if matches:
+        return pricing_entry(matches[0].pricing)
     if provider == "local_h3":
         raw = os.getenv("LOCAL_H3_COST_CNY_PER_SECOND", "").strip()
         if not raw:
@@ -137,7 +146,26 @@ def estimate_video_cost(
     entry = _lookup(provider, model, resolution)
     if entry is None:
         return None
+    return estimate_video_cost_from_entry(
+        entry,
+        output_seconds=output_seconds,
+        input_video_seconds=input_video_seconds,
+        input_image_count=input_image_count,
+        input_audio_seconds=input_audio_seconds,
+        regeneration_output_seconds=regeneration_output_seconds,
+    )
 
+
+def estimate_video_cost_from_entry(
+    entry: Mapping[str, Any],
+    *,
+    output_seconds: float,
+    input_video_seconds: float = 0,
+    input_image_count: int = 0,
+    input_audio_seconds: float = 0,
+    regeneration_output_seconds: float = 0,
+) -> Optional[Decimal]:
+    """给定计价条目估算成本；按条计费模型不支持该时长时返回 None。"""
     total = _ZERO
     per_piece = entry.get("per_piece")
     if per_piece is not None:
@@ -161,7 +189,10 @@ def estimate_video_cost(
 
 def snapshot_price(provider: str, model: str, resolution: str) -> dict:
     """价格快照（写入 job.params / usage event_metadata，便于审计回溯）。"""
-    entry = _lookup(provider, model, resolution)
+    return snapshot_entry(_lookup(provider, model, resolution))
+
+
+def snapshot_entry(entry: Optional[Mapping[str, Any]], *, version: str = PRICE_TABLE_VERSION) -> dict:
     unit_prices: dict = {}
     if entry is not None:
         for key, value in entry.items():
@@ -171,7 +202,7 @@ def snapshot_price(provider: str, model: str, resolution: str) -> dict:
                 unit_prices[key] = str(value)
             else:
                 unit_prices[key] = value
-    return {"price_table_version": PRICE_TABLE_VERSION, "unit_prices": unit_prices}
+    return {"price_table_version": version, "unit_prices": unit_prices}
 
 
 def resolve_video_routing(
@@ -257,10 +288,21 @@ def resolve_video_routing(
 _V1_MODELS = {"MiniMax-Hailuo-02", "MiniMax-Hailuo-2.3", "MiniMax-Hailuo-2.3-Fast"}
 
 
+def video_protocol(provider_name: str, model: str) -> str:
+    """Worker 查询/取结果时使用的协议标识；按 Provider 实例名与模型推断。"""
+    if provider_name == "local_h3":
+        return "local_h3_v1"
+    if model == "MiniMax-H3":
+        return "h3"
+    if model in _V1_MODELS:
+        return "v1"
+    return "volcano"
+
+
 def _make_plan(provider: str, model: str, resolution: str, duration: int, protocol: str = "") -> dict:
     """给定参数计算完整 routing_snapshot。"""
     if not protocol:
-        protocol = "h3" if model == "MiniMax-H3" else ("v1" if model in _V1_MODELS else "volcano")
+        protocol = video_protocol(provider, model)
 
     price = estimate_video_cost(provider, model, resolution, output_seconds=duration)
     if price is None and model in _V1_MODELS and duration not in (6, 10):
