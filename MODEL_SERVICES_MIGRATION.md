@@ -60,4 +60,21 @@ POST /api/model-runtime/reload?probe=true
 4. 在“用途绑定”把 `shot_video` 的主模型设为该 Deployment。
 5. 先执行单镜头 smoke，检查 Job 与 ModelInvocation 的 deployment revision、轮询和 Artifact。
 
+### 开启 Local H3 图生视频（首帧 / 首尾帧）
+
+Gateway 默认只开放文生视频。量化 H3 工作流里的 `MiniMaxH3ImageToVideo` 节点本身支持
+首帧/尾帧图片输入，开启步骤：
+
+1. 在 ComfyUI 里给该节点接一个 `LoadImage`，手动跑通一次首帧生成，记下图片输入名。
+2. Gateway 环境变量设置 `H3_GATEWAY_MODES=text,first_frame`（首尾帧再加 `first_last_frame`）。
+   输入名可留空，由 Gateway 从 `/object_info/MiniMaxH3ImageToVideo` 自动识别；识别不到时
+   用 `H3_GATEWAY_FIRST_FRAME_INPUT` / `H3_GATEWAY_LAST_FRAME_INPUT` 显式指定。
+3. 重启 Gateway，确认 `/health` 的 `capabilities.modes` 已包含新模式。
+4. 在 FishStudio 模型服务页把 Local H3 Deployment 的能力 `modes` 改为同一列表。
+   之后有首帧的镜头才会被路由到本地 H3（见上文按真实请求形态路由）。
+
+FishStudio 会把本地存储里的帧以 base64 内联发送；Gateway 只接受内联 PNG / JPEG / WebP，
+不会去拉取任意 URL，单张上限 `H3_GATEWAY_MAX_IMAGE_BYTES`（默认 10MB）。图片在提交时
+上传到 ComfyUI input 目录并通过 `LoadImage` 节点接入工作流。
+
 远端 Gateway/ComfyUI 的详细部署仍见 `MINIMAX_H3_REMOTE_DEPLOYMENT.md`。

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import copy
 import hashlib
 import hmac
@@ -56,9 +58,54 @@ class Settings:
             "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
         ).strip()
         self.turbo_steps = max(1, int(os.getenv("H3_GATEWAY_TURBO_STEPS", "8")))
+        # 已在本机 ComfyUI 验证过的模式；图生视频需先手动跑通再开启。
+        self.modes = _parse_modes(os.getenv("H3_GATEWAY_MODES", "text"))
+        # MiniMaxH3ImageToVideo 节点上首帧/尾帧 IMAGE 输入的名称；留空时从 /object_info 自动识别。
+        self.first_frame_input = os.getenv("H3_GATEWAY_FIRST_FRAME_INPUT", "").strip()
+        self.last_frame_input = os.getenv("H3_GATEWAY_LAST_FRAME_INPUT", "").strip()
+        self.max_image_bytes = int(os.getenv("H3_GATEWAY_MAX_IMAGE_BYTES", str(10 * 1024 * 1024)))
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
+
+
+SUPPORTED_MODES = ("text", "first_frame", "first_last_frame")
+FRAME_ROLES_BY_MODE = {
+    "text": (),
+    "first_frame": ("first_frame",),
+    "first_last_frame": ("first_frame", "last_frame"),
+}
+_IMAGE_SUFFIX_BY_MIME = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+
+
+def _parse_modes(raw: str) -> tuple[str, ...]:
+    modes = tuple(dict.fromkeys(item.strip() for item in raw.split(",") if item.strip()))
+    unknown = set(modes) - set(SUPPORTED_MODES)
+    if unknown:
+        raise RuntimeError(f"H3_GATEWAY_MODES 含未知模式: {sorted(unknown)}")
+    return modes or ("text",)
+
+
+def decode_image_reference(url: str, *, max_bytes: int) -> tuple[bytes, str]:
+    """解析 data:image/...;base64 参考图，返回 (字节, 扩展名)。
+
+    Gateway 只接受内联图片：FishStudio 会把本地存储的帧内联发送，避免 Gateway 去拉取任意 URL。
+    """
+    if not url.startswith("data:"):
+        raise ValueError("参考图片必须是 data:image/...;base64 内联数据")
+    header, _, payload = url.partition(",")
+    mime = header[len("data:") :].split(";", 1)[0].strip().lower()
+    if ";base64" not in header or mime not in _IMAGE_SUFFIX_BY_MIME:
+        raise ValueError("参考图片只支持 base64 编码的 PNG / JPEG / WebP")
+    if len(payload) * 3 // 4 > max_bytes:
+        raise ValueError("参考图片超过大小限制")
+    try:
+        data = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("参考图片 base64 解码失败") from error
+    if not data or len(data) > max_bytes:
+        raise ValueError("参考图片为空或超过大小限制")
+    return data, _IMAGE_SUFFIX_BY_MIME[mime]
 
 
 class GenerationRequest(BaseModel):
@@ -220,6 +267,7 @@ class WorkflowBuilder:
     TURBO_SWITCH_NODE = "140:139"
     TURBO_STEPS_NODE = "140:138"
     OUTPUT_NODE = "92"
+    FRAME_NODE_PREFIX = "fishstudio_frame_"
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -252,15 +300,58 @@ class WorkflowBuilder:
             raise ValueError(f"不支持的画幅: {aspect_ratio}")
         return sizes[aspect_ratio]
 
-    def build(self, task_id: str, request: GenerationRequest) -> tuple[dict[str, Any], int, int]:
+    def frame_references(self, request: GenerationRequest) -> dict[str, str]:
+        """校验模式与参考图，返回 {role: data URL}；不做任何网络或磁盘操作。"""
+        if request.mode not in self.settings.modes:
+            raise ValueError(f"当前 Gateway 仅开放模式: {', '.join(self.settings.modes)}")
+        roles = FRAME_ROLES_BY_MODE[request.mode]
+        frames: dict[str, str] = {}
+        for item in request.references:
+            role = str(item.get("role") or "")
+            if role not in roles:
+                raise ValueError(f"{request.mode} 模式不接受参考素材 role={role or '空'}")
+            if role in frames:
+                raise ValueError(f"参考素材 {role} 重复")
+            url = str(item.get("url") or "")
+            decode_image_reference(url, max_bytes=self.settings.max_image_bytes)
+            frames[role] = url
+        missing = [role for role in roles if role not in frames]
+        if missing:
+            raise ValueError(f"{request.mode} 模式缺少参考图: {', '.join(missing)}")
+        return frames
+
+    def build(
+        self,
+        task_id: str,
+        request: GenerationRequest,
+        *,
+        frame_inputs: dict[str, str] | None = None,
+        uploaded_frames: dict[str, str] | None = None,
+    ) -> tuple[dict[str, Any], int, int]:
+        """构造 ComfyUI 工作流。
+
+        frame_inputs：{role: 节点输入名}；uploaded_frames：{role: ComfyUI input 目录中的文件名}。
+        两者只在提交阶段提供；接收请求时只做校验。
+        """
         if request.deployment != self.settings.deployment:
             raise ValueError("deployment 与 Gateway 不匹配")
         if request.model != self.settings.model:
             raise ValueError("model 与 Gateway 不匹配")
-        if request.mode != "text" or request.references:
-            raise ValueError("当前 Gateway 仅开放纯文生视频 text 模式")
+        frames = self.frame_references(request)
         width, height = self.size(request.aspect_ratio, request.resolution)
         workflow = copy.deepcopy(self.template)
+        if uploaded_frames is not None:
+            for role in frames:
+                input_name = (frame_inputs or {}).get(role)
+                if not input_name:
+                    raise ValueError(f"未找到 {role} 对应的工作流图片输入")
+                node_id = f"{self.FRAME_NODE_PREFIX}{role}"
+                workflow[node_id] = {
+                    "class_type": "LoadImage",
+                    "inputs": {"image": uploaded_frames[role]},
+                    "_meta": {"title": f"FishStudio {role}"},
+                }
+                workflow[self.PROMPT_NODE]["inputs"][input_name] = [node_id, 0]
         prompt_inputs = workflow[self.PROMPT_NODE]["inputs"]
         prompt_inputs.update({"prompt": request.prompt, "width": width, "height": height})
         workflow[self.DURATION_NODE]["inputs"]["value"] = request.duration
@@ -302,6 +393,25 @@ class ComfyClient:
             raise RuntimeError("ComfyUI /prompt 响应缺少 prompt_id")
         return prompt_id
 
+    async def object_info(self, class_type: str) -> dict[str, Any]:
+        response = await self._request("GET", f"/object_info/{class_type}")
+        return response.json().get(class_type) or {}
+
+    async def upload_image(self, data: bytes, filename: str) -> str:
+        """上传到 ComfyUI input 目录，返回 LoadImage 可用的文件名。"""
+        response = await self._request(
+            "POST",
+            "/upload/image",
+            files={"image": (filename, data)},
+            data={"type": "input", "overwrite": "true"},
+        )
+        body = response.json()
+        name = str(body.get("name") or "")
+        if not name:
+            raise RuntimeError("ComfyUI /upload/image 响应缺少文件名")
+        subfolder = str(body.get("subfolder") or "")
+        return f"{subfolder}/{name}" if subfolder else name
+
     async def history(self, prompt_id: str) -> dict[str, Any] | None:
         response = await self._request("GET", f"/history/{prompt_id}")
         data = response.json()
@@ -332,6 +442,34 @@ class ComfyClient:
         if not content or len(content) > self.settings.max_artifact_bytes:
             raise ValueError("ComfyUI 视频产物为空或超过大小限制")
         return content
+
+
+_FIRST_FRAME_HINTS = ("first", "start", "begin")
+_LAST_FRAME_HINTS = ("last", "end", "final")
+
+
+def detect_frame_inputs(node_info: dict[str, Any]) -> dict[str, str]:
+    """从 ComfyUI /object_info 的节点定义中识别首帧、尾帧 IMAGE 输入。
+
+    只有一个 IMAGE 输入时视为首帧输入；名称同时匹配多种含义时以配置为准，这里不猜。
+    """
+    inputs = node_info.get("input") or {}
+    image_inputs = [
+        name
+        for section in ("required", "optional")
+        for name, spec in (inputs.get(section) or {}).items()
+        if isinstance(spec, (list, tuple)) and spec and spec[0] == "IMAGE"
+    ]
+    found: dict[str, str] = {}
+    for name in image_inputs:
+        lowered = name.lower()
+        if any(hint in lowered for hint in _LAST_FRAME_HINTS):
+            found.setdefault("last_frame", name)
+        elif any(hint in lowered for hint in _FIRST_FRAME_HINTS):
+            found.setdefault("first_frame", name)
+    if "first_frame" not in found and len(image_inputs) == 1:
+        found["first_frame"] = image_inputs[0]
+    return found
 
 
 def _find_video(value: Any) -> dict[str, Any] | None:
@@ -401,6 +539,27 @@ class GatewayService:
         self.store = store
         self.comfy = comfy
         self.builder = WorkflowBuilder(settings)
+        self._frame_inputs: dict[str, str] | None = None
+
+    async def frame_inputs(self) -> dict[str, str]:
+        """首帧/尾帧对应的节点输入名：优先用配置，否则从节点定义里按名称识别 IMAGE 输入。"""
+        if self._frame_inputs is not None:
+            return self._frame_inputs
+        configured = {
+            role: name
+            for role, name in (
+                ("first_frame", self.settings.first_frame_input),
+                ("last_frame", self.settings.last_frame_input),
+            )
+            if name
+        }
+        if len(configured) < 2:
+            class_type = self.builder.template[self.builder.PROMPT_NODE]["class_type"]
+            info = await self.comfy.object_info(class_type)
+            detected = detect_frame_inputs(info)
+            configured = {**detected, **configured}
+        self._frame_inputs = configured
+        return configured
 
     async def run(self) -> None:
         while True:
@@ -421,7 +580,19 @@ class GatewayService:
     async def _submit(self, task: dict[str, Any]) -> None:
         try:
             request = GenerationRequest.model_validate(task["request"])
-            workflow, _, _ = self.builder.build(task["task_id"], request)
+            frames = self.builder.frame_references(request)
+            uploaded: dict[str, str] = {}
+            frame_inputs: dict[str, str] = {}
+            if frames:
+                frame_inputs = await self.frame_inputs()
+                for role, url in frames.items():
+                    data, suffix = decode_image_reference(url, max_bytes=self.settings.max_image_bytes)
+                    uploaded[role] = await self.comfy.upload_image(
+                        data, f"fishstudio_{task['task_id']}_{role}.{suffix}"
+                    )
+            workflow, _, _ = self.builder.build(
+                task["task_id"], request, frame_inputs=frame_inputs, uploaded_frames=uploaded
+            )
             await self.store.update(task["task_id"], status="submitting")
             prompt_id = await self.comfy.submit(workflow, task["task_id"])
             await self.store.update(
@@ -554,7 +725,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "queue_depth": running + pending,
             "gateway_queue_depth": await store.active_count(),
             "capabilities": {
-                "modes": ["text"],
+                "modes": list(settings.modes),
                 "durations": [4, 5, 6],
                 "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
                 "max_concurrency": 1,
