@@ -6,7 +6,7 @@
 
 import os
 import time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from langchain_core.callbacks import AsyncCallbackHandler
@@ -87,12 +87,51 @@ def _price(name: str) -> Optional[Decimal]:
     return value if value >= 0 else None
 
 
-def calculate_llm_cost(usage: dict[str, int]) -> tuple[Optional[Decimal], dict[str, Any]]:
-    """按每百万 Token 单价计算 CNY；任一必需价格缺失则不估算。"""
-    input_price = _price("LLM_INPUT_PRICE_CNY_PER_MILLION")
-    cached_price = _price("LLM_CACHED_INPUT_PRICE_CNY_PER_MILLION")
-    output_price = _price("LLM_OUTPUT_PRICE_CNY_PER_MILLION")
+def _deployment_price(pricing: Optional[dict[str, Any]], key: str) -> Optional[Decimal]:
+    value = (pricing or {}).get(key)
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        price = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return price if price >= 0 else None
+
+
+def find_chat_deployment(provider: str, model: str):
+    """按 Driver 与模型名在 Catalog 中找到对应的对话 Deployment（找不到返回 None）。"""
+    from app.model_runtime.catalog import get_catalog
+
+    return next(
+        (
+            item
+            for item in get_catalog().snapshot.list("chat")
+            if item.model == model and provider in {item.driver, item.slug}
+        ),
+        None,
+    )
+
+
+def calculate_llm_cost(
+    usage: dict[str, int], pricing: Optional[dict[str, Any]] = None
+) -> tuple[Optional[Decimal], dict[str, Any]]:
+    """按每百万 Token 单价计算 CNY；任一必需价格缺失则不估算。
+
+    优先使用该模型 Deployment 的价格（input/cached_input/output_per_million_tokens），
+    未配置时回退到全局环境变量 LLM_*_PRICE_CNY_PER_MILLION。
+    """
+    input_price = _deployment_price(pricing, "input_per_million_tokens")
+    output_price = _deployment_price(pricing, "output_per_million_tokens")
+    if input_price is not None and output_price is not None:
+        cached_price = _deployment_price(pricing, "cached_input_per_million_tokens")
+        source = "deployment"
+    else:
+        input_price = _price("LLM_INPUT_PRICE_CNY_PER_MILLION")
+        cached_price = _price("LLM_CACHED_INPUT_PRICE_CNY_PER_MILLION")
+        output_price = _price("LLM_OUTPUT_PRICE_CNY_PER_MILLION")
+        source = "environment"
     snapshot = {
+        "price_source": source,
         "input_price_cny_per_million": str(input_price) if input_price is not None else None,
         "cached_input_price_cny_per_million": (str(cached_price) if cached_price is not None else None),
         "output_price_cny_per_million": str(output_price) if output_price is not None else None,
@@ -151,7 +190,8 @@ class LLMUsageCallback(AsyncCallbackHandler):
             "output_tokens": 0,
             "reasoning_tokens": 0,
         }
-        cost, price_snapshot = calculate_llm_cost(usage)
+        deployment = find_chat_deployment(self.provider, self.model)
+        cost, price_snapshot = calculate_llm_cost(usage, dict(deployment.pricing) if deployment else None)
         if usage_status == "recorded" and cost is None:
             usage_status = "pricing_unavailable"
         event_metadata = {
@@ -178,6 +218,7 @@ class LLMUsageCallback(AsyncCallbackHandler):
                 workflow_run_id=metadata.get("workflow_run_id"),
                 workflow_step_id=metadata.get("workflow_step_id"),
                 purpose=metadata.get("creative_role", "chat"),
+                deployment_name=deployment.slug if deployment else "",
                 input_tokens=usage["input_tokens"],
                 output_tokens=usage["output_tokens"],
                 cached_tokens=usage["cached_input_tokens"],
