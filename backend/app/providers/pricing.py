@@ -156,6 +156,18 @@ def estimate_video_cost(
     )
 
 
+# 按 Token 计费的视频模型（如方舟 Seedance）：tokens ≈ 宽 × 高 × 帧率 × 秒数 / 1024。
+# 各画幅下像素数接近，按分辨率档位取 16:9 的像素数估算；实际用量以厂商返回的 usage 为准。
+_PIXELS_BY_RESOLUTION = {"480p": 854 * 480, "720p": 1280 * 720, "1080p": 1920 * 1080}
+
+
+def estimate_video_tokens(resolution: str, duration: float, *, fps: int = 24) -> Optional[int]:
+    pixels = _PIXELS_BY_RESOLUTION.get((resolution or "").lower())
+    if pixels is None:
+        return None
+    return int(pixels * fps * float(duration) / 1024)
+
+
 def estimate_video_cost_from_entry(
     entry: Mapping[str, Any],
     *,
@@ -164,11 +176,17 @@ def estimate_video_cost_from_entry(
     input_image_count: int = 0,
     input_audio_seconds: float = 0,
     regeneration_output_seconds: float = 0,
+    video_tokens: Optional[int] = None,
 ) -> Optional[Decimal]:
-    """给定计价条目估算成本；按条计费模型不支持该时长时返回 None。"""
+    """给定计价条目估算成本；按条计费模型不支持该时长、或按 Token 计费却无法估算 Token 时返回 None。"""
     total = _ZERO
     per_piece = entry.get("per_piece")
-    if per_piece is not None:
+    per_million_tokens = entry.get("output_per_million_tokens")
+    if per_million_tokens is not None:
+        if video_tokens is None:
+            return None
+        total += per_million_tokens * Decimal(video_tokens) / Decimal(1_000_000)
+    elif per_piece is not None:
         piece = per_piece.get(int(output_seconds))
         if piece is None:
             return None  # 按条计费模型不支持该时长
@@ -292,6 +310,8 @@ def video_protocol(provider_name: str, model: str) -> str:
     """Worker 查询/取结果时使用的协议标识；按 Provider 实例名与模型推断。"""
     if provider_name == "local_h3":
         return "local_h3_v1"
+    if provider_name == "ark":
+        return "ark_v3"
     if model == "MiniMax-H3":
         return "h3"
     if model in _V1_MODELS:

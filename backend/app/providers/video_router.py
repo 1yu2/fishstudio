@@ -45,7 +45,7 @@ class VideoProviderRouter:
 
     def _model_and_resolution(self, provider: VideoProvider, req) -> tuple[str, str]:
         provider_name = getattr(provider, "name", "")
-        if provider_name == "local_h3":
+        if provider_name in {"local_h3", "ark"}:
             return provider.model_name, provider.resolution_for(req)
         if provider_name == "minimax":
             return provider.pick_model(req), provider.resolution_for(req)
