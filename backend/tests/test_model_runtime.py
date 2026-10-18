@@ -105,3 +105,65 @@ async def test_persisted_invocation_reaches_success_terminal(monkeypatch):
     assert result.invocation_id == "inv-1"
     assert calls[0][0] == "begin"
     assert calls[1][2]["status"] == "succeeded"
+
+
+# ── 对话模型遵循「默认模型」（用途路由） ──────────────────────────────────
+
+
+def _with_routes(monkeypatch, routes):
+    from datetime import datetime, timezone
+    from types import MappingProxyType, SimpleNamespace
+
+    from app.model_runtime.catalog import CatalogSnapshot
+
+    snapshot = CatalogSnapshot(
+        MappingProxyType({}), "rev", datetime.now(timezone.utc), MappingProxyType(routes)
+    )
+    monkeypatch.setattr("app.model_runtime.catalog.get_catalog", lambda: SimpleNamespace(snapshot=snapshot))
+
+
+def test_chat_resolution_follows_purpose_route(monkeypatch):
+    _with_routes(monkeypatch, {("planner", "final"): ("cheap",), ("chat", "final"): ("quality",)})
+    runtime = _runtime()
+
+    # 默认打分会选 quality；设置了用途路由后按设置走
+    assert runtime.resolve_chat(ModelPolicy(purpose="planner")).name == "cheap"
+    # agent 映射到「对话 / Copilot」
+    assert runtime.resolve_chat(ModelPolicy(purpose="agent")).name == "quality"
+    # 没有单独设置的用途回退到对话默认模型
+    assert runtime.resolve_chat(ModelPolicy(purpose="director")).name == "quality"
+    # 显式指定优先于默认模型
+    assert (
+        runtime.resolve_chat(ModelPolicy(purpose="planner", explicit_deployment="quality")).name == "quality"
+    )
+
+
+def test_route_choice_skips_models_missing_capabilities(monkeypatch):
+    _with_routes(monkeypatch, {("planner", "final"): ("cheap", "quality")})
+
+    selected = _runtime().resolve_chat(
+        ModelPolicy(purpose="planner", required_capabilities=frozenset({"tools"}))
+    )
+
+    assert selected.name == "quality"
+
+
+def test_unknown_routes_fall_back_to_scoring(monkeypatch):
+    _with_routes(monkeypatch, {("chat", "final"): ("deleted-model",)})
+
+    assert _runtime().resolve_chat(ModelPolicy(purpose="chat", quality_tier="quality")).name == "quality"
+
+
+@pytest.mark.asyncio
+async def test_catalog_snapshot_carries_routes_and_revision_changes():
+    from app.model_runtime.catalog import CatalogManager
+
+    manager = CatalogManager()
+    first = await manager.reload_rows([], routes={("chat", "final"): ("a",)})
+    same = await manager.reload_rows([], routes={("chat", "final"): ("a",)})
+    changed = await manager.reload_rows([], routes={("chat", "final"): ("b", "a")})
+
+    assert first.route_candidates("chat") == ("a",)
+    assert same is first
+    assert changed.catalog_revision != first.catalog_revision
+    assert changed.route_candidates("chat", "preview") == ("b", "a")

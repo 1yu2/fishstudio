@@ -102,6 +102,14 @@ def _has_capability(deployment: ChatDeployment, capability: str) -> bool:
     return mapping.get(capability, capability in deployment.capabilities.modalities)
 
 
+# 代码里使用的对话用途 → 设置页「默认模型」中的用途
+CHAT_PURPOSE_ALIASES = {
+    "agent": "chat",
+    "script_reviewer": "reviewer",
+    "continuity_reviewer": "reviewer",
+}
+
+
 class ModelRuntime:
     """共享 Catalog 与路由控制面；具体协议由注册的 factory/Adapter 实现。"""
 
@@ -123,6 +131,21 @@ class ModelRuntime:
 
     def list_chat(self) -> list[ChatDeployment]:
         return list(self._deployments.values())
+
+    def _route_choice(
+        self, policy: ModelPolicy, candidates: list["ChatDeployment"]
+    ) -> Optional["ChatDeployment"]:
+        """按「默认模型」设置（数据库用途路由）选择：先该用途，再回退对话默认模型。"""
+        from app.model_runtime.catalog import get_catalog
+
+        snapshot = get_catalog().snapshot
+        by_name = {item.name: item for item in candidates}
+        purpose = CHAT_PURPOSE_ALIASES.get(policy.purpose, policy.purpose)
+        for route_purpose in dict.fromkeys((purpose, "chat")):
+            for slug in snapshot.route_candidates(route_purpose):
+                if slug in by_name:
+                    return by_name[slug]
+        return None
 
     def resolve_chat(self, policy: ModelPolicy) -> ChatDeployment:
         candidates = [
@@ -147,6 +170,10 @@ class ModelRuntime:
                 f"no chat deployment satisfies purpose={policy.purpose}, "
                 f"capabilities={sorted(policy.required_capabilities)}; available={available}"
             )
+        if not policy.explicit_deployment:
+            routed = self._route_choice(policy, candidates)
+            if routed is not None:
+                return routed
         if policy.quality_tier == "quality":
             candidates.sort(key=lambda item: (-item.quality_score, item.latency_score, item.name))
         elif policy.quality_tier in {"cheap", "cheapest"}:
