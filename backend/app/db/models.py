@@ -81,6 +81,28 @@ class AuditLog(Base):
     )
 
 
+class ModelProvider(Base):
+    """供应商账号：一个服务地址 + 一把密钥（只存引用）。其下模型继承地址与密钥引用。"""
+
+    __tablename__ = "model_providers"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    slug: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    preset: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(2048), nullable=False, default="")
+    credential_ref: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ModelDeployment(Base):
     """管理员配置的模型服务实例；密钥只保存引用，不保存明文。"""
 
@@ -101,6 +123,10 @@ class ModelDeployment(Base):
     pricing: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # 所属供应商；地址与密钥引用由供应商统一管理并同步到此行（0025）。
+    provider_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("model_providers.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

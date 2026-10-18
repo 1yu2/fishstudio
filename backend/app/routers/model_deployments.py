@@ -74,6 +74,10 @@ async def create_deployment(
 ) -> DeploymentDTO:
     try:
         row = await service.create_deployment(session, body)
+        # 旧接口直接创建的模型同样归入供应商（按地址 + 密钥引用）。
+        from app.services.model_provider_service import assign_unowned_deployments
+
+        await assign_unowned_deployments(session)
         dto = service.to_dto(row)
         session.add(_audit(admin, "model_deployment.create", row.slug, after=dto.model_dump(mode="json")))
         await session.commit()
@@ -102,6 +106,8 @@ async def update_deployment(
     row = await service.get_deployment(session, slug)
     if row is None:
         raise HTTPException(status_code=404, detail="Deployment not found")
+    if row.provider_id and (body.base_url is not None or body.credential_ref is not None):
+        raise HTTPException(status_code=409, detail="地址和密钥由供应商统一管理，请在供应商设置中修改")
     before = service.to_dto(row).model_dump(mode="json")
     try:
         row = await service.update_deployment(session, row, body)

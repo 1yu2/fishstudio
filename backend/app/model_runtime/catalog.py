@@ -14,7 +14,7 @@ from typing import Any, Iterable, Mapping
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ModelDeployment
+from app.db.models import ModelDeployment, ModelProvider
 from app.model_runtime.deployment_config import DeploymentInput
 from app.model_runtime.registry import DEFAULT_DRIVER_REGISTRY, DriverRegistry
 
@@ -68,9 +68,9 @@ def _row_payload(row: ModelDeployment) -> DeploymentInput:
     return DeploymentInput.model_validate({key: getattr(row, key) for key in DeploymentInput.model_fields})
 
 
-def _revision(rows: Iterable[ModelDeployment]) -> str:
+def _revision(rows: Iterable[ModelDeployment], disabled_providers: frozenset[str] = frozenset()) -> str:
     values = sorted((row.slug, row.revision, row.config_hash) for row in rows)
-    raw = json.dumps(values, separators=(",", ":"), ensure_ascii=True)
+    raw = json.dumps([values, sorted(disabled_providers)], separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -90,10 +90,16 @@ class CatalogManager:
         return self._last_failure
 
     async def reload_rows(
-        self, rows: Iterable[ModelDeployment], *, probe: bool = False, force: bool = False
+        self,
+        rows: Iterable[ModelDeployment],
+        *,
+        probe: bool = False,
+        force: bool = False,
+        disabled_providers: frozenset[str] = frozenset(),
     ) -> CatalogSnapshot:
+        """disabled_providers：已停用供应商的 id，其下模型一律视为停用。"""
         rows = list(rows)
-        attempted_revision = _revision(rows)
+        attempted_revision = _revision(rows, disabled_providers)
         async with self._reload_lock:
             if not force and attempted_revision == self._snapshot.catalog_revision:
                 return self._snapshot
@@ -101,6 +107,8 @@ class CatalogManager:
                 built: dict[str, CatalogDeployment] = {}
                 for row in rows:
                     payload = _row_payload(row)
+                    if getattr(row, "provider_id", None) in disabled_providers:
+                        payload = payload.model_copy(update={"enabled": False})
                     instance = self.registry.build(payload)
                     if probe and payload.enabled:
                         await self.registry.probe(payload, instance)
@@ -142,7 +150,14 @@ class CatalogManager:
                 ModelDeployment.modality, ModelDeployment.priority, ModelDeployment.slug
             )
         )
-        return await self.reload_rows(result.scalars().all(), probe=probe, force=force)
+        disabled = frozenset(
+            (await session.execute(select(ModelProvider.id).where(ModelProvider.enabled.is_(False))))
+            .scalars()
+            .all()
+        )
+        return await self.reload_rows(
+            result.scalars().all(), probe=probe, force=force, disabled_providers=disabled
+        )
 
 
 CATALOG = CatalogManager()
