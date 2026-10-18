@@ -30,6 +30,24 @@ DashScope TTS 和腾讯 3D。Local H3 的地址、模型、并发、时长、Art
 - Run 策略可用 `video_tier` 选择档位、`explicit_deployment` 指定 Deployment；
 - Catalog 中尚无任何视频 Deployment 时，仍沿用旧静态路由（兼容期）。
 
+## Seedance（火山方舟）原生接入
+
+新增 Driver `ark_video`（设置页「Seedance（火山方舟）」），直连方舟
+`/contents/generations/tasks` 异步接口，全程 httpx 异步，替代旧的同步封装。
+
+- 地址填 `https://ark.cn-beijing.volces.com/api/v3`，模型填方舟控制台中的模型 ID
+  （如 `doubao-seedance-1-5-pro-251215`），密钥沿用 `VOLCANO_API_KEY`。
+- 支持文生视频、首帧、首尾帧；参考图模式需在能力里显式开启 `reference` 并设置
+  `max_reference_images`（仅部分模型支持）。
+- 默认 `return_last_frame=true`：尾帧随视频一起下载，记录在视频 Artifact 的
+  `meta.last_frame_storage_key`，供下一镜接力；默认不生成音频（配音单独做）。
+- draft/preview 档默认 480p，final 档默认 720p，可在配置中调整。
+- 方舟按 Token 计费，价格建议配置为 `{"output_per_million_tokens": "<元/百万 token>"}`；
+  报价按 宽×高×24fps×秒数/1024 估算 Token，实际用量记录在结果 usage 中。
+- 结果链接 24 小时失效，任务成功后立即下载到本地存储。
+- 首次启动迁移：直连方舟（非 DMXAPI）的 `VOLCANO_API_KEY` 现在创建 `ark_video`
+  Deployment；已存在的 `volcano-video` 不会被改写，可在设置页改用新 Driver。
+
 ## 兼容边界
 
 - 兼容周期：保留到下一个模型配置大版本；数据库没有任何 Deployment 时，Runtime

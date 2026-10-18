@@ -84,17 +84,20 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             capabilities={"operations": ["generate", "edit"]},
             pricing={"currency": "CNY", "output_per_image": "0.20"},
         )
+        via_dmxapi = "dmxapi.cn" in base_url.lower() or _enabled("VOLCANO_USE_DMXAPI")
         add(
             ("VOLCANO_API_KEY", "VOLCANO_BASE_URL", "VOLCANO_VIDEO_MODEL"),
-            name="Volcano Video",
+            name="Seedance (Volcano Ark)" if not via_dmxapi else "Volcano Video",
             slug="volcano-video",
-            driver="volcano_video",
+            # 直连方舟使用原生异步 Adapter；DMXAPI 代理协议不同，仍走旧 Driver。
+            driver="volcano_video" if via_dmxapi else "ark_video",
             modality="video",
             model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
             base_url=base_url,
             credential_ref="env:VOLCANO_API_KEY",
-            config={"protocol": "volcano"},
+            config={"protocol": "volcano"} if via_dmxapi else {},
             capabilities={"min_duration": 4, "max_duration": 12},
+            # 占位价，待在模型服务页按方舟刊例改为 output_per_million_tokens。
             pricing={"currency": "CNY", "output_per_second": "0.50"},
             priority=120,
         )

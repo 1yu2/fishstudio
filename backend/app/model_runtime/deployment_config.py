@@ -90,6 +90,60 @@ class VideoCapabilities(StrictConfigModel):
         return self
 
 
+ARK_RESOLUTIONS = ("480p", "720p", "1080p")
+ARK_ASPECT_RATIOS = ("16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "9:21", "adaptive")
+
+
+class ArkVideoConfig(StrictConfigModel):
+    """火山方舟 Seedance：请求默认值与下载限制。"""
+
+    timeout_seconds: float = Field(default=60, gt=0, le=600)
+    artifact_timeout_seconds: float = Field(default=600, gt=0, le=3600)
+    max_concurrency: int = Field(default=2, ge=1, le=64)
+    max_artifact_bytes: int = Field(default=536_870_912, ge=1_048_576, le=5_368_709_120)
+    max_inline_image_bytes: int = Field(default=10_485_760, ge=1_024, le=31_457_280)
+    default_resolution: Literal["480p", "720p", "1080p"] = "720p"
+    preview_resolution: Literal["480p", "720p", "1080p"] = "480p"
+    generate_audio: bool = False
+    watermark: bool = False
+    return_last_frame: bool = True
+    camera_fixed: bool | None = None
+    service_tier: Literal["default", "flex"] = "default"
+    execution_expires_after: int | None = Field(default=None, ge=3600, le=259_200)
+    callback_url: str = Field(default="", max_length=2048)
+    parameter_style: Literal["fields", "inline"] = "fields"
+    artifact_allowed_host_suffixes: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("callback_url")
+    @classmethod
+    def validate_callback(cls, value: str) -> str:
+        return _validate_url(value, required=False)
+
+
+class ArkVideoCapabilities(StrictConfigModel):
+    modes: list[Literal["text", "first_frame", "first_last_frame", "reference"]] = Field(
+        default_factory=lambda: ["text", "first_frame", "first_last_frame"], min_length=1
+    )
+    min_duration: int = Field(default=4, ge=1, le=60)
+    max_duration: int = Field(default=12, ge=1, le=60)
+    resolutions: list[Literal["480p", "720p", "1080p"]] = Field(
+        default_factory=lambda: list(ARK_RESOLUTIONS), min_length=1
+    )
+    aspect_ratios: list[str] = Field(default_factory=lambda: list(ARK_ASPECT_RATIOS), min_length=1)
+    max_reference_images: int = Field(default=0, ge=0, le=9)
+
+    @model_validator(mode="after")
+    def validate_values(self):
+        if self.min_duration > self.max_duration:
+            raise ValueError("min_duration 不能大于 max_duration")
+        unknown = set(self.aspect_ratios) - set(ARK_ASPECT_RATIOS)
+        if unknown:
+            raise ValueError(f"不支持的画幅: {sorted(unknown)}")
+        if "reference" in self.modes and self.max_reference_images < 1:
+            raise ValueError("启用 reference 模式时 max_reference_images 必须 ≥ 1")
+        return self
+
+
 class SpeechCapabilities(StrictConfigModel):
     languages: list[str] = Field(default_factory=lambda: ["zh"], min_length=1)
     voice_clone: bool = True
@@ -135,6 +189,11 @@ DRIVER_SPECS: dict[str, DriverSpec] = {
         modalities=frozenset({"video"}),
         config_schema=AsyncMediaConfig,
         capabilities_schema=VideoCapabilities,
+    ),
+    "ark_video": DriverSpec(
+        modalities=frozenset({"video"}),
+        config_schema=ArkVideoConfig,
+        capabilities_schema=ArkVideoCapabilities,
     ),
     "qwen_tts": DriverSpec(
         modalities=frozenset({"speech"}),

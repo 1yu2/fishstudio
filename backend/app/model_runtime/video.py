@@ -19,6 +19,7 @@ from app.providers.base import VideoGenerationRequest
 from app.providers.pricing import (
     PRICE_TABLE_VERSION,
     estimate_video_cost_from_entry,
+    estimate_video_tokens,
     pricing_entry,
     resolve_video_routing,
     snapshot_entry,
@@ -90,13 +91,18 @@ def _plan_for(
     entry = pricing_entry(item.pricing)
     if entry is None:
         return None, "missing_pricing"
-    input_images = reference_count + (1 if req.first_frame else 0) + (1 if req.last_frame else 0)
-    cost = estimate_video_cost_from_entry(entry, output_seconds=duration, input_image_count=input_images)
-    if cost is None:
-        return None, "unpriced_duration"
     provider_name = getattr(instance, "name", "") or item.driver
     resolution_for = getattr(instance, "resolution_for", None)
     plan_resolution = resolution_for(req, item.model) if resolution_for else resolution
+    input_images = reference_count + (1 if req.first_frame else 0) + (1 if req.last_frame else 0)
+    cost = estimate_video_cost_from_entry(
+        entry,
+        output_seconds=duration,
+        input_image_count=input_images,
+        video_tokens=estimate_video_tokens(plan_resolution, duration),
+    )
+    if cost is None:
+        return None, "unpriced_duration"
     version = str(item.pricing.get("version") or PRICE_TABLE_VERSION)
     return {
         "provider": provider_name,

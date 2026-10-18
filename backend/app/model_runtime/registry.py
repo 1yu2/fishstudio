@@ -153,6 +153,20 @@ def _build_volcano_video(payload: DeploymentInput, credential: str):
     return instance
 
 
+def _build_ark_video(payload: DeploymentInput, credential: str):
+    from app.providers.ark_video import ArkVideoProvider
+
+    return ArkVideoProvider(
+        api_key=credential,
+        base_url=payload.base_url,
+        model_name=payload.model,
+        deployment_name=payload.slug,
+        config=payload.config,
+        capabilities=payload.capabilities,
+        enabled=payload.enabled,
+    )
+
+
 def _build_qwen_tts(payload: DeploymentInput, credential: str):
     from app.providers.tts_base import QwenTTSProvider
 
@@ -196,6 +210,7 @@ def build_default_registry() -> DriverRegistry:
         "volcano_image": _build_volcano_image,
         "minimax_video": _build_minimax_video,
         "volcano_video": _build_volcano_video,
+        "ark_video": _build_ark_video,
         "qwen_tts": _build_qwen_tts,
         "tencent_ai3d": _build_tencent_ai3d,
     }
