@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Clock, LayoutDashboard, Network, Palette, Plus, Search } from 'lucide-react'
+import { Clock, Network, Palette, Plus, Search } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { nodeCanvasApi, type CanvasSummary as NodeCanvasSummary } from '../../api/nodeCanvas'
-import * as seriesApi from '../../api/series'
-import type { SeriesProject } from '../../api/series'
 import { paths } from '../../routePaths'
 import { toast } from '../ui/Toast'
 import './ProjectsPage.css'
@@ -17,39 +15,35 @@ interface CanvasProject {
   images?: unknown[]
 }
 
-type ProjectFilter = 'all' | 'node' | 'freeform' | 'drama'
+type ProjectFilter = 'all' | 'node' | 'freeform'
 
 export default function ProjectsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const initialType = searchParams.get('type')
-  const [filter, setFilter] = useState<ProjectFilter>(initialType === 'drama' || initialType === 'freeform' || initialType === 'node' ? initialType : 'all')
+  const [filter, setFilter] = useState<ProjectFilter>(initialType === 'freeform' || initialType === 'node' ? initialType : 'all')
   const navigate = useNavigate()
   const [nodeCanvases, setNodeCanvases] = useState<NodeCanvasSummary[]>([])
   const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState('')
   const [canvases, setCanvases] = useState<CanvasProject[]>([])
-  const [dramas, setDramas] = useState<SeriesProject[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      const [nodeResult, canvasResult, dramaResult] = await Promise.allSettled([
+      const [nodeResult, canvasResult] = await Promise.allSettled([
         nodeCanvasApi.list(),
         apiFetch('/api/canvases').then(async (response) => {
           if (!response.ok) throw new Error('自由画布加载失败')
           const data = await response.json()
           return Array.isArray(data) ? data as CanvasProject[] : []
         }),
-        seriesApi.listProjects({ project_type: 'short_drama' }),
       ])
 
       if (nodeResult.status === 'fulfilled') setNodeCanvases(nodeResult.value)
       else toast('节点画布加载失败', 'error')
       if (canvasResult.status === 'fulfilled') setCanvases(canvasResult.value)
       else toast('自由画布项目加载失败', 'error')
-      if (dramaResult.status === 'fulfilled') setDramas(dramaResult.value)
-      else toast('漫剧项目加载失败', 'error')
       setLoading(false)
     }
     void load()
@@ -81,10 +75,6 @@ export default function ProjectsPage() {
       setCreating(false)
     }
   }
-  const visibleDramas = useMemo(
-    () => dramas.filter((item) => !normalizedQuery || item.title.toLowerCase().includes(normalizedQuery)),
-    [dramas, normalizedQuery],
-  )
 
   return (
     <div className="projects-page">
@@ -93,11 +83,9 @@ export default function ProjectsPage() {
           <button className={filter === 'all' ? 'active' : ''} onClick={() => selectFilter('all')}>全部</button>
           <button className={filter === 'node' ? 'active' : ''} onClick={() => selectFilter('node')}>节点画布</button>
           <button className={filter === 'freeform' ? 'active' : ''} onClick={() => selectFilter('freeform')}>Freeform / 自由画布</button>
-          <button className={filter === 'drama' ? 'active' : ''} onClick={() => selectFilter('drama')}>Drama / 漫剧</button>
         </div>
         <div className="projects-page__toolbar-actions">
           <button className="projects-page__create" disabled={creating} onClick={() => void createNodeCanvas()}><Plus size={15} />新建短片</button>
-          <Link className="projects-page__create projects-page__create--secondary" to={paths.dramaHome}>漫剧（旧版）</Link>
           <label className="projects-page__search">
             <Search size={16} />
             <input aria-label="搜索项目" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" />
@@ -145,27 +133,6 @@ export default function ProjectsPage() {
             </section>
           )}
 
-          {(filter === 'all' || filter === 'drama') && (
-            <section className="projects-page__section">
-              <div className="projects-page__section-heading">
-                <div><LayoutDashboard size={17} /><h2>Drama / 漫剧</h2></div>
-                <span>{visibleDramas.length}</span>
-              </div>
-              <div className="projects-page__grid">
-                {visibleDramas.map((project) => (
-                  <Link className="project-card" to={paths.dramaProject(project.id)} key={project.id}>
-                    <span className="project-card__type project-card__type--drama">Drama / 漫剧</span>
-                    <h3>{project.title}</h3>
-                    <div className="project-card__meta">
-                      <span className="project-card__status">{project.status || 'draft'}</span>
-                      {project.updated_at ? new Date(project.updated_at).toLocaleString() : project.id}
-                    </div>
-                  </Link>
-                ))}
-                {visibleDramas.length === 0 && <div className="projects-page__empty">暂无漫剧项目</div>}
-              </div>
-            </section>
-          )}
         </>
       )}
     </div>

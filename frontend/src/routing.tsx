@@ -19,8 +19,6 @@ import {
 import { paths } from './routePaths'
 
 const ChatInterface = lazy(() => import('./components/ChatInterface'))
-const StudioHome = lazy(() => import('./components/studio/StudioHome'))
-const StudioPage = lazy(() => import('./components/studio/StudioPage'))
 const NodeCanvasPage = lazy(() => import('./components/nodeCanvas/NodeCanvasPage'))
 
 export function legacyRedirectFor(pathname: string, search: string): string | null {
@@ -29,10 +27,8 @@ export function legacyRedirectFor(pathname: string, search: string): string | nu
   const params = new URLSearchParams(search)
   const page = params.get('page')
   if (page === 'settings') return paths.settings
-  if (page === 'studio') {
-    const projectId = params.get('projectId')
-    return projectId ? paths.dramaProject(projectId) : paths.dramaHome
-  }
+  // 旧的漫剧工作台已下线，旧链接回到项目列表
+  if (page === 'studio') return paths.projects
 
   const canvasId = params.get('canvasId')
   return canvasId ? paths.canvas(canvasId) : null
@@ -80,28 +76,6 @@ function NodeCanvasRoute() {
   )
 }
 
-function DramaProjectRoute(props: AppRoutesProps) {
-  const { projectId = '' } = useParams()
-  return (
-    <Suspense fallback={pageFallback}>
-      <StudioPage
-        projectId={projectId}
-        theme={props.theme}
-        onToggleTheme={props.onToggleTheme}
-        managedByAppShell
-      />
-    </Suspense>
-  )
-}
-
-function DramaHomeRoute(props: AppRoutesProps) {
-  return (
-    <Suspense fallback={pageFallback}>
-      <StudioHome theme={props.theme} onToggleTheme={props.onToggleTheme} managedByAppShell />
-    </Suspense>
-  )
-}
-
 export function AppRoutes({ theme, onToggleTheme, onSetTheme }: AppRoutesProps) {
   return (
     <>
@@ -125,8 +99,7 @@ export function AppRoutes({ theme, onToggleTheme, onSetTheme }: AppRoutesProps) 
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="canvas/:canvasId" element={<CanvasRoute theme={theme} onToggleTheme={onToggleTheme} onSetTheme={onSetTheme} />} />
           <Route path="studio/:canvasId" element={<NodeCanvasRoute />} />
-          <Route path="projects/drama" element={<DramaHomeRoute theme={theme} onToggleTheme={onToggleTheme} onSetTheme={onSetTheme} />} />
-          <Route path="projects/drama/:projectId" element={<DramaProjectRoute theme={theme} onToggleTheme={onToggleTheme} onSetTheme={onSetTheme} />} />
+          <Route path="projects/drama/*" element={<Navigate to={paths.projects} replace />} />
           <Route path="settings" element={<SettingsPage theme={theme} onToggleTheme={onToggleTheme} managedByAppShell />} />
           <Route path="*" element={<Navigate to={paths.home} replace />} />
         </Route>

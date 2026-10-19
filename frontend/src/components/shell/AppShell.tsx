@@ -24,8 +24,6 @@ const NAV_ITEMS = [
 function pageTitle(pathname: string): { title: string; subtitle?: string } {
   if (pathname.startsWith('/studio/')) return { title: '节点画布', subtitle: 'Node Canvas' }
   if (pathname.startsWith('/canvas/')) return { title: '自由画布', subtitle: 'Freeform Workspace' }
-  if (pathname === paths.dramaHome) return { title: '漫剧项目', subtitle: '创建与管理 Drama 项目' }
-  if (pathname.startsWith(`${paths.dramaHome}/`)) return { title: '漫剧工作台', subtitle: 'Drama Workspace' }
   if (pathname === paths.projects) return { title: 'Projects', subtitle: '所有创作项目' }
   if (pathname === paths.settings) return { title: 'Settings', subtitle: '系统与创作环境' }
   return { title: 'Home', subtitle: 'FishStudio' }
@@ -37,7 +35,7 @@ export default function AppShell({ theme, onToggleTheme }: AppShellProps) {
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [prefs] = usePreferences()
   const heading = pageTitle(location.pathname)
-  const workspaceRoute = location.pathname.startsWith('/canvas/') || location.pathname.startsWith('/studio/') || location.pathname.startsWith(`${paths.dramaHome}/`)
+  const workspaceRoute = location.pathname.startsWith('/canvas/') || location.pathname.startsWith('/studio/')
 
   const onLogout = async () => {
     setUserMenuOpen(false)
