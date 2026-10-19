@@ -21,6 +21,7 @@ import { paths } from './routePaths'
 const ChatInterface = lazy(() => import('./components/ChatInterface'))
 const StudioHome = lazy(() => import('./components/studio/StudioHome'))
 const StudioPage = lazy(() => import('./components/studio/StudioPage'))
+const NodeCanvasPage = lazy(() => import('./components/nodeCanvas/NodeCanvasPage'))
 
 export function legacyRedirectFor(pathname: string, search: string): string | null {
   if (pathname !== '/') return null
@@ -70,6 +71,15 @@ function CanvasRoute(props: AppRoutesProps) {
   )
 }
 
+function NodeCanvasRoute() {
+  const { canvasId = '' } = useParams()
+  return (
+    <Suspense fallback={pageFallback}>
+      <NodeCanvasPage canvasId={canvasId} />
+    </Suspense>
+  )
+}
+
 function DramaProjectRoute(props: AppRoutesProps) {
   const { projectId = '' } = useParams()
   return (
@@ -114,6 +124,7 @@ export function AppRoutes({ theme, onToggleTheme, onSetTheme }: AppRoutesProps) 
           <Route index element={<HomePage theme={theme} onToggleTheme={onToggleTheme} managedByAppShell />} />
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="canvas/:canvasId" element={<CanvasRoute theme={theme} onToggleTheme={onToggleTheme} onSetTheme={onSetTheme} />} />
+          <Route path="studio/:canvasId" element={<NodeCanvasRoute />} />
           <Route path="projects/drama" element={<DramaHomeRoute theme={theme} onToggleTheme={onToggleTheme} onSetTheme={onSetTheme} />} />
           <Route path="projects/drama/:projectId" element={<DramaProjectRoute theme={theme} onToggleTheme={onToggleTheme} onSetTheme={onSetTheme} />} />
           <Route path="settings" element={<SettingsPage theme={theme} onToggleTheme={onToggleTheme} managedByAppShell />} />

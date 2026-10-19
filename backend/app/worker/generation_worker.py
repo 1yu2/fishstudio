@@ -69,11 +69,13 @@ _media_runtime = get_media_runtime()
 _router = _media_runtime.video_router()
 
 
-async def _resolve_worker_image(session, req, purpose: str):
+async def _resolve_worker_image(session, req, purpose: str, explicit_deployment: str | None = None):
     """Worker 图片入口；与 Agent Tool 延迟导入同一个 Resolver 函数。"""
     from app.model_runtime.image import resolve_and_generate_image
 
-    return await resolve_and_generate_image(session, req, purpose=purpose)
+    return await resolve_and_generate_image(
+        session, req, purpose=purpose, explicit_deployment=explicit_deployment
+    )
 
 
 def _resolve_locked_video_provider(
@@ -725,7 +727,9 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
 
     purpose = "image_edit" if req.source_image else "image_generation"
     try:
-        execution = await _resolve_worker_image(session, req, purpose=purpose)
+        execution = await _resolve_worker_image(
+            session, req, purpose=purpose, explicit_deployment=params.get("deployment") or None
+        )
     except RuntimeError as error:
         await finalize_job(
             session,

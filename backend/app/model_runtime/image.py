@@ -133,12 +133,32 @@ class ImageResolver:
 
         return VolcanoImageProvider.from_legacy_env(purpose)
 
+    def _explicit_candidate(self, slug: str, purpose: str) -> tuple[list[CatalogDeployment], dict[str, Any]]:
+        """用户在画布节点上指定了模型：只用它，不回退到其他模型。"""
+        snapshot = self.catalog.snapshot
+        deployment = snapshot.get(slug)
+        if deployment is None or deployment.modality != "image":
+            raise RuntimeError(f"指定的图片模型不存在: {slug}")
+        if not deployment.enabled:
+            raise RuntimeError(f"指定的图片模型已停用: {slug}")
+        if not isinstance(deployment.instance, ImageProvider):
+            raise RuntimeError(f"指定的模型不是图片模型: {slug}")
+        return [deployment], {
+            "purpose": purpose,
+            "catalog_revision": snapshot.catalog_revision,
+            "candidate_deployments": [slug],
+            "skipped": [],
+            "legacy": False,
+            "explicit": True,
+        }
+
     async def execute(
         self,
         session: AsyncSession,
         req: ImageGenerationRequest,
         *,
         purpose: str | None = None,
+        explicit_deployment: str | None = None,
     ) -> ResolvedImageExecution:
         purpose = purpose or self.purpose_for(req)
         if purpose not in IMAGE_PURPOSES:
@@ -147,7 +167,11 @@ class ImageResolver:
         if purpose != expected:
             raise ValueError(f"请求与图片用途不匹配: expected={expected}, actual={purpose}")
 
-        configured = await self._configured_candidates(session, purpose)
+        configured = (
+            self._explicit_candidate(explicit_deployment, purpose)
+            if explicit_deployment
+            else await self._configured_candidates(session, purpose)
+        )
         if configured is None:
             legacy_mock = os.getenv("MOCK_MODE", "false").strip().lower() in {"1", "true", "yes"}
             provider = (
@@ -202,7 +226,7 @@ class ImageResolver:
                 result=result,
             )
 
-        if self.mock_enabled():
+        if self.mock_enabled() and not explicit_deployment:
             provider = MockImageProvider()
             result = await provider.generate(req)
             routing_snapshot = {
@@ -247,6 +271,9 @@ async def resolve_and_generate_image(
     req: ImageGenerationRequest,
     *,
     purpose: str | None = None,
+    explicit_deployment: str | None = None,
 ) -> ResolvedImageExecution:
     """Agent Tool 与 Worker 共用的唯一图片解析/执行函数。"""
-    return await get_image_resolver().execute(session, req, purpose=purpose)
+    return await get_image_resolver().execute(
+        session, req, purpose=purpose, explicit_deployment=explicit_deployment
+    )

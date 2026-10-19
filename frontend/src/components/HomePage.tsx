@@ -8,6 +8,9 @@ import { Greeting } from './ui/Greeting'
 import { toast } from './ui/Toast'
 import { confirmDialog } from './ui/ConfirmDialog'
 import { goToStudioHome } from './studio/navigation'
+import { useNavigate } from 'react-router-dom'
+import { nodeCanvasApi } from '../api/nodeCanvas'
+import { paths } from '../routePaths'
 
 type ThemeMode = 'dark' | 'light'
 
@@ -140,6 +143,7 @@ export default function HomePage({
   onToggleTheme: () => void
   managedByAppShell?: boolean
 }) {
+  const navigate = useNavigate()
   const [projects, setProjects] = useState<CanvasSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
@@ -290,6 +294,17 @@ export default function HomePage({
   const createProjectAndEnter = async (firstPrompt?: string, images?: string[], audios?: string[]) => {
     if (creating) return
     setCreating(true)
+    // 只有文字想法时进入节点画布；带图片 / 音频附件时沿用对话画布
+    if (!images?.length && !audios?.length) {
+      try {
+        const canvas = await nodeCanvasApi.create({ idea: (firstPrompt || '').trim() })
+        navigate(paths.nodeCanvas(canvas.id))
+      } catch (error) {
+        toast(error instanceof Error ? error.message : '创建失败，请重试', 'error')
+        setCreating(false)
+      }
+      return
+    }
     try {
       const id = `canvas-${Date.now()}`
       const nameFromPrompt = (firstPrompt || '').trim().slice(0, 18)
@@ -473,7 +488,7 @@ export default function HomePage({
             />
           </div>
           <div className="home__promptFooter">
-            <div className="home__hint">按回车键或点击右侧按钮创建项目并进入画板</div>
+            <div className="home__hint">回车创建短片节点画布；带图片 / 音频附件时进入对话画布</div>
             <button
               className="home__btn home__btn--primary"
               onClick={() => createProjectAndEnter(prompt, uploadedImages, uploadedAudios)}
