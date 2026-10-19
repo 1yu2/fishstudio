@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
@@ -45,7 +45,7 @@ class CatalogSnapshot:
     catalog_revision: str
     loaded_at: datetime
     # 已启用的用途路由：(purpose, tier) → 有序候选 slug（主 + 备用），供同步调用方（对话模型）读取
-    routes: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({})
+    routes: Mapping[tuple[str, str], tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}))
 
     @classmethod
     def empty(cls) -> "CatalogSnapshot":
