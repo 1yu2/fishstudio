@@ -30,6 +30,7 @@ from app.routers import chat
 from app.routers import eval as eval_router
 from app.routers import jobs as jobs_router
 from app.routers import model_deployments as model_deployments_router
+from app.routers import model_providers as model_providers_router
 from app.routers import model_routes as model_routes_router
 from app.routers import model_runtime as model_runtime_router
 from app.routers import series as series_router
@@ -219,6 +220,11 @@ app.include_router(
     model_deployments_router.router,
     prefix="/api/model-deployments",
     tags=["model-deployments"],
+)
+app.include_router(
+    model_providers_router.router,
+    prefix="/api/model-providers",
+    tags=["model-providers"],
 )
 app.include_router(
     model_routes_router.router,

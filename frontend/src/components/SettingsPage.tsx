@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import PersonalizationPanel from './PersonalizationPanel'
-import ModelServicesPanel from './ModelServicesPanel'
+import ModelServicesPanel from './modelServices/ModelServicesPanel'
 import { PageHeader } from './ui/PageHeader'
 import './SettingsPage.css'
 

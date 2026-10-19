@@ -154,6 +154,12 @@ async def init_db() -> None:
         logger.info("model deployment bootstrap complete inserted=%s", inserted)
         routes_inserted = await bootstrap_default_routes(session)
         logger.info("model route bootstrap complete inserted=%s", routes_inserted)
+        # 6) 没有供应商的模型按 地址 + 密钥引用 归入供应商（升级与新装同一路径，幂等）。
+        from app.services.model_provider_service import assign_unowned_deployments
+
+        assigned = await assign_unowned_deployments(session)
+        await session.commit()
+        logger.info("model provider assignment complete assigned=%s", assigned)
         from app.model_runtime.catalog import get_catalog
 
         await get_catalog().refresh(session)

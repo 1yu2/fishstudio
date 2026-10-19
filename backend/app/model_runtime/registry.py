@@ -191,6 +191,27 @@ def _build_tencent_ai3d(payload: DeploymentInput, credential: str):
     return TencentAI3DDeployment(payload.slug, payload.model, payload.base_url, credential)
 
 
+@dataclass(frozen=True)
+class GenericModelDeployment:
+    """embedding / rerank / asr 等暂无内置调用方的模型：只登记地址、密钥与模型 ID。"""
+
+    deployment_name: str
+    model_name: str
+    modality: str
+    base_url: str
+    api_key: str
+    enabled: bool = True
+
+    def is_available(self) -> bool:
+        return self.enabled and bool(self.base_url and self.api_key)
+
+
+def _build_generic_model(payload: DeploymentInput, credential: str):
+    return GenericModelDeployment(
+        payload.slug, payload.model, payload.modality, payload.base_url, credential, payload.enabled
+    )
+
+
 async def _provider_health(instance: Any) -> dict[str, Any]:
     is_available = getattr(instance, "is_available", None)
     available = bool(is_available()) if is_available else bool(getattr(instance, "enabled", True))
@@ -213,6 +234,7 @@ def build_default_registry() -> DriverRegistry:
         "ark_video": _build_ark_video,
         "qwen_tts": _build_qwen_tts,
         "tencent_ai3d": _build_tencent_ai3d,
+        "generic_model": _build_generic_model,
     }
     for name, spec in DRIVER_SPECS.items():
         registry.register(

@@ -12,6 +12,16 @@ from app.services import model_route_service as service
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 
+async def _refresh_catalog(session: AsyncSession) -> None:
+    """让对话模型等同步调用方立即读到新的默认模型。"""
+    from app.model_runtime.catalog import get_catalog
+
+    try:
+        await get_catalog().refresh(session)
+    except Exception:  # noqa: BLE001 - 路由已保存；Catalog 保留旧快照并暴露失败状态
+        pass
+
+
 def _check_tier(tier: str) -> str:
     if tier not in TIERS:
         raise HTTPException(status_code=422, detail=f"未知档位: {tier}")
@@ -68,6 +78,7 @@ async def save_route(
         )
     )
     await session.commit()
+    await _refresh_catalog(session)
     return dto
 
 
@@ -93,4 +104,5 @@ async def delete_route(
         )
     )
     await session.commit()
+    await _refresh_catalog(session)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-MODALITIES = {"chat", "image", "video", "speech", "model_3d"}
+MODALITIES = {"chat", "image", "video", "speech", "model_3d", "embedding", "rerank", "asr"}
 SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,126}[a-z0-9]$")
 CREDENTIAL_PATTERN = re.compile(r"^(env|secret):[A-Za-z0-9_./-]+$")
 SECRET_KEYS = {"api_key", "apikey", "token", "secret", "password", "authorization"}
@@ -154,6 +154,18 @@ class Model3DCapabilities(StrictConfigModel):
     formats: list[Literal["glb", "obj"]] = Field(default_factory=lambda: ["glb", "obj"], min_length=1)
 
 
+class GenericModelConfig(StrictConfigModel):
+    """仅登记、暂无内置调用方的模型类型（embedding / rerank / asr）。"""
+
+    timeout_seconds: float = Field(default=60, gt=0, le=600)
+    max_concurrency: int = Field(default=8, ge=1, le=256)
+
+
+class GenericModelCapabilities(StrictConfigModel):
+    dimensions: int | None = Field(default=None, ge=1, le=65_536)
+    languages: list[str] = Field(default_factory=list, max_length=32)
+
+
 class DriverSpec(BaseModel):
     modalities: frozenset[str]
     config_schema: type[BaseModel]
@@ -205,6 +217,11 @@ DRIVER_SPECS: dict[str, DriverSpec] = {
         modalities=frozenset({"model_3d"}),
         config_schema=AsyncMediaConfig,
         capabilities_schema=Model3DCapabilities,
+    ),
+    "generic_model": DriverSpec(
+        modalities=frozenset({"embedding", "rerank", "asr"}),
+        config_schema=GenericModelConfig,
+        capabilities_schema=GenericModelCapabilities,
     ),
 }
 

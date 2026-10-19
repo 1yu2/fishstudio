@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
@@ -14,7 +14,7 @@ from typing import Any, Iterable, Mapping
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ModelDeployment
+from app.db.models import ModelDeployment, ModelProvider, ModelRoute
 from app.model_runtime.deployment_config import DeploymentInput
 from app.model_runtime.registry import DEFAULT_DRIVER_REGISTRY, DriverRegistry
 
@@ -44,6 +44,8 @@ class CatalogSnapshot:
     deployments: Mapping[str, CatalogDeployment]
     catalog_revision: str
     loaded_at: datetime
+    # 已启用的用途路由：(purpose, tier) → 有序候选 slug（主 + 备用），供同步调用方（对话模型）读取
+    routes: Mapping[tuple[str, str], tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}))
 
     @classmethod
     def empty(cls) -> "CatalogSnapshot":
@@ -55,6 +57,10 @@ class CatalogSnapshot:
 
     def get(self, slug: str) -> CatalogDeployment | None:
         return self.deployments.get(slug)
+
+    def route_candidates(self, purpose: str, tier: str = "final") -> tuple[str, ...]:
+        """某用途档位的候选；该档位未配置时回退 final 档。"""
+        return self.routes.get((purpose, tier)) or self.routes.get((purpose, "final")) or ()
 
 
 @dataclass(frozen=True)
@@ -68,9 +74,16 @@ def _row_payload(row: ModelDeployment) -> DeploymentInput:
     return DeploymentInput.model_validate({key: getattr(row, key) for key in DeploymentInput.model_fields})
 
 
-def _revision(rows: Iterable[ModelDeployment]) -> str:
+def _revision(
+    rows: Iterable[ModelDeployment],
+    disabled_providers: frozenset[str] = frozenset(),
+    routes: Mapping[tuple[str, str], tuple[str, ...]] | None = None,
+) -> str:
     values = sorted((row.slug, row.revision, row.config_hash) for row in rows)
-    raw = json.dumps(values, separators=(",", ":"), ensure_ascii=True)
+    route_values = sorted([list(key), list(value)] for key, value in (routes or {}).items())
+    raw = json.dumps(
+        [values, sorted(disabled_providers), route_values], separators=(",", ":"), ensure_ascii=True
+    )
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -90,10 +103,18 @@ class CatalogManager:
         return self._last_failure
 
     async def reload_rows(
-        self, rows: Iterable[ModelDeployment], *, probe: bool = False, force: bool = False
+        self,
+        rows: Iterable[ModelDeployment],
+        *,
+        probe: bool = False,
+        force: bool = False,
+        disabled_providers: frozenset[str] = frozenset(),
+        routes: Mapping[tuple[str, str], tuple[str, ...]] | None = None,
     ) -> CatalogSnapshot:
+        """disabled_providers：已停用供应商的 id，其下模型一律视为停用；routes：已启用的用途路由。"""
         rows = list(rows)
-        attempted_revision = _revision(rows)
+        routes = dict(routes or {})
+        attempted_revision = _revision(rows, disabled_providers, routes)
         async with self._reload_lock:
             if not force and attempted_revision == self._snapshot.catalog_revision:
                 return self._snapshot
@@ -101,6 +122,8 @@ class CatalogManager:
                 built: dict[str, CatalogDeployment] = {}
                 for row in rows:
                     payload = _row_payload(row)
+                    if getattr(row, "provider_id", None) in disabled_providers:
+                        payload = payload.model_copy(update={"enabled": False})
                     instance = self.registry.build(payload)
                     if probe and payload.enabled:
                         await self.registry.probe(payload, instance)
@@ -124,6 +147,7 @@ class CatalogManager:
                     MappingProxyType(built),
                     attempted_revision,
                     datetime.now(timezone.utc),
+                    MappingProxyType(routes),
                 )
             except Exception as error:
                 self._last_failure = ReloadFailure(str(error), attempted_revision, datetime.now(timezone.utc))
@@ -142,7 +166,21 @@ class CatalogManager:
                 ModelDeployment.modality, ModelDeployment.priority, ModelDeployment.slug
             )
         )
-        return await self.reload_rows(result.scalars().all(), probe=probe, force=force)
+        disabled = frozenset(
+            (await session.execute(select(ModelProvider.id).where(ModelProvider.enabled.is_(False))))
+            .scalars()
+            .all()
+        )
+        route_rows = (
+            (await session.execute(select(ModelRoute).where(ModelRoute.enabled.is_(True)))).scalars().all()
+        )
+        routes = {
+            (row.purpose, row.tier): (row.primary_deployment, *list(row.fallback_deployments or []))
+            for row in route_rows
+        }
+        return await self.reload_rows(
+            result.scalars().all(), probe=probe, force=force, disabled_providers=disabled, routes=routes
+        )
 
 
 CATALOG = CatalogManager()
