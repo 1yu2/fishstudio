@@ -3,14 +3,10 @@ import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectsPage from './ProjectsPage'
 import { apiFetch } from '../../api'
-import { listProjects } from '../../api/series'
 import { nodeCanvasApi } from '../../api/nodeCanvas'
 
 vi.mock('../../api', () => ({
   apiFetch: vi.fn(),
-}))
-vi.mock('../../api/series', () => ({
-  listProjects: vi.fn(),
 }))
 vi.mock('../../api/nodeCanvas', () => ({
   nodeCanvasApi: { list: vi.fn(), create: vi.fn() },
@@ -19,10 +15,9 @@ vi.mock('../ui/Toast', () => ({
   toast: vi.fn(),
 }))
 
-function Destination({ type }: { type: 'canvas' | 'drama' | 'studio' }) {
+function Destination({ type }: { type: 'canvas' | 'studio' }) {
   const params = useParams()
-  if (type === 'studio') return <div>{`OPEN_STUDIO:${params.canvasId}`}</div>
-  return <div>{type === 'canvas' ? `OPEN_CANVAS:${params.canvasId}` : `OPEN_DRAMA:${params.projectId}`}</div>
+  return <div>{type === 'studio' ? `OPEN_STUDIO:${params.canvasId}` : `OPEN_CANVAS:${params.canvasId}`}</div>
 }
 
 function renderProjects() {
@@ -32,7 +27,6 @@ function renderProjects() {
         <Route path="/projects" element={<ProjectsPage />} />
         <Route path="/canvas/:canvasId" element={<Destination type="canvas" />} />
         <Route path="/studio/:canvasId" element={<Destination type="studio" />} />
-        <Route path="/projects/drama/:projectId" element={<Destination type="drama" />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -43,9 +37,6 @@ describe('ProjectsPage', () => {
     vi.mocked(apiFetch).mockResolvedValue(new Response(JSON.stringify([
       { id: 'canvas-1', name: '自由提案', createdAt: 1 },
     ]), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    vi.mocked(listProjects).mockResolvedValue([
-      { id: 'drama-1', title: '午夜漫剧', project_type: 'short_drama', status: 'draft' },
-    ])
     vi.mocked(nodeCanvasApi.list).mockResolvedValue([
       { id: 'node-1', title: '雨夜便利店', aspect_ratio: '9:16', node_count: 3, updated_at: null, created_at: null },
     ])
@@ -67,12 +58,11 @@ describe('ProjectsPage', () => {
     expect(nodeCanvasApi.create).toHaveBeenCalledWith({ title: '短片 2' })
   })
 
-  it('aggregates and labels Freeform and Drama projects', async () => {
+  it('lists node canvases and old freeform canvases separately', async () => {
     renderProjects()
     expect(await screen.findByRole('link', { name: /自由提案/ })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /午夜漫剧/ })).toBeInTheDocument()
-    expect(screen.getAllByText('Freeform / 自由画布').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Drama / 漫剧').length).toBeGreaterThan(0)
+    expect(screen.getByRole('link', { name: /雨夜便利店/ })).toBeInTheDocument()
+    expect(screen.queryByText(/漫剧/)).not.toBeInTheDocument()
   })
 
   it('opens the existing Canvas route', async () => {
@@ -81,9 +71,4 @@ describe('ProjectsPage', () => {
     expect(await screen.findByText('OPEN_CANVAS:canvas-1')).toBeInTheDocument()
   })
 
-  it('opens the existing Drama route', async () => {
-    renderProjects()
-    fireEvent.click(await screen.findByRole('link', { name: /午夜漫剧/ }))
-    expect(await screen.findByText('OPEN_DRAMA:drama-1')).toBeInTheDocument()
-  })
 })

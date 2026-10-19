@@ -44,11 +44,6 @@
   cursor: wait;
 }
 
-.projects-page__create--secondary {
-  background: transparent;
-  border-color: var(--border);
-  color: var(--text-secondary);
-}
 
 .projects-page__filters {
   display: flex;
@@ -143,12 +138,6 @@
 }
 
 .project-card__type,
-.project-card__status {
-  display: inline-flex;
-  padding: 3px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-}
 
 .project-card__type--freeform {
   background: var(--accent-soft);
@@ -160,10 +149,6 @@
   color: #0891b2;
 }
 
-.project-card__type--drama {
-  background: rgba(168, 85, 247, 0.12);
-  color: #8b5cf6;
-}
 
 .project-card__meta {
   min-height: 20px;
@@ -172,10 +157,6 @@
   font-size: 12px;
 }
 
-.project-card__status {
-  background: var(--surface-2);
-  color: var(--text-secondary);
-}
 
 .projects-page__empty {
   padding: 24px;

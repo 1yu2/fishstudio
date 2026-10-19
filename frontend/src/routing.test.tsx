@@ -16,11 +16,8 @@ vi.mock('./components/SettingsPage', () => ({
 vi.mock('./components/ChatInterface', () => ({
   default: ({ initialCanvasId }: { initialCanvasId: string }) => <div>CANVAS_PAGE:{initialCanvasId}</div>,
 }))
-vi.mock('./components/studio/StudioPage', () => ({
-  default: ({ projectId }: { projectId: string }) => <div>DRAMA_PAGE:{projectId}</div>,
-}))
-vi.mock('./components/studio/StudioHome', () => ({
-  default: () => <div>DRAMA_HOME</div>,
+vi.mock('./components/nodeCanvas/NodeCanvasPage', () => ({
+  default: ({ canvasId }: { canvasId: string }) => <div>NODE_CANVAS:{canvasId}</div>,
 }))
 
 function LocationProbe() {
@@ -49,8 +46,8 @@ function renderRoutes(initialEntry: string) {
 describe('legacy URL mapping', () => {
   it.each([
     ['/?canvasId=canvas-1', '/canvas/canvas-1'],
-    ['/?page=studio', '/projects/drama'],
-    ['/?page=studio&projectId=drama-1', '/projects/drama/drama-1'],
+    ['/?page=studio', '/projects'],
+    ['/?page=studio&projectId=drama-1', '/projects'],
     ['/?page=settings', '/settings'],
   ])('maps %s to %s', (input, expected) => {
     const url = new URL(input, 'https://fishstudio.local')
@@ -97,8 +94,7 @@ describe('application navigation', () => {
 
   it.each([
     ['/canvas/canvas-refresh', 'CANVAS_PAGE:canvas-refresh'],
-    ['/projects/drama', 'DRAMA_HOME'],
-    ['/projects/drama/drama-refresh', 'DRAMA_PAGE:drama-refresh'],
+    ['/studio/node-refresh', 'NODE_CANVAS:node-refresh'],
     ['/settings', 'SETTINGS_PAGE'],
   ])('restores a refreshed deep link %s', async (entry, expected) => {
     renderRoutes(entry)
@@ -108,8 +104,9 @@ describe('application navigation', () => {
 
   it.each([
     ['/?canvasId=legacy-canvas', 'CANVAS_PAGE:legacy-canvas', '/canvas/legacy-canvas'],
-    ['/?page=studio', 'DRAMA_HOME', '/projects/drama'],
-    ['/?page=studio&projectId=legacy-drama', 'DRAMA_PAGE:legacy-drama', '/projects/drama/legacy-drama'],
+    ['/?page=studio', 'PROJECTS_PAGE', '/projects'],
+    ['/?page=studio&projectId=legacy-drama', 'PROJECTS_PAGE', '/projects'],
+    ['/projects/drama/legacy-drama', 'PROJECTS_PAGE', '/projects'],
     ['/?page=settings', 'SETTINGS_PAGE', '/settings'],
   ])('redirects legacy deep link %s with replace semantics', async (entry, content, expectedLocation) => {
     renderRoutes(entry)
