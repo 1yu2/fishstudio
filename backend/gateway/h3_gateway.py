@@ -204,6 +204,17 @@ class GatewayStore:
                 ).fetchone()
                 return int(row["total"])
 
+    async def ahead_of(self, task: dict[str, Any]) -> int:
+        """排在该任务前面、尚未完成的任务数（含正在生成的那个）。"""
+        async with self.lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """SELECT COUNT(*) AS total FROM tasks
+                       WHERE status IN ('queued','submitting','running') AND created_at < ?""",
+                    (task["created_at"],),
+                ).fetchone()
+                return int(row["total"])
+
     async def create(self, key: str, payload: dict[str, Any]) -> dict[str, Any]:
         now = time.time()
         task_id = f"h3_{uuid.uuid4().hex}"
@@ -533,6 +544,43 @@ def _probe_video(path: Path) -> dict[str, Any]:
         return {}
 
 
+class ProgressTracker:
+    """从 ComfyUI WebSocket 消息推算每个 prompt 的整体进度（0～99，完成由任务状态给出 100）。
+
+    阶段：已提交 5 → 文本编码等前置节点 10 → 采样 15～90 → 解码与封装 92。
+    """
+
+    SAMPLER_NODE = "140:125"
+    DECODE_NODES = frozenset({"140:121", "140:122", "140:130", "92"})
+
+    def __init__(self) -> None:
+        self._progress: dict[str, int] = {}
+
+    def started(self, prompt_id: str) -> None:
+        self._progress.setdefault(prompt_id, 5)
+
+    def get(self, prompt_id: str) -> int:
+        return self._progress.get(prompt_id, 0)
+
+    def forget(self, prompt_id: str) -> None:
+        self._progress.pop(prompt_id, None)
+
+    def _raise(self, prompt_id: str, value: int) -> None:
+        if prompt_id:
+            self._progress[prompt_id] = max(self._progress.get(prompt_id, 0), min(99, value))
+
+    def handle(self, message: dict[str, Any]) -> None:
+        kind = message.get("type")
+        data = message.get("data") or {}
+        prompt_id = str(data.get("prompt_id") or "")
+        node = str(data.get("node") or "")
+        if kind == "progress" and node == self.SAMPLER_NODE:
+            total = max(1, int(data.get("max") or 1))
+            self._raise(prompt_id, 15 + round(75 * int(data.get("value") or 0) / total))
+        elif kind == "executing" and node:
+            self._raise(prompt_id, 92 if node in self.DECODE_NODES else 10)
+
+
 class GatewayService:
     def __init__(self, settings: Settings, store: GatewayStore, comfy: ComfyClient):
         self.settings = settings
@@ -540,6 +588,28 @@ class GatewayService:
         self.comfy = comfy
         self.builder = WorkflowBuilder(settings)
         self._frame_inputs: dict[str, str] | None = None
+        self.progress = ProgressTracker()
+        # 所有任务用同一个 client_id 提交，一条 WebSocket 就能收到全部进度消息
+        self.client_id = f"fishstudio-gateway-{uuid.uuid4().hex}"
+
+    async def listen_progress(self) -> None:
+        """订阅 ComfyUI 的进度消息；断线自动重连。进度只用于展示，失败不影响任务。"""
+        import websockets
+
+        url = self.settings.comfy_url.replace("http", "ws", 1) + f"/ws?clientId={self.client_id}"
+        while True:
+            try:
+                async with websockets.connect(url, max_size=None) as socket:
+                    async for raw in socket:
+                        if isinstance(raw, str):
+                            try:
+                                self.progress.handle(json.loads(raw))
+                            except (ValueError, TypeError):
+                                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(self.settings.poll_seconds)
 
     async def frame_inputs(self) -> dict[str, str]:
         """首帧/尾帧对应的节点输入名：优先用配置，否则从节点定义里按名称识别 IMAGE 输入。"""
@@ -594,7 +664,8 @@ class GatewayService:
                 task["task_id"], request, frame_inputs=frame_inputs, uploaded_frames=uploaded
             )
             await self.store.update(task["task_id"], status="submitting")
-            prompt_id = await self.comfy.submit(workflow, task["task_id"])
+            prompt_id = await self.comfy.submit(workflow, self.client_id)
+            self.progress.started(prompt_id)
             await self.store.update(
                 task["task_id"], status="running", prompt_id=prompt_id, started_at=time.time()
             )
@@ -639,10 +710,14 @@ class GatewayService:
                 artifacts=[artifact],
                 finished_at=time.time(),
             )
+            self.progress.forget(task["prompt_id"])
         except Exception as error:
             await self._fail(task["task_id"], error)
 
     async def _fail(self, task_id: str, error: Exception) -> None:
+        current = await self.store.get(task_id)
+        if current and current.get("prompt_id"):
+            self.progress.forget(current["prompt_id"])
         message = str(error)[:2000]
         lowered = message.lower()
         if "out of memory" in lowered or "cuda oom" in lowered:
@@ -661,11 +736,12 @@ class GatewayService:
         )
 
 
-def _public_task(task: dict[str, Any]) -> dict[str, Any]:
+def _public_task(task: dict[str, Any], *, progress: int = 0, queue_position: int = 0) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "task_id": task["task_id"],
         "status": task["status"],
-        "progress": 100 if task["status"] == "succeeded" else 0,
+        "progress": 100 if task["status"] == "succeeded" else progress,
+        "queue_position": queue_position if task["status"] == "queued" else 0,
         "artifacts": task["artifacts"],
         "error": task["error"],
         "created_at": task["created_at"],
@@ -689,12 +765,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        worker = asyncio.create_task(service.run(), name="h3-gateway-worker")
+        tasks = [
+            asyncio.create_task(service.run(), name="h3-gateway-worker"),
+            asyncio.create_task(service.listen_progress(), name="h3-gateway-progress"),
+        ]
         try:
             yield
         finally:
-            worker.cancel()
-            await asyncio.gather(worker, return_exceptions=True)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     app = FastAPI(title="FishStudio MiniMax H3 Gateway", version="1.0", lifespan=lifespan)
     app.state.settings = settings
@@ -758,6 +838,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         task = await store.get(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
+        if task["status"] == "running":
+            return _public_task(task, progress=service.progress.get(task["prompt_id"]))
+        if task["status"] == "queued":
+            return _public_task(task, queue_position=await store.ahead_of(task))
         return _public_task(task)
 
     @app.delete("/v1/generations/{task_id}", dependencies=[Depends(authenticate)])
@@ -769,6 +853,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _public_task(task)
         if task.get("prompt_id"):
             await comfy.cancel(task["prompt_id"])
+            service.progress.forget(task["prompt_id"])
         updated = await store.update(task_id, status="canceled", finished_at=time.time())
         assert updated is not None
         return _public_task(updated)

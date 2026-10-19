@@ -12,7 +12,7 @@ import socket
 import time
 import uuid
 from decimal import Decimal
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -339,6 +339,20 @@ async def _should_abort_before_submit(session: AsyncSession, job: GenerationJob)
     return False
 
 
+def _record_remote_progress(job: GenerationJob, remote: dict[str, Any]) -> None:
+    """把供应商返回的进度（0～100）和排队位置记到 job 上；没有这些字段的供应商保持原样。"""
+    progress = remote.get("progress")
+    if isinstance(progress, (int, float)) and not isinstance(progress, bool):
+        job.progress = max(job.progress or 0, min(99, int(progress)))
+    remote_status = str(remote.get("status") or "").lower()
+    queue_position = remote.get("queue_position")
+    job.result = {
+        **(job.result or {}),
+        "remote_status": remote_status,
+        "queue_position": int(queue_position) if isinstance(queue_position, int) and queue_position > 0 else 0,
+    }
+
+
 async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> None:
     """generate_video executor：路由 → submit（如未提交）→ get_status → fetch_result。"""
     if await _should_abort_before_submit(session, job):
@@ -569,7 +583,8 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
         status = await provider.get_status(job.external_task_id, protocol=protocol)
     if not status.success:
         if status.error_code == "pending":
-            # 正常进行中：重新入队，轮询不烧 attempt
+            # 正常进行中：记下远端进度与排队位置供界面展示，重新入队，轮询不烧 attempt
+            _record_remote_progress(job, status.raw_metadata)
             await job_service.requeue_for_poll(session, job, delay_seconds=POLL_DELAY_SECONDS)
             return
         await finalize_job(

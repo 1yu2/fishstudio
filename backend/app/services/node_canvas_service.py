@@ -363,6 +363,23 @@ async def run_node(
     )
 
 
+def _display_status(job: GenerationJob) -> tuple[str, int]:
+    """界面展示用的状态。
+
+    视频任务提交给供应商后，Worker 每轮查询之间会把 job 放回 pending 等待下次轮询，
+    所以数据库里的 pending 不等于“还在排队”：已有外部任务 ID 时按供应商的状态展示。
+    """
+    remote = job.result or {}
+    queue_position = int(remote.get("queue_position") or 0)
+    if job.status == "pending" and job.external_task_id:
+        if remote.get("remote_status") == "queued" or queue_position > 0:
+            return "queued", queue_position
+        return "running", 0
+    if job.status == "pending":
+        return "queued", 0
+    return job.status, 0
+
+
 async def node_runs(session: AsyncSession, canvas: NodeCanvas) -> dict[str, Any]:
     """每个节点的任务状态与结果（最新在前），以及画布累计花费。"""
     from app.services import cost_report_service
@@ -399,11 +416,13 @@ async def node_runs(session: AsyncSession, canvas: NodeCanvas) -> dict[str, Any]
         if not node_id:
             continue
         entry = nodes.setdefault(node_id, {"jobs": [], "results": []})
+        status, queue_position = _display_status(job)
         entry["jobs"].append(
             {
                 "id": job.id,
-                "status": job.status,
+                "status": status,
                 "progress": job.progress or 0,
+                "queue_position": queue_position,
                 "error": (job.error or "")[:300],
                 "model": (job.params or {}).get("deployment")
                 or ((job.params or {}).get("routing_snapshot") or {}).get("deployment_name")

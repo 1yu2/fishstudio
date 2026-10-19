@@ -52,6 +52,8 @@
 .nc-history__item { flex: 0 0 auto; width: 44px; height: 44px; padding: 0; border: 2px solid transparent; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-secondary); font-size: 10px; cursor: pointer; overflow: hidden; }
 .nc-history__item img { width: 100%; height: 100%; object-fit: cover; }
 .nc-history__item .protected-media { font-size: 0; }
+.nc-history__item span { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; line-height: 1.2; }
+.nc-history__item b { font-size: 11px; }
 .nc-history__item--on { border-color: var(--accent); color: var(--accent); }
 .nc-upstream { padding: 5px 8px; border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nc-blockers { color: var(--warning); line-height: 1.5; }
@@ -62,6 +64,8 @@
 .nc-run:disabled { opacity: 0.45; cursor: not-allowed; }
 .nc-run--wide { width: 100%; padding: 8px 12px; margin-top: 10px; font-size: 13px; }
 .nc-status { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 999px; background: var(--surface-2); font-size: 11px; color: var(--text-secondary); }
+.nc-progress { height: 3px; background: var(--surface-2); overflow: hidden; }
+.nc-progress span { display: block; height: 100%; background: var(--accent); transition: width 0.4s ease; }
 .nc-status--succeeded { color: var(--success); }
 .nc-status--failed { color: var(--danger); }
 
