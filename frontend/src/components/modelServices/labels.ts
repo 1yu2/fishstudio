@@ -18,15 +18,30 @@ export const DRIVERS: Record<string, DriverInfo> = {
   tencent_ai3d: { label: '混元 3D', modality: 'model_3d', defaultModel: 'hunyuan-3d', priceUnit: 'output_per_piece' },
 }
 
-export const MODALITY_LABELS: Record<string, string> = {
-  video: '视频',
-  image: '图片',
-  chat: '对话',
-  speech: '语音',
-  model_3d: '3D',
+export const CAPABILITY_ORDER = ['chat', 'embedding', 'rerank', 'asr', 'tts', 'image', 'video', '3d'] as const
+
+/** 新建模型时价格输入的默认单位 */
+export const CAPABILITY_PRICE_UNIT: Record<string, PriceUnit> = {
+  chat: 'input_per_million_tokens',
+  embedding: 'input_per_million_tokens',
+  rerank: 'input_per_million_tokens',
+  asr: 'output_per_second',
+  tts: 'output_per_second',
+  image: 'output_per_image',
+  video: 'output_per_second',
+  '3d': 'output_per_piece',
 }
 
-export const MODALITY_ORDER = ['video', 'image', 'chat', 'speech', 'model_3d']
+/** 供应商类型的图标：取首字母，按类型着色 */
+export const TYPE_BADGES: Record<string, { text: string; color: string }> = {
+  openai: { text: 'AI', color: '#111827' },
+  'volcengine-ark': { text: 'Ark', color: '#2563eb' },
+  dashscope: { text: 'DS', color: '#6d28d9' },
+  minimax: { text: 'MM', color: '#e11d48' },
+  'comfyui-gateway': { text: 'H3', color: '#059669' },
+  dmxapi: { text: 'DMX', color: '#d97706' },
+  'tencent-hunyuan-3d': { text: '3D', color: '#0891b2' },
+}
 
 export type PriceUnit =
   | 'output_per_second'

@@ -65,22 +65,28 @@ DashScope TTS 和腾讯 3D。Local H3 的地址、模型、并发、时长、Art
 - 本地 H3 若想按电费计实际成本，在其 Deployment 价格里加 `gpu_per_second`
   （例如 300W、0.6 元/kWh ≈ `0.00005`）；报价仍按 `output_per_second` 估算。
 
-## 供应商 → 模型（Alembic 0025）与设置页
+## 供应商（Alembic 0025）与设置页
 
-「设置 → 模型服务」按常见的「供应商 → 模型」方式组织：
+「设置 → 模型服务 → 供应商」以卡片展示每个供应商（Provider ID、Base URL、能力、已启用模型数、启用开关），
+「新增供应商」字段：
 
-- **供应商**（`model_providers`）：一个账号 = 一个 API 地址 + 一把密钥（只存引用，密钥只写不读）
-  + 启用开关。预设有火山方舟、自建 GPU · H3、MiniMax 海螺、阿里云百炼、DeepSeek、硅基流动、
-  月之暗面 Kimi、智谱 GLM、OpenRouter、腾讯混元 3D，以及自定义 OpenAI 兼容。
-- **模型**挂在供应商下，继承其地址与密钥引用；改供应商地址会同步到全部模型，模型本身不能
-  单独改地址或密钥；停用供应商即停用其下全部模型。
-- 页面左侧供应商列表，右侧「API 密钥 + 检查」「API 地址」与按 视频 / 图片 / 对话 分组的模型
-  （能力标签、价格、启用开关）。支持 OpenAI 兼容接口的供应商可「获取模型列表」一键添加。
-- 「检查」只做不收费的探测（OpenAI 兼容用 `GET /models`，方舟用任务列表，H3 用 `/health`）。
+| 字段 | 说明 |
+|---|---|
+| Provider ID | 小写字母、数字、`-`、`_`，创建后不可改 |
+| 展示名称 | 卡片标题 |
+| Base URL | 其下所有模型共用；修改后同步到全部模型 |
+| Provider Type | 接口协议：OpenAI Completions API / Volcengine Ark API / DashScope API / MiniMax API / ComfyUI Gateway (H3) / DMXAPI / Tencent Hunyuan 3D API |
+| API Key Env | 存放密钥的环境变量名，默认按 Provider ID 生成（如 `JD_DS_API_KEY`）；修改后同步到全部模型 |
+| API Key | 可选，填写后写入上述环境变量；只写不读 |
+| Models Endpoint | 拉取模型列表的路径，默认 `/models`；留空则只能手动添加模型 |
+| 能力 | `chat / embedding / rerank / asr / tts / image / video / 3d` 中该协议支持的子集 |
+
+- 「管理模型」里按能力添加模型（Driver 由协议 + 能力决定），可「获取模型列表」一键添加、检查连接、启停。
+- `embedding / rerank / asr` 目前只登记配置（Driver `generic_model`），暂无内置功能调用。
+- 不能取消仍有模型的能力；停用供应商即停用其下全部模型；被默认模型引用的供应商不能删除。
 - **默认模型**页：每个用途一个下拉框，视频分「预览」「终版」两行；草稿档与备用模型在「高级」里。
-- **存量迁移**：启动时把没有供应商的模型按 地址 + 密钥引用 自动归入供应商，沿用原有密钥变量
-  （如 `VOLCANO_API_KEY`），无需重新填写；同类第二个账号会自动使用独立变量
-  `FS_PROVIDER_<SLUG>_API_KEY` 并在名称后编号。
+  对话 / 规划 / 导演等对话模型按这里的设置选择，未单独设置的用途回退到「对话」默认模型。
+- **存量迁移**：启动时把没有供应商的模型按 协议 + 地址 + 密钥变量 自动归入供应商，沿用原有密钥变量。
 
 对话模型的 Token 成本现在优先使用该模型 Deployment 的价格
 （`input_per_million_tokens` / `cached_input_per_million_tokens` / `output_per_million_tokens`），

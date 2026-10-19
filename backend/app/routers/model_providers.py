@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import require_admin
 from app.db.database import get_session
 from app.db.models import AuditLog, ModelProvider, User
-from app.model_runtime.provider_presets import PRESETS
+from app.model_runtime.provider_types import CAPABILITIES, PROVIDER_TYPES
 from app.services import model_provider_service as service
 
 router = APIRouter(dependencies=[Depends(require_admin)])
@@ -21,14 +21,22 @@ logger = logging.getLogger(__name__)
 
 
 class ProviderCreate(BaseModel):
-    preset: str = Field(min_length=1, max_length=64)
+    slug: str = Field(min_length=1, max_length=64, description="Provider ID")
     name: str = Field(default="", max_length=128)
+    provider_type: str = Field(min_length=1, max_length=64)
     base_url: str = Field(default="", max_length=2048)
+    api_key_env: str = Field(default="", max_length=128)
+    api_key: str = Field(default="", max_length=8192)
+    models_endpoint: Optional[str] = Field(default=None, max_length=255)
+    capabilities: Optional[list[str]] = None
 
 
 class ProviderPatch(BaseModel):
     name: Optional[str] = Field(default=None, max_length=128)
     base_url: Optional[str] = Field(default=None, max_length=2048)
+    api_key_env: Optional[str] = Field(default=None, max_length=128)
+    models_endpoint: Optional[str] = Field(default=None, max_length=255)
+    capabilities: Optional[list[str]] = None
     enabled: Optional[bool] = None
 
 
@@ -37,7 +45,7 @@ class CredentialWrite(BaseModel):
 
 
 class ModelCreate(BaseModel):
-    driver: str = Field(min_length=1, max_length=64)
+    capability: str = Field(min_length=1, max_length=32)
     model: str = Field(min_length=1, max_length=255)
     name: str = Field(default="", max_length=128)
     config: dict[str, Any] = Field(default_factory=dict)
@@ -83,9 +91,9 @@ def _audit(admin: User, action: str, target: str, before=None, after=None) -> Au
     )
 
 
-@router.get("/presets")
-async def list_presets() -> list[dict]:
-    return [preset.summary() for preset in PRESETS.values()]
+@router.get("/types")
+async def list_types() -> dict:
+    return {"capabilities": list(CAPABILITIES), "types": [item.summary() for item in PROVIDER_TYPES.values()]}
 
 
 @router.get("")
@@ -101,13 +109,28 @@ async def create_provider(
     body: ProviderCreate, admin: User = Depends(require_admin), session: AsyncSession = Depends(get_session)
 ) -> dict:
     try:
-        provider = await service.create_provider(session, body.preset, name=body.name, base_url=body.base_url)
-    except service.ProviderError as error:
+        provider = await service.create_provider(
+            session,
+            slug=body.slug,
+            name=body.name,
+            provider_type=body.provider_type,
+            base_url=body.base_url,
+            api_key_env=body.api_key_env,
+            models_endpoint=body.models_endpoint,
+            capabilities=body.capabilities,
+        )
+        if body.api_key.strip():
+            from app.services.model_credential_service import write_env_credential
+
+            write_env_credential(provider.credential_ref, body.api_key)
+    except ValueError as error:
         await session.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from error
-    session.add(_audit(admin, "model_provider.create", provider.slug, after={"preset": provider.preset}))
+    session.add(
+        _audit(admin, "model_provider.create", provider.slug, after={"provider_type": provider.provider_type})
+    )
     await session.commit()
-    return await _dto(session, provider, {})
+    return await _dto(session, provider, await _reload_catalog(session))
 
 
 @router.patch("/{slug}")
@@ -120,9 +143,7 @@ async def update_provider(
     provider = await _owned(session, slug)
     before = {"name": provider.name, "base_url": provider.base_url, "enabled": provider.enabled}
     try:
-        provider = await service.update_provider(
-            session, provider, name=body.name, base_url=body.base_url, enabled=body.enabled
-        )
+        provider = await service.update_provider(session, provider, **body.model_dump(exclude_unset=True))
     except ValueError as error:
         await session.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from error

@@ -1,7 +1,7 @@
 """Add model providers (vendor accounts) above deployments.
 
-A provider holds one account: base URL, credential reference and an enabled
-switch. Deployments (models) point at their provider; existing deployments
+A provider holds one account: provider type (API protocol), base URL,
+credential env reference, models endpoint, capability tags and an enabled switch. Deployments (models) point at their provider; existing deployments
 are assigned to providers at startup by the bootstrap service.
 
 Revision ID: 0025
@@ -11,6 +11,7 @@ Revises: 0024
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -26,9 +27,11 @@ def upgrade() -> None:
         sa.Column("id", sa.String(length=64), primary_key=True),
         sa.Column("slug", sa.String(length=128), nullable=False),
         sa.Column("name", sa.String(length=128), nullable=False),
-        sa.Column("preset", sa.String(length=64), nullable=False),
+        sa.Column("provider_type", sa.String(length=64), nullable=False),
         sa.Column("base_url", sa.String(length=2048), nullable=False, server_default=""),
         sa.Column("credential_ref", sa.String(length=255), nullable=False, server_default=""),
+        sa.Column("models_endpoint", sa.String(length=255), nullable=False, server_default="/models"),
+        sa.Column("capabilities", postgresql.JSONB(), nullable=False, server_default="[]"),
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("sort_order", sa.Integer(), nullable=False, server_default="100"),
         sa.Column("revision", sa.Integer(), nullable=False, server_default="1"),

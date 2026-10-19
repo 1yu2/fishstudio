@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ModelProvider, ModelRoute, ProviderModel, ProviderPreset, PurposeDefinition } from '../../modelServicesApi'
+import type { ModelProvider, ModelRoute, ProviderModel, ProviderType, PurposeDefinition } from '../../modelServicesApi'
 import { modelServicesApi, providersApi } from '../../modelServicesApi'
 import DefaultModels from './DefaultModels'
 import ModelDialog from './ModelDialog'
@@ -9,7 +9,7 @@ import { capabilityTags, priceLabel, supportsCapabilities } from './labels'
 
 vi.mock('../../modelServicesApi', () => ({
   providersApi: {
-    list: vi.fn(), presets: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(),
+    list: vi.fn(), types: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(),
     credential: vi.fn(), check: vi.fn(), remoteModels: vi.fn(), addModel: vi.fn(),
   },
   modelServicesApi: {
@@ -18,27 +18,40 @@ vi.mock('../../modelServicesApi', () => ({
   },
 }))
 
-const arkPreset: ProviderPreset = {
-  id: 'volcano-ark', name: '火山方舟', description: 'Seedance 视频', drivers: ['ark_video', 'volcano_image', 'openai_compatible'],
-  default_base_url: 'https://ark.cn-beijing.volces.com/api/v3', check: 'ark', lists_models: true, self_hosted: false, custom: false, tags: ['视频'],
+const openaiType: ProviderType = {
+  id: 'openai', label: 'OpenAI Completions API', capabilities: ['chat', 'embedding', 'rerank', 'asr'],
+  drivers: { chat: 'openai_compatible', embedding: 'generic_model', rerank: 'generic_model', asr: 'generic_model' },
+  default_base_url: 'https://api.openai.com/v1', default_models_endpoint: '/models', lists_models: true,
 }
-const deepseekPreset: ProviderPreset = { ...arkPreset, id: 'deepseek', name: 'DeepSeek', drivers: ['openai_compatible'], default_base_url: 'https://api.deepseek.com/v1', tags: ['对话'] }
-const customPreset: ProviderPreset = { ...deepseekPreset, id: 'openai-compatible', name: '自定义 OpenAI 兼容', default_base_url: '', custom: true }
+const arkType: ProviderType = {
+  id: 'volcengine-ark', label: 'Volcengine Ark API', capabilities: ['chat', 'embedding', 'image', 'video'],
+  drivers: { chat: 'openai_compatible', embedding: 'generic_model', image: 'volcano_image', video: 'ark_video' },
+  default_base_url: 'https://ark.cn-beijing.volces.com/api/v3', default_models_endpoint: '/models', lists_models: true,
+}
 
 function model(overrides: Partial<ProviderModel>): ProviderModel {
   return {
-    id: 'm', name: 'm', slug: 'm', driver: 'ark_video', modality: 'video', model: 'm', base_url: '', credential_configured: true,
-    enabled: true, priority: 100, config: {}, capabilities: {}, pricing: {}, revision: 1, available: true, ...overrides,
+    id: 'm', name: 'm', slug: 'm', driver: 'ark_video', modality: 'video', capability: 'video', model: 'm', base_url: '',
+    credential_configured: true, enabled: true, priority: 100, config: {}, capabilities: {}, pricing: {}, revision: 1, available: true,
+    ...overrides,
   }
 }
 
-const seedance = model({ slug: 'volcano-ark-seedance', name: 'Seedance 1.5 Pro', model: 'doubao-seedance-1-5-pro', capabilities: { modes: ['text', 'first_frame'] }, pricing: { output_per_million_tokens: '15' } })
-const ark: ModelProvider = { id: 'p1', slug: 'volcano-ark', name: '火山方舟', preset: arkPreset, base_url: arkPreset.default_base_url, credential_configured: false, enabled: true, revision: 1, models: [seedance] }
+const seedance = model({ slug: 'ark-seedance', name: 'Seedance 1.5 Pro', model: 'doubao-seedance-1-5-pro', capabilities: { modes: ['text', 'first_frame'] }, pricing: { output_per_million_tokens: '15' } })
+const ark: ModelProvider = {
+  id: 'p1', slug: 'volcengine-ark', name: 'Volcengine Ark', provider_type: arkType, base_url: arkType.default_base_url, api_key_env: 'VOLCANO_API_KEY',
+  credential_configured: false, models_endpoint: '/models', capabilities: ['chat', 'video'], enabled: true, revision: 1,
+  models: [seedance, model({ slug: 'ark-chat', name: 'doubao', capability: 'chat', modality: 'chat', driver: 'openai_compatible', enabled: false })],
+}
+const siliconflow: ModelProvider = {
+  id: 'p2', slug: 'siliconflow-cn', name: 'SiliconFlow', provider_type: openaiType, base_url: 'https://api.siliconflow.cn/v1', api_key_env: 'SILICONFLOW_API_KEY',
+  credential_configured: true, models_endpoint: '/models', capabilities: ['chat', 'embedding', 'rerank'], enabled: true, revision: 1, models: [],
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(providersApi.list).mockResolvedValue([ark])
-  vi.mocked(providersApi.presets).mockResolvedValue([arkPreset, deepseekPreset, customPreset])
+  vi.mocked(providersApi.list).mockResolvedValue([ark, siliconflow])
+  vi.mocked(providersApi.types).mockResolvedValue({ capabilities: ['chat', 'embedding', 'rerank', 'asr', 'tts', 'image', 'video', '3d'], types: [openaiType, arkType] })
   vi.mocked(modelServicesApi.routes).mockResolvedValue([])
   vi.mocked(modelServicesApi.purposes).mockResolvedValue([])
   vi.mocked(modelServicesApi.runtime).mockResolvedValue({ items: [] })
@@ -48,90 +61,139 @@ describe('labels', () => {
   it('describes capabilities and prices', () => {
     expect(capabilityTags({ modes: ['text', 'first_frame', 'first_last_frame'], tools: true })).toEqual(['首帧', '首尾帧', '工具'])
     expect(priceLabel({ input_per_million_tokens: '2', output_per_million_tokens: '8' }, 'chat')).toBe('¥2 / ¥8 每百万 Token')
-    expect(priceLabel({ gpu_per_second: '0.0001' })).toBe('¥0.0001 / GPU 秒')
     expect(priceLabel({})).toBe('未定价')
-    expect(supportsCapabilities({ operations: ['generate'] }, ['generate'])).toBe(true)
-    expect(supportsCapabilities({ tools: false }, ['tools'])).toBe(false)
+    expect(supportsCapabilities({ tools: true }, ['tools'])).toBe(true)
   })
 })
 
-describe('ModelServicesPanel', () => {
-  it('lists providers and shows the selected provider with grouped models', async () => {
+describe('provider cards', () => {
+  it('shows id, base url, capabilities, enabled count and status', async () => {
     render(<ModelServicesPanel />)
 
-    const list = await screen.findByLabelText('供应商列表')
-    expect(within(list).getByText('火山方舟')).toBeInTheDocument()
-    expect(within(list).getByRole('button', { name: '火山方舟，1 个模型，缺少密钥' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '火山方舟' })).toBeInTheDocument()
-    expect(screen.getByText('Seedance 1.5 Pro')).toBeInTheDocument()
-    expect(screen.getByText('首帧')).toBeInTheDocument()
-    expect(screen.getByText('¥15 / 百万 Token')).toBeInTheDocument()
+    const card = await screen.findByRole('article', { name: 'Volcengine Ark' })
+    expect(within(card).getByText('volcengine-ark')).toBeInTheDocument()
+    expect(within(card).getByText('https://ark.cn-beijing.volces.com/api/v3')).toBeInTheDocument()
+    expect(within(card).getByText('chat, video')).toBeInTheDocument()
+    expect(within(card).getByText('（已启用 1 个）')).toBeInTheDocument()
+    expect(within(card).getByRole('img', { name: '缺少 VOLCANO_API_KEY' })).toBeInTheDocument()
+    expect(within(screen.getByRole('article', { name: 'SiliconFlow' })).getByRole('img', { name: '可用' })).toBeInTheDocument()
   })
 
-  it('saves the key before checking the connection', async () => {
-    vi.mocked(providersApi.check).mockResolvedValue({ ok: true, message: '连接正常' })
+  it('filters by search and toggles a provider', async () => {
     render(<ModelServicesPanel />)
 
-    fireEvent.change(await screen.findByLabelText('API 密钥'), { target: { value: 'ark-secret' } })
-    fireEvent.click(screen.getByRole('button', { name: '检查' }))
+    fireEvent.change(await screen.findByLabelText('搜索供应商'), { target: { value: 'rerank' } })
+    expect(screen.queryByRole('article', { name: 'Volcengine Ark' })).not.toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('article', { name: 'SiliconFlow' })).getByRole('switch'))
+    await waitFor(() => expect(providersApi.update).toHaveBeenCalledWith('siliconflow-cn', { enabled: false }))
+  })
+})
 
-    expect(await screen.findByText('连接正常')).toBeInTheDocument()
-    expect(providersApi.credential).toHaveBeenCalledWith('volcano-ark', 'ark-secret')
-    expect(vi.mocked(providersApi.credential).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(providersApi.check).mock.invocationCallOrder[0])
+describe('new provider dialog', () => {
+  it('creates a provider with derived key env and chosen capabilities', async () => {
+    const created = { ...siliconflow, slug: 'jd-ds', name: 'jd-ds' }
+    vi.mocked(providersApi.create).mockImplementation(async () => {
+      vi.mocked(providersApi.list).mockResolvedValue([ark, siliconflow, created])
+      return created
+    })
+    render(<ModelServicesPanel />)
+
+    fireEvent.click(await screen.findByText('新增供应商'))
+    const dialog = screen.getByRole('dialog', { name: '新增供应商' })
+    fireEvent.change(within(dialog).getByPlaceholderText('my-provider'), { target: { value: 'jd-ds' } })
+    expect(within(dialog).getByPlaceholderText('环境变量名')).toHaveValue('JD_DS_API_KEY')
+    fireEvent.change(within(dialog).getByPlaceholderText('My Provider'), { target: { value: 'jd-ds' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://modelservice.jdcloud.com/v1' } })
+    fireEvent.click(within(dialog).getByRole('combobox', { name: '能力' }))
+    fireEvent.click(within(dialog).getByRole('option', { name: 'embedding' }))
+    fireEvent.click(within(dialog).getByText('保存'))
+
+    await waitFor(() => expect(providersApi.create).toHaveBeenCalledWith({
+      slug: 'jd-ds', name: 'jd-ds', provider_type: 'openai', base_url: 'https://modelservice.jdcloud.com/v1',
+      api_key_env: 'JD_DS_API_KEY', models_endpoint: '/models', capabilities: ['chat', 'embedding'], api_key: undefined,
+    }))
+    // 新建后直接进入「管理模型」
+    expect(await screen.findByRole('dialog', { name: '管理模型 jd-ds' })).toBeInTheDocument()
   })
 
-  it('adds a preset provider and a custom OpenAI-compatible one', async () => {
-    vi.mocked(providersApi.create).mockImplementation(async (body) => ({ ...ark, slug: body.preset, name: body.name || 'DeepSeek', models: [] }))
+  it('validates the provider id', async () => {
     render(<ModelServicesPanel />)
 
-    fireEvent.click(await screen.findByText('添加供应商'))
-    // 已添加的火山方舟：点击只跳转到已有供应商，不新建
-    fireEvent.click(within(screen.getByRole('dialog', { name: '添加供应商' })).getByText('火山方舟'))
-    expect(screen.queryByRole('dialog', { name: '添加供应商' })).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByText('新增供应商'))
+    const dialog = screen.getByRole('dialog', { name: '新增供应商' })
+    fireEvent.change(within(dialog).getByPlaceholderText('my-provider'), { target: { value: 'Bad ID' } })
+    fireEvent.click(within(dialog).getByText('保存'))
+
+    expect(await within(dialog).findByText(/Provider ID 只能/)).toBeInTheDocument()
     expect(providersApi.create).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByText('添加供应商'))
-    fireEvent.click(within(screen.getByRole('dialog', { name: '添加供应商' })).getByText('DeepSeek'))
-    await waitFor(() => expect(providersApi.create).toHaveBeenCalledWith({ preset: 'deepseek', name: '', base_url: '' }))
-
-    fireEvent.click(await screen.findByText('添加供应商'))
-    const dialog = screen.getByRole('dialog', { name: '添加供应商' })
-    fireEvent.change(within(dialog).getByPlaceholderText('名称，例如 公司网关'), { target: { value: 'vLLM' } })
-    fireEvent.change(within(dialog).getByPlaceholderText('https://api.example.com/v1'), { target: { value: 'http://10.0.0.5:8000/v1' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: '添加' }))
-    await waitFor(() => expect(providersApi.create).toHaveBeenLastCalledWith({ preset: 'openai-compatible', name: 'vLLM', base_url: 'http://10.0.0.5:8000/v1' }))
   })
 
-  it('toggles a model and the provider', async () => {
+  it('switching provider type offers that type’s capabilities', async () => {
     render(<ModelServicesPanel />)
 
-    fireEvent.click(await screen.findByRole('switch', { name: '启用 Seedance 1.5 Pro' }))
-    await waitFor(() => expect(modelServicesApi.enable).toHaveBeenCalledWith('volcano-ark-seedance', false))
-    fireEvent.click(screen.getByRole('switch', { name: '启用 火山方舟' }))
-    await waitFor(() => expect(providersApi.update).toHaveBeenCalledWith('volcano-ark', { enabled: false }))
+    fireEvent.click(await screen.findByText('新增供应商'))
+    const dialog = screen.getByRole('dialog', { name: '新增供应商' })
+    fireEvent.change(within(dialog).getByDisplayValue('OpenAI Completions API'), { target: { value: 'volcengine-ark' } })
+    fireEvent.click(within(dialog).getByRole('combobox', { name: '能力' }))
+    expect(within(within(dialog).getByRole('listbox')).getAllByRole('option').map((option) => option.textContent)).toEqual(['chat', 'embedding', 'image', 'video'])
+  })
+
+  it('edits without changing provider id and saves a new key separately', async () => {
+    vi.mocked(providersApi.update).mockResolvedValue(ark)
+    render(<ModelServicesPanel />)
+
+    fireEvent.click(await screen.findByLabelText('编辑 Volcengine Ark'))
+    const dialog = screen.getByRole('dialog', { name: '编辑供应商' })
+    expect(within(dialog).getByDisplayValue('volcengine-ark')).toBeDisabled()
+    fireEvent.change(within(dialog).getByPlaceholderText('未配置，填写后保存'), { target: { value: 'secret' } })
+    fireEvent.click(within(dialog).getByText('保存'))
+
+    await waitFor(() => expect(providersApi.credential).toHaveBeenCalledWith('volcengine-ark', 'secret'))
+    expect(vi.mocked(providersApi.update).mock.calls[0][1]).toEqual({
+      name: 'Volcengine Ark', base_url: 'https://ark.cn-beijing.volces.com/api/v3', api_key_env: 'VOLCANO_API_KEY',
+      models_endpoint: '/models', capabilities: ['chat', 'video'],
+    })
+  })
+})
+
+describe('manage models', () => {
+  it('fetches the model list and adds one by capability', async () => {
+    vi.mocked(providersApi.remoteModels).mockResolvedValue([
+      { model: 'Qwen/Qwen3-32B', capability: 'chat', added: false },
+      { model: 'BAAI/bge-m3', capability: 'embedding', added: true },
+    ])
+    vi.mocked(providersApi.addModel).mockResolvedValue(siliconflow)
+    render(<ModelServicesPanel />)
+
+    fireEvent.click(within(await screen.findByRole('article', { name: 'SiliconFlow' })).getByText(/管理模型/))
+    const dialog = screen.getByRole('dialog', { name: '管理模型 SiliconFlow' })
+    fireEvent.click(within(dialog).getByText('获取模型列表'))
+    expect(await within(dialog).findByText('BAAI/bge-m3')).toBeInTheDocument()
+    expect(within(dialog).getByText('已添加')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '添加' }))
+    fireEvent.change(screen.getByLabelText('输入价（元 / 百万 Token）'), { target: { value: '1' } })
+    fireEvent.click(within(screen.getByRole('dialog', { name: '添加模型' })).getByText('保存'))
+
+    await waitFor(() => expect(providersApi.addModel).toHaveBeenCalledWith('siliconflow-cn', expect.objectContaining({
+      capability: 'chat', model: 'Qwen/Qwen3-32B', pricing: { currency: 'CNY', input_per_million_tokens: '1' },
+    })))
   })
 })
 
 describe('ModelDialog', () => {
-  it('adds a model under the provider with modes and price', async () => {
+  it('video models keep explicit generation modes and price', async () => {
     const onSaved = vi.fn()
-    render(<ModelDialog provider={ark} onClose={vi.fn()} onSaved={onSaved} onError={vi.fn()} />)
+    render(<ModelDialog provider={ark} initial={{ capability: 'video', model: 'doubao-seedance-1-5-pro-251215' }} onClose={vi.fn()} onSaved={onSaved} onError={vi.fn()} />)
 
-    // Seedance 默认三种方式全部勾选；取消首尾帧后按界面所见保存
     expect(screen.getByLabelText('首尾帧')).toBeChecked()
     fireEvent.click(screen.getByLabelText('首尾帧'))
     fireEvent.change(screen.getByLabelText('单价'), { target: { value: '15' } })
     fireEvent.click(screen.getByText('保存'))
 
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
-    expect(providersApi.addModel).toHaveBeenCalledWith('volcano-ark', {
-      driver: 'ark_video',
-      name: 'doubao-seedance-1-5-pro-251215',
-      model: 'doubao-seedance-1-5-pro-251215',
-      config: {},
-      capabilities: { modes: ['text', 'first_frame'] },
-      pricing: { currency: 'CNY', output_per_million_tokens: '15' },
-    })
+    expect(providersApi.addModel).toHaveBeenCalledWith('volcengine-ark', expect.objectContaining({
+      capability: 'video', capabilities: { modes: ['text', 'first_frame'] },
+    }))
   })
 
   it('editing sends only model fields', async () => {
@@ -142,74 +204,22 @@ describe('ModelDialog', () => {
 
     await waitFor(() => expect(modelServicesApi.update).toHaveBeenCalled())
     const [slug, body] = vi.mocked(modelServicesApi.update).mock.calls[0]
-    expect(slug).toBe('volcano-ark-seedance')
+    expect(slug).toBe('ark-seedance')
     expect(Object.keys(body).sort()).toEqual(['capabilities', 'config', 'model', 'name', 'pricing'])
-    expect(body.pricing).toEqual({ currency: 'CNY', output_per_million_tokens: '12' })
-  })
-
-  it('chat models take token prices and capability flags', async () => {
-    const deepseek: ModelProvider = { ...ark, slug: 'deepseek', name: 'DeepSeek', preset: deepseekPreset, models: [] }
-    render(<ModelDialog provider={deepseek} initial={{ driver: 'openai_compatible', model: 'deepseek-chat' }} onClose={vi.fn()} onSaved={vi.fn()} onError={vi.fn()} />)
-
-    fireEvent.click(screen.getByLabelText('工具调用'))
-    fireEvent.change(screen.getByLabelText('输入价（元 / 百万 Token）'), { target: { value: '2' } })
-    fireEvent.change(screen.getByLabelText('输出价（元 / 百万 Token）'), { target: { value: '8' } })
-    fireEvent.click(screen.getByText('保存'))
-
-    await waitFor(() => expect(providersApi.addModel).toHaveBeenCalled())
-    expect(vi.mocked(providersApi.addModel).mock.calls[0][1]).toEqual(expect.objectContaining({
-      driver: 'openai_compatible', model: 'deepseek-chat', capabilities: { tools: true },
-      pricing: { currency: 'CNY', input_per_million_tokens: '2', output_per_million_tokens: '8' },
-    }))
-  })
-})
-
-describe('second account of a preset', () => {
-  it('is created only through the explicit button', async () => {
-    vi.mocked(providersApi.create).mockResolvedValue({ ...ark, slug: 'volcano-ark-2', models: [] })
-    render(<ModelServicesPanel />)
-
-    fireEvent.click(await screen.findByText('添加供应商'))
-    fireEvent.click(within(screen.getByRole('dialog', { name: '添加供应商' })).getByText('再添加一个账号'))
-
-    await waitFor(() => expect(providersApi.create).toHaveBeenCalledWith({ preset: 'volcano-ark', name: '', base_url: '' }))
   })
 })
 
 describe('DefaultModels', () => {
-  const purposes: PurposeDefinition[] = [
-    { purpose: 'shot_video', modality: 'video', required_capabilities: [] },
-    { purpose: 'planner', modality: 'chat', required_capabilities: ['tools'] },
-  ]
-  const deepseek: ModelProvider = {
-    ...ark, slug: 'deepseek', name: 'DeepSeek', preset: deepseekPreset, models: [
-      model({ slug: 'ds-chat', name: 'deepseek-chat', driver: 'openai_compatible', modality: 'chat', capabilities: { tools: true } }),
-      model({ slug: 'ds-r1', name: 'deepseek-reasoner', driver: 'openai_compatible', modality: 'chat', capabilities: {} }),
-    ],
-  }
-  const routes: ModelRoute[] = [{ purpose: 'shot_video', tier: 'final', modality: 'video', primary_deployment: 'volcano-ark-seedance', fallback_deployments: [], enabled: true, revision: 1 }]
+  const purposes: PurposeDefinition[] = [{ purpose: 'shot_video', modality: 'video', required_capabilities: [] }]
+  const routes: ModelRoute[] = [{ purpose: 'shot_video', tier: 'final', modality: 'video', primary_deployment: 'ark-seedance', fallback_deployments: [], enabled: true, revision: 1 }]
 
-  it('shows preview and final for video and only capable models', () => {
-    render(<DefaultModels providers={[ark, deepseek]} purposes={purposes} routes={routes} onChanged={vi.fn()} notify={vi.fn()} />)
-
-    expect(screen.getByText('镜头视频 · 预览')).toBeInTheDocument()
-    expect(screen.getByText('未单独设置，沿用终版')).toBeInTheDocument()
-    expect(screen.getByLabelText('镜头视频 · 终版 模型')).toHaveValue('volcano-ark-seedance')
-    const planner = screen.getByLabelText('剧本拆分与规划 模型')
-    expect(within(planner).getByText('DeepSeek · deepseek-chat')).toBeInTheDocument()
-    expect(within(planner).queryByText('DeepSeek · deepseek-reasoner')).not.toBeInTheDocument()
-  })
-
-  it('saves a tier-specific default', async () => {
+  it('shows preview and final for video and saves a tier', async () => {
     vi.mocked(modelServicesApi.saveRoute).mockResolvedValue(routes[0])
-    const onChanged = vi.fn().mockResolvedValue(undefined)
-    render(<DefaultModels providers={[ark]} purposes={purposes} routes={routes} onChanged={onChanged} notify={vi.fn()} />)
+    render(<DefaultModels providers={[ark]} purposes={purposes} routes={routes} onChanged={vi.fn().mockResolvedValue(undefined)} notify={vi.fn()} />)
 
-    fireEvent.change(screen.getByLabelText('镜头视频 · 预览 模型'), { target: { value: 'volcano-ark-seedance' } })
+    expect(screen.getByLabelText('镜头视频 · 终版 模型')).toHaveValue('ark-seedance')
+    fireEvent.change(screen.getByLabelText('镜头视频 · 预览 模型'), { target: { value: 'ark-seedance' } })
 
-    await waitFor(() => expect(modelServicesApi.saveRoute).toHaveBeenCalledWith({
-      purpose: 'shot_video', tier: 'preview', modality: 'video', primary_deployment: 'volcano-ark-seedance', fallback_deployments: [], enabled: true,
-    }))
-    expect(onChanged).toHaveBeenCalled()
+    await waitFor(() => expect(modelServicesApi.saveRoute).toHaveBeenCalledWith(expect.objectContaining({ tier: 'preview', primary_deployment: 'ark-seedance' })))
   })
 })

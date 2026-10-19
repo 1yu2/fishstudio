@@ -1,4 +1,4 @@
-"""供应商 → 模型 两级配置：预设识别、连接检查、拉取模型列表，以及真实 PG 上的归类与同步。"""
+"""供应商：类型识别、连接检查、拉取模型列表，以及真实 PG 上的创建校验、归类、同步与保护。"""
 
 import asyncio
 import os
@@ -8,13 +8,7 @@ from urllib.parse import urlparse
 import httpx
 import pytest
 
-from app.model_runtime.provider_presets import (
-    PRESETS,
-    infer_model_kind,
-    preset_for,
-    provider_env_name,
-    slugify,
-)
+from app.model_runtime.provider_types import PROVIDER_TYPES, default_env_name, infer_capability, type_for
 from app.services import model_provider_service as service
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -23,35 +17,42 @@ requires_pg = pytest.mark.skipif(
 )
 
 
-# ── 预设 ─────────────────────────────────────────────────────────────────
+# ── 类型 ─────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
-    ("driver", "base_url", "preset"),
+    ("driver", "base_url", "provider_type"),
     [
-        ("ark_video", "https://ark.cn-beijing.volces.com/api/v3", "volcano-ark"),
-        ("openai_compatible", "https://ark.cn-beijing.volces.com/api/v3", "volcano-ark"),
-        ("openai_compatible", "https://api.siliconflow.cn/v1", "siliconflow"),
-        ("openai_compatible", "https://api.deepseek.com/v1", "deepseek"),
-        ("openai_compatible", "http://10.0.0.5:8000/v1", "openai-compatible"),
-        ("local_h3_gateway", "http://192.168.10.60:8088", "local-h3"),
+        ("ark_video", "https://ark.cn-beijing.volces.com/api/v3", "volcengine-ark"),
+        ("openai_compatible", "https://ark.cn-beijing.volces.com/api/v3", "volcengine-ark"),
+        ("openai_compatible", "https://api.siliconflow.cn/v1", "openai"),
+        ("openai_compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope"),
+        ("local_h3_gateway", "http://192.168.10.60:8088", "comfyui-gateway"),
         ("qwen_tts", "", "dashscope"),
         ("minimax_video", "https://api.minimaxi.com", "minimax"),
+        ("volcano_video", "https://www.dmxapi.cn/v1", "dmxapi"),
     ],
 )
-def test_preset_for_existing_models(driver, base_url, preset):
-    assert preset_for(driver, base_url).id == preset
+def test_type_for_existing_models(driver, base_url, provider_type):
+    assert type_for(driver, base_url).id == provider_type
 
 
-def test_infer_model_kind_and_names():
-    ark = PRESETS["volcano-ark"]
-    assert infer_model_kind(ark, "doubao-seedance-1-5-pro-251215") == ("ark_video", "video")
-    assert infer_model_kind(ark, "doubao-seedream-4-5") == ("volcano_image", "image")
-    assert infer_model_kind(ark, "doubao-seed-1-6") == ("openai_compatible", "chat")
-    assert infer_model_kind(PRESETS["siliconflow"], "BAAI/bge-m3-embedding") is None
-    assert infer_model_kind(PRESETS["local-h3"], "MiniMax-H3") is None
-    assert provider_env_name("api-deepseek-com") == "FS_PROVIDER_API_DEEPSEEK_COM_API_KEY"
-    assert slugify("api.deepseek.com") == "api-deepseek-com"
+def test_capabilities_and_inference():
+    ark = PROVIDER_TYPES["volcengine-ark"]
+    assert ark.capabilities == ("chat", "embedding", "image", "video")
+    assert ark.driver_for("video") == "ark_video"
+    enabled = ("chat", "image", "video")
+    assert infer_capability(ark, "doubao-seedance-1-5-pro-251215", enabled) == "video"
+    assert infer_capability(ark, "doubao-seedream-4-5", enabled) == "image"
+    assert infer_capability(ark, "doubao-seed-1-6", enabled) == "chat"
+    assert (
+        infer_capability(ark, "doubao-embedding", enabled) == "chat"
+    )  # embedding 未勾选时不推断为 embedding
+    openai = PROVIDER_TYPES["openai"]
+    assert infer_capability(openai, "BAAI/bge-m3", ("chat", "embedding")) == "embedding"
+    assert infer_capability(openai, "BAAI/bge-reranker-v2-m3", ("chat", "rerank")) == "rerank"
+    assert infer_capability(openai, "BAAI/bge-m3", ("rerank",)) is None
+    assert default_env_name("jd-ds") == "JD_DS_API_KEY"
 
 
 # ── 连接检查与拉取模型列表（MockTransport） ───────────────────────────────
@@ -67,40 +68,53 @@ def _client(monkeypatch, handler):
     monkeypatch.setattr("app.services.model_provider_service.httpx.AsyncClient", factory)
 
 
-def _provider(preset="deepseek", base_url="https://api.deepseek.com/v1"):
+def _provider(
+    provider_type="openai", base_url="https://api.deepseek.com", endpoint="/models", capabilities=("chat",)
+):
     return SimpleNamespace(
         id="p1",
-        slug=preset,
-        name=PRESETS[preset].name,
-        preset=preset,
+        slug="deepseek",
+        name="DeepSeek",
+        provider_type=provider_type,
         base_url=base_url,
         credential_ref="env:FS_TEST_KEY",
+        models_endpoint=endpoint,
+        capabilities=list(capabilities),
     )
 
 
 def test_check_without_key(monkeypatch):
     monkeypatch.delenv("FS_TEST_KEY", raising=False)
     result = asyncio.run(service.check_provider(_provider(), []))
-    assert result == {"ok": False, "message": "还没有填写 API 密钥"}
+    assert result == {"ok": False, "message": "环境变量 FS_TEST_KEY 里还没有 API Key"}
 
 
 @pytest.mark.parametrize(
-    ("preset", "base_url", "expected_path", "status", "ok", "message"),
+    ("provider_type", "base_url", "endpoint", "expected_path", "status", "ok", "message"),
     [
-        ("deepseek", "https://api.deepseek.com/v1", "/v1/models", 200, True, "连接正常"),
-        ("deepseek", "https://api.deepseek.com/v1", "/v1/models", 401, False, "密钥无效或没有权限"),
+        ("openai", "https://api.deepseek.com", "/models", "/models", 200, True, "连接正常"),
         (
-            "volcano-ark",
+            "openai",
+            "https://api.deepseek.com",
+            "/v1/models",
+            "/v1/models",
+            401,
+            False,
+            "API Key 无效或没有权限",
+        ),
+        (
+            "volcengine-ark",
             "https://ark.test/api/v3",
+            "/models",
             "/api/v3/contents/generations/tasks",
             200,
             True,
             "连接正常",
         ),
-        ("local-h3", "http://h3.test:8088", "/health", 404, False, "地址不正确（接口不存在）"),
+        ("comfyui-gateway", "http://h3.test:8088", "", "/health", 404, False, "地址不正确（接口不存在）"),
     ],
 )
-def test_check_provider(monkeypatch, preset, base_url, expected_path, status, ok, message):
+def test_check_provider(monkeypatch, provider_type, base_url, endpoint, expected_path, status, ok, message):
     monkeypatch.setenv("FS_TEST_KEY", "secret")
     seen = {}
 
@@ -110,36 +124,47 @@ def test_check_provider(monkeypatch, preset, base_url, expected_path, status, ok
         return httpx.Response(status, json={})
 
     _client(monkeypatch, handler)
-    result = asyncio.run(service.check_provider(_provider(preset, base_url), []))
+    result = asyncio.run(service.check_provider(_provider(provider_type, base_url, endpoint), []))
 
     assert result == {"ok": ok, "message": message}
     assert seen == {"path": expected_path, "auth": "Bearer secret"}
 
 
-def test_remote_models_infers_kinds_and_marks_added(monkeypatch):
+def test_remote_models_uses_models_endpoint(monkeypatch):
     monkeypatch.setenv("FS_TEST_KEY", "secret")
-    payload = {"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}, {"id": "text-embedding-x"}]}
-    _client(monkeypatch, lambda request: httpx.Response(200, json=payload))
-    existing = [SimpleNamespace(driver="openai_compatible", model="deepseek-chat")]
+    seen = {}
 
-    items = asyncio.run(service.remote_models(_provider(), existing))
+    def handler(request):
+        seen["path"] = request.url.path
+        return httpx.Response(
+            200, json={"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}, {"id": "bge-m3"}]}
+        )
 
+    _client(monkeypatch, handler)
+    existing = [SimpleNamespace(model="deepseek-chat")]
+
+    items = asyncio.run(
+        service.remote_models(_provider(endpoint="/v1/models", capabilities=("chat", "embedding")), existing)
+    )
+
+    assert seen["path"] == "/v1/models"
     assert items == [
-        {"model": "deepseek-chat", "driver": "openai_compatible", "modality": "chat", "added": True},
-        {"model": "deepseek-reasoner", "driver": "openai_compatible", "modality": "chat", "added": False},
+        {"model": "deepseek-chat", "capability": "chat", "added": True},
+        {"model": "deepseek-reasoner", "capability": "chat", "added": False},
+        {"model": "bge-m3", "capability": "embedding", "added": False},
     ]
 
 
-def test_remote_models_errors_are_user_facing(monkeypatch):
+def test_remote_models_errors(monkeypatch):
     monkeypatch.setenv("FS_TEST_KEY", "secret")
     _client(monkeypatch, lambda request: httpx.Response(404))
-    with pytest.raises(service.ProviderError, match="控制台"):
-        asyncio.run(service.remote_models(_provider("volcano-ark", "https://ark.test/api/v3"), []))
-    with pytest.raises(service.ProviderError, match="不提供模型列表"):
-        asyncio.run(service.remote_models(_provider("minimax", "https://api.minimaxi.com"), []))
+    with pytest.raises(service.ProviderError, match="拉取模型列表失败"):
+        asyncio.run(service.remote_models(_provider(), []))
+    with pytest.raises(service.ProviderError, match="Models Endpoint"):
+        asyncio.run(service.remote_models(_provider(endpoint=""), []))
 
 
-# ── 真实 PostgreSQL：归类、同步、删除保护、停用供应商 ─────────────────────
+# ── 真实 PostgreSQL ──────────────────────────────────────────────────────
 
 
 def _admin_dsn() -> dict:
@@ -192,7 +217,7 @@ def pg():
     asyncio.run(_recreate_database(drop_only=True))
 
 
-def _deployment(slug, driver, modality, model, base_url, credential_ref, **extra):
+def _deployment(slug, driver, modality, model, base_url, credential_ref):
     from app.model_runtime.deployment_config import DeploymentInput
 
     return DeploymentInput(
@@ -203,7 +228,6 @@ def _deployment(slug, driver, modality, model, base_url, credential_ref, **extra
         model=model,
         base_url=base_url,
         credential_ref=credential_ref,
-        **extra,
     )
 
 
@@ -243,24 +267,103 @@ def test_existing_models_are_grouped_into_providers(pg):
             first = await service.assign_unowned_deployments(s)
             second = await service.assign_unowned_deployments(s)
             await s.commit()
-            providers = await service.list_providers(s)
-            grouped = {p.slug: sorted(m.slug for m in await service.models_of(s, p)) for p in providers}
-            return first, second, grouped, {p.slug: p.credential_ref for p in providers}
+            out = {}
+            for provider in await service.list_providers(s):
+                models = await service.models_of(s, provider)
+                out[provider.slug] = (
+                    provider.name,
+                    provider.provider_type,
+                    provider.credential_ref,
+                    provider.capabilities,
+                    sorted(m.slug for m in models),
+                )
+            return first, second, out
 
-    first, second, grouped, refs = asyncio.run(_run())
+    first, second, grouped = asyncio.run(_run())
 
     assert (first, second) == (4, 0)
     assert grouped == {
-        "volcano-ark": ["doubao-chat", "seedance"],
-        "local-h3": ["local-h3"],
-        "siliconflow": ["sf-qwen"],
+        "volcengine-ark": (
+            "Volcengine Ark",
+            "volcengine-ark",
+            "env:VOLCANO_API_KEY",
+            ["video", "chat"],
+            ["doubao-chat", "seedance"],
+        ),
+        "siliconflow": ("api.siliconflow.cn", "openai", "env:OPENAI_API_KEY", ["chat"], ["sf-qwen"]),
+        "comfyui-gateway": (
+            "ComfyUI Gateway (H3)",
+            "comfyui-gateway",
+            "env:LOCAL_H3_API_KEY",
+            ["video"],
+            ["local-h3"],
+        ),
     }
-    # 存量供应商沿用原有密钥变量，不要求重新填写
-    assert refs == {
-        "volcano-ark": "env:VOLCANO_API_KEY",
-        "local-h3": "env:LOCAL_H3_API_KEY",
-        "siliconflow": "env:OPENAI_API_KEY",
-    }
+
+
+@requires_pg
+def test_create_validation(pg):
+    async def _run():
+        errors = []
+        async with pg() as s:
+            for kwargs in (
+                {"slug": "Bad ID", "name": "x", "provider_type": "openai", "base_url": "https://a.test"},
+                {"slug": "ok-id", "name": "x", "provider_type": "unknown", "base_url": "https://a.test"},
+                {
+                    "slug": "ok-id",
+                    "name": "x",
+                    "provider_type": "openai",
+                    "base_url": "https://a.test",
+                    "capabilities": ["video"],
+                },
+                {
+                    "slug": "ok-id",
+                    "name": "x",
+                    "provider_type": "openai",
+                    "base_url": "https://a.test",
+                    "api_key_env": "lower",
+                },
+                {"slug": "ok-id", "name": "x", "provider_type": "comfyui-gateway", "base_url": ""},
+            ):
+                try:
+                    await service.create_provider(s, **kwargs)
+                except service.ProviderError as error:
+                    errors.append(str(error))
+            created = await service.create_provider(
+                s,
+                slug="jd-ds",
+                name="jd-ds",
+                provider_type="openai",
+                base_url="https://modelservice.jdcloud.com/v1/",
+            )
+            try:
+                await service.create_provider(
+                    s, slug="jd-ds", name="dup", provider_type="openai", base_url="https://b.test"
+                )
+            except service.ProviderError as error:
+                errors.append(str(error))
+            return errors, (
+                created.credential_ref,
+                created.base_url,
+                created.models_endpoint,
+                created.capabilities,
+            )
+
+    errors, created = asyncio.run(_run())
+
+    assert len(errors) == 6
+    assert errors[0].startswith("Provider ID 只能")
+    assert errors[1].startswith("未知 Provider Type")
+    assert "不支持能力：video" in errors[2]
+    assert errors[3].startswith("API Key Env")
+    assert errors[4] == "请填写 Base URL"
+    assert errors[5] == "Provider ID 已存在：jd-ds"
+    assert created == (
+        "env:JD_DS_API_KEY",
+        "https://modelservice.jdcloud.com/v1",
+        "/models",
+        ["chat", "embedding", "rerank", "asr"],
+    )
 
 
 @requires_pg
@@ -270,25 +373,36 @@ def test_provider_lifecycle_and_sync(pg):
 
     async def _run():
         async with pg() as s:
-            deepseek = await service.create_provider(s, "deepseek")
-            custom = await service.create_provider(
-                s, "openai-compatible", name="vLLM", base_url="http://10.0.0.5:8000/v1/"
+            provider = await service.create_provider(
+                s,
+                slug="siliconflow-cn",
+                name="SiliconFlow",
+                provider_type="openai",
+                base_url="https://api.siliconflow.cn/v1",
+                api_key_env="SILICONFLOW_API_KEY",
+                capabilities=["chat", "embedding", "rerank"],
             )
-            second_sf = await service.create_provider(s, "siliconflow")
-            third_sf = await service.create_provider(s, "siliconflow")
-            names = (second_sf.name, third_sf.name)
             chat = await service.add_model(
                 s,
-                deepseek,
-                driver="openai_compatible",
-                model="deepseek-chat",
-                pricing={"input_per_million_tokens": "2", "output_per_million_tokens": "8"},
+                provider,
+                capability="chat",
+                model="Qwen/Qwen3-32B",
+                pricing={"input_per_million_tokens": "1", "output_per_million_tokens": "4"},
             )
-            with pytest.raises(service.ProviderError, match="不支持"):
-                await service.add_model(s, deepseek, driver="ark_video", model="x")
-            revision_before = chat.revision
-            await service.update_provider(s, deepseek, base_url="https://api.deepseek.com/v2/")
+            embed = await service.add_model(s, provider, capability="embedding", model="BAAI/bge-m3")
+            with pytest.raises(service.ProviderError, match="没有开启 asr"):
+                await service.add_model(s, provider, capability="asr", model="x")
+            with pytest.raises(service.ProviderError, match="先删除这些模型"):
+                await service.update_provider(s, provider, capabilities=["chat", "rerank"])
+            await service.update_provider(
+                s,
+                provider,
+                base_url="https://api.siliconflow.com/v1/",
+                api_key_env="SF_KEY",
+                models_endpoint="v1/models",
+            )
             await s.refresh(chat)
+            await s.refresh(embed)
             s.add(
                 ModelRoute(
                     purpose="chat",
@@ -300,57 +414,43 @@ def test_provider_lifecycle_and_sync(pg):
             )
             await s.flush()
             with pytest.raises(service.ProviderError, match="仍被默认模型引用"):
-                await service.delete_provider(s, deepseek)
-            await service.update_provider(s, deepseek, enabled=False)
+                await service.delete_provider(s, provider)
+            await service.update_provider(s, provider, enabled=False)
             await s.commit()
             snapshot = await CatalogManager().refresh(s)
             return {
-                "deepseek": (deepseek.slug, deepseek.credential_ref, deepseek.base_url),
-                "custom": (custom.slug, custom.name, custom.base_url, custom.credential_ref),
-                "sf": (second_sf.slug, second_sf.credential_ref, third_sf.slug, third_sf.credential_ref),
-                "chat": (
-                    chat.slug,
-                    chat.base_url,
-                    chat.credential_ref,
-                    chat.provider_id == deepseek.id,
-                    chat.revision > revision_before,
-                ),
-                "catalog_enabled": snapshot.get(chat.slug).enabled,
-                "names": names,
+                "chat": (chat.slug, chat.driver, chat.modality, chat.base_url, chat.credential_ref),
+                "embed": (embed.driver, embed.modality, embed.base_url, embed.credential_ref),
+                "provider": (provider.models_endpoint, provider.credential_ref),
+                "catalog": (snapshot.get(chat.slug).enabled, snapshot.get(embed.slug).enabled),
             }
 
     result = asyncio.run(_run())
 
-    assert result["deepseek"] == (
-        "deepseek",
-        "env:FS_PROVIDER_DEEPSEEK_API_KEY",
-        "https://api.deepseek.com/v2",
-    )
-    assert result["custom"] == ("vllm", "vLLM", "http://10.0.0.5:8000/v1", "env:FS_PROVIDER_VLLM_API_KEY")
-    # 第一个硅基流动沿用 OPENAI_API_KEY；第二个同类供应商自动换成独立变量
-    assert result["sf"] == (
-        "siliconflow",
-        "env:OPENAI_API_KEY",
-        "siliconflow-2",
-        "env:FS_PROVIDER_SILICONFLOW_2_API_KEY",
-    )
     assert result["chat"] == (
-        "deepseek-deepseek-chat",
-        "https://api.deepseek.com/v2",
-        "env:FS_PROVIDER_DEEPSEEK_API_KEY",
-        True,
-        True,
+        "siliconflow-cn-qwen-qwen3-32b",
+        "openai_compatible",
+        "chat",
+        "https://api.siliconflow.com/v1",
+        "env:SF_KEY",
     )
-    assert result["catalog_enabled"] is False
-    assert result["names"] == ("硅基流动", "硅基流动 2")
+    assert result["embed"] == ("generic_model", "embedding", "https://api.siliconflow.com/v1", "env:SF_KEY")
+    assert result["provider"] == ("/v1/models", "env:SF_KEY")
+    assert result["catalog"] == (False, False)
 
 
 @requires_pg
 def test_delete_provider_removes_unreferenced_models(pg):
     async def _run():
         async with pg() as s:
-            provider = await service.create_provider(s, "moonshot")
-            await service.add_model(s, provider, driver="openai_compatible", model="kimi-k2")
+            provider = await service.create_provider(
+                s,
+                slug="deepseek",
+                name="DeepSeek",
+                provider_type="openai",
+                base_url="https://api.deepseek.com",
+            )
+            await service.add_model(s, provider, capability="chat", model="deepseek-chat")
             await service.delete_provider(s, provider)
             await s.commit()
             return await service.list_providers(s)

@@ -82,16 +82,20 @@ class AuditLog(Base):
 
 
 class ModelProvider(Base):
-    """供应商账号：一个服务地址 + 一把密钥（只存引用）。其下模型继承地址与密钥引用。"""
+    """供应商账号：接口协议 + Base URL + 密钥环境变量（只存引用）。其下模型继承地址与密钥引用。"""
 
     __tablename__ = "model_providers"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
     slug: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
-    preset: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 接口协议，见 app.model_runtime.provider_types
+    provider_type: Mapped[str] = mapped_column(String(64), nullable=False)
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False, default="")
     credential_ref: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    models_endpoint: Mapped[str] = mapped_column(String(255), nullable=False, default="/models")
+    # 该供应商提供的模型能力：chat / image / video / tts / asr / embedding / rerank / 3d
+    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

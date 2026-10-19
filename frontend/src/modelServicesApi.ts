@@ -33,20 +33,20 @@ export interface ModelRoute {
   revision: number
 }
 
-export interface ProviderPreset {
+export type Capability = 'chat' | 'embedding' | 'rerank' | 'asr' | 'tts' | 'image' | 'video' | '3d'
+
+export interface ProviderType {
   id: string
-  name: string
-  description: string
-  drivers: string[]
+  label: string
+  capabilities: Capability[]
+  drivers: Partial<Record<Capability, string>>
   default_base_url: string
-  check: string
+  default_models_endpoint: string
   lists_models: boolean
-  self_hosted: boolean
-  custom: boolean
-  tags: string[]
 }
 
 export interface ProviderModel extends ModelDeployment {
+  capability: Capability
   available?: boolean | null
 }
 
@@ -54,23 +54,37 @@ export interface ModelProvider {
   id: string
   slug: string
   name: string
-  preset: ProviderPreset
+  provider_type: ProviderType
   base_url: string
+  api_key_env: string
   credential_configured: boolean
+  models_endpoint: string
+  capabilities: Capability[]
   enabled: boolean
   revision: number
   models: ProviderModel[]
 }
 
+export interface ProviderInput {
+  slug?: string
+  name?: string
+  provider_type?: string
+  base_url?: string
+  api_key_env?: string
+  api_key?: string
+  models_endpoint?: string
+  capabilities?: Capability[]
+  enabled?: boolean
+}
+
 export interface RemoteModel {
   model: string
-  driver: string
-  modality: string
+  capability: Capability
   added: boolean
 }
 
 export interface ModelInput {
-  driver: string
+  capability: Capability
   model: string
   name?: string
   config?: Record<string, unknown>
@@ -100,10 +114,9 @@ const jsonBody = (method: string, body: unknown): RequestInit => ({
 
 export const providersApi = {
   list: () => json<ModelProvider[]>('/api/model-providers'),
-  presets: () => json<ProviderPreset[]>('/api/model-providers/presets'),
-  create: (body: { preset: string; name?: string; base_url?: string }) => json<ModelProvider>('/api/model-providers', jsonBody('POST', body)),
-  update: (slug: string, body: { name?: string; base_url?: string; enabled?: boolean }) =>
-    json<ModelProvider>(`/api/model-providers/${slug}`, jsonBody('PATCH', body)),
+  types: () => json<{ capabilities: Capability[]; types: ProviderType[] }>('/api/model-providers/types'),
+  create: (body: ProviderInput) => json<ModelProvider>('/api/model-providers', jsonBody('POST', body)),
+  update: (slug: string, body: ProviderInput) => json<ModelProvider>(`/api/model-providers/${slug}`, jsonBody('PATCH', body)),
   remove: async (slug: string) => {
     const response = await apiFetch(`/api/model-providers/${slug}`, { method: 'DELETE' })
     if (!response.ok) {
@@ -113,7 +126,7 @@ export const providersApi = {
   },
   credential: async (slug: string, apiKey: string) => {
     const response = await apiFetch(`/api/model-providers/${slug}/credential`, jsonBody('PUT', { api_key: apiKey }))
-    if (!response.ok) throw new Error('API 密钥保存失败')
+    if (!response.ok) throw new Error('API Key 保存失败')
   },
   check: (slug: string) => json<{ ok: boolean; message: string }>(`/api/model-providers/${slug}/check`, { method: 'POST' }),
   remoteModels: (slug: string) => json<RemoteModel[]>(`/api/model-providers/${slug}/remote-models`),
