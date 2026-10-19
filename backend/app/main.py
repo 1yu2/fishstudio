@@ -33,6 +33,7 @@ from app.routers import model_deployments as model_deployments_router
 from app.routers import model_providers as model_providers_router
 from app.routers import model_routes as model_routes_router
 from app.routers import model_runtime as model_runtime_router
+from app.routers import node_canvases as node_canvases_router
 from app.routers import series as series_router
 from app.routers import settings as settings_router
 from app.routers import workflow as workflow_router
@@ -232,6 +233,7 @@ app.include_router(
     tags=["model-routes"],
 )
 app.include_router(series_router.router, prefix="/api", tags=["series"])
+app.include_router(node_canvases_router.router, prefix="/api", tags=["node-canvases"])
 app.include_router(workflow_router.router, prefix="/api", tags=["workflow"])
 app.include_router(model_runtime_router.router, prefix="/api", tags=["model-runtime"])
 app.include_router(eval_router.router, prefix="/api", tags=["eval"])

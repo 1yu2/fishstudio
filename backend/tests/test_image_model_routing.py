@@ -249,7 +249,7 @@ async def test_agent_tool_and_worker_call_the_same_resolver(monkeypatch):
     sentinel = object()
     calls = []
 
-    async def fake_resolve(session, req, *, purpose=None):
+    async def fake_resolve(session, req, *, purpose=None, explicit_deployment=None):
         calls.append((session, req.prompt, purpose))
         return sentinel
 

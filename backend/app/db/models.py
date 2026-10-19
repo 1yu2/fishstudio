@@ -81,6 +81,30 @@ class AuditLog(Base):
     )
 
 
+class NodeCanvas(Base):
+    """节点式无限画布：图（节点 / 连线 / 视口）以 JSON 保存，生成任务挂在关联项目上。"""
+
+    __tablename__ = "node_canvases"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("series_projects.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    aspect_ratio: Mapped[str] = mapped_column(String(16), nullable=False, default="9:16")
+    graph: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ModelProvider(Base):
     """供应商账号：接口协议 + Base URL + 密钥环境变量（只存引用）。其下模型继承地址与密钥引用。"""
 
