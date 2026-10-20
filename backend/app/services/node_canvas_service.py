@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Artifact, GenerationJob, ModelRoute, NodeCanvas, SeriesProject, User
-from app.services import asset_service, job_service, series_service
+from app.services import asset_service, budget_service, job_service, series_service
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +297,13 @@ async def quote_node(session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequ
     return {"kind": "image", "model": slug, "estimated_cost": float(price) if price is not None else None}
 
 
+async def _reserve_budget(session: AsyncSession, canvas: NodeCanvas, estimate: Decimal) -> None:
+    try:
+        await budget_service.reserve(session, canvas.owner_id, estimate)
+    except budget_service.BudgetExceeded as error:
+        raise CanvasError(str(error)) from error
+
+
 async def run_node(
     session: AsyncSession, canvas: NodeCanvas, node_id: str, req: NodeRunRequest
 ) -> GenerationJob:
@@ -312,6 +319,9 @@ async def run_node(
             await _storage_key(session, canvas, artifact_id, "image")
             for artifact_id in req.reference_artifact_ids
         ]
+        slug = req.model or await _default_image_model(session, edit=bool(references))
+        estimate = _image_price(slug, req.count) or Decimal(0)
+        await _reserve_budget(session, canvas, estimate)
         return await job_service.create_job(
             session,
             operation="generate_image",
@@ -324,6 +334,7 @@ async def run_node(
                 # 有参考图时以第一张为参考生成（图片编辑用途），保持形象一致
                 "source_image": references[0] if references else None,
                 "deployment": req.model or None,
+                budget_service.ESTIMATE_PARAM: str(estimate),
             },
             idempotency_key=f"canvas:{canvas.id}:{node_id}:image:{uuid.uuid4().hex}",
             worker_class="image",
@@ -351,6 +362,13 @@ async def run_node(
     }
     for key in ("shot_id", "step_id", "run_id"):
         params.pop(key, None)
+    estimate = (
+        Decimal(str(plan["estimated_total_cost"]))
+        if budget_service.is_cloud(plan["provider"])
+        else Decimal(0)
+    )
+    await _reserve_budget(session, canvas, estimate)
+    params[budget_service.ESTIMATE_PARAM] = str(estimate)
     return await job_service.create_job(
         session,
         operation="generate_video",
@@ -460,6 +478,7 @@ async def node_runs(session: AsyncSession, canvas: NodeCanvas) -> dict[str, Any]
         "nodes": nodes,
         "active_jobs": sum(job.status in ACTIVE_JOB_STATUSES for job in jobs),
         "spent": cost["totals"]["effective_cost"] or 0,
+        "budget": await budget_service.status(session, canvas.owner_id),
     }
 
 

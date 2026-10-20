@@ -315,3 +315,81 @@ def test_worker_records_remote_progress_and_queue_position():
     assert job.result["queue_position"] == 1 and job.progress == 37
     _record_remote_progress(job, {"status": "running", "progress": 100})
     assert job.progress == 99  # 100 留给真正完成
+
+
+def test_daily_cap_configuration(monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.services import budget_service
+
+    monkeypatch.delenv("DAILY_BUDGET_CNY", raising=False)
+    assert budget_service.daily_cap() == Decimal("20")
+    monkeypatch.setenv("DAILY_BUDGET_CNY", "0")
+    assert budget_service.daily_cap() is None
+    monkeypatch.setenv("DAILY_BUDGET_CNY", "35.5")
+    assert budget_service.daily_cap() == Decimal("35.5")
+    monkeypatch.setenv("BUDGET_TIMEZONE", "Asia/Shanghai")
+    start = budget_service.day_start(datetime(2026, 10, 19, 17, 30, tzinfo=timezone.utc))
+    assert start.isoformat() == "2026-10-20T00:00:00+08:00"  # 北京时间已是第二天
+    assert budget_service.is_cloud("ark") and not budget_service.is_cloud("local_h3")
+
+
+@requires_pg
+def test_daily_cap_blocks_cloud_runs_but_not_local(pg, monkeypatch):
+    from app.db.models import UsageEvent
+
+    monkeypatch.setenv("DAILY_BUDGET_CNY", "1")
+    plans = {"provider": "ark"}
+
+    async def fake_plan(session, **kwargs):
+        return {
+            "provider": plans["provider"],
+            "model": "m",
+            "resolution": "480p",
+            "billable_duration": 4,
+            "estimated_total_cost": Decimal("0.40"),
+            "price_snapshot": {},
+            "deployment_name": "d",
+            "route": {},
+        }
+
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", fake_plan)
+    req = service.NodeRunRequest(kind="video", prompt="推门", duration=4)
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            await service.save_graph(s, canvas, {"nodes": [_node("vid", "video")], "edges": []}, revision=1)
+            s.add(
+                UsageEvent(
+                    user_id=owner.id,
+                    operation="generate_video",
+                    provider="ark",
+                    status="success",
+                    actual_cost=Decimal("0.30"),
+                )
+            )
+            s.add(
+                UsageEvent(
+                    user_id=owner.id,
+                    operation="generate_video",
+                    provider="local_h3",
+                    status="success",
+                    actual_cost=Decimal("5"),
+                )
+            )
+            await s.flush()
+            first = await service.run_node(s, canvas, "vid", req)  # 0.30 + 0.40 ≤ 1
+            with pytest.raises(service.CanvasError, match="超出今日云端花费上限"):
+                await service.run_node(s, canvas, "vid", req)  # 0.30 + 0.40 进行中 + 0.40 > 1
+            plans["provider"] = "local_h3"
+            local = await service.run_node(s, canvas, "vid", req)  # 本地不计费、不受上限限制
+            runs = await service.node_runs(s, canvas)
+            return first, local, runs["budget"]
+
+    first, local, budget = asyncio.run(_run())
+
+    assert first.params["budget_estimate"] == "0.40"
+    assert local.params["budget_estimate"] == "0"
+    assert budget == {"cap": 1.0, "spent": 0.3, "in_flight": 0.4, "remaining": 0.3}

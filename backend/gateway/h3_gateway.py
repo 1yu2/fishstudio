@@ -36,6 +36,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_path(raw: str) -> Path | None:
+    return Path(raw).expanduser() if raw.strip() else None
+
+
 class Settings:
     def __init__(self) -> None:
         self.api_key = os.getenv("H3_GATEWAY_API_KEY", "").strip()
@@ -64,6 +68,11 @@ class Settings:
         self.first_frame_input = os.getenv("H3_GATEWAY_FIRST_FRAME_INPUT", "").strip()
         self.last_frame_input = os.getenv("H3_GATEWAY_LAST_FRAME_INPUT", "").strip()
         self.max_image_bytes = int(os.getenv("H3_GATEWAY_MAX_IMAGE_BYTES", str(10 * 1024 * 1024)))
+        # 产物保留时长：FishStudio 在任务完成后立即下载，过期文件定时删除以免占满磁盘；0 表示不清理
+        self.retention_hours = max(0.0, float(os.getenv("H3_GATEWAY_RETENTION_HOURS", "24")))
+        # ComfyUI 的 output / input 目录（可选）：只清理 FishStudio 自己产生的文件
+        self.comfy_output_dir = _optional_path(os.getenv("H3_COMFY_OUTPUT_DIR", ""))
+        self.comfy_input_dir = _optional_path(os.getenv("H3_COMFY_INPUT_DIR", ""))
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -544,6 +553,33 @@ def _probe_video(path: Path) -> dict[str, Any]:
         return {}
 
 
+CLEANUP_INTERVAL_SECONDS = 3600
+# 工作流输出前缀与上传首尾帧的文件名前缀，见 WorkflowBuilder.build 与 GatewayService._submit
+COMFY_OUTPUT_SUBDIR = "fishstudio"
+COMFY_INPUT_PREFIX = "fishstudio_"
+
+
+def cleanup_old_files(settings: Settings, now: float | None = None) -> int:
+    """删除超过保留时长的产物视频，以及 ComfyUI 中由 FishStudio 产生的输出和上传帧。返回删除数。"""
+    if settings.retention_hours <= 0:
+        return 0
+    cutoff = (now if now is not None else time.time()) - settings.retention_hours * 3600
+    candidates: list[Path] = list(settings.artifact_dir.glob("*.mp4"))
+    if settings.comfy_output_dir:
+        candidates += [p for p in (settings.comfy_output_dir / COMFY_OUTPUT_SUBDIR).rglob("*") if p.is_file()]
+    if settings.comfy_input_dir:
+        candidates += [p for p in settings.comfy_input_dir.rglob(f"{COMFY_INPUT_PREFIX}*") if p.is_file()]
+    removed = 0
+    for path in candidates:
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 class ProgressTracker:
     """从 ComfyUI WebSocket 消息推算每个 prompt 的整体进度（0～99，完成由任务状态给出 100）。
 
@@ -610,6 +646,17 @@ class GatewayService:
                 raise
             except Exception:
                 await asyncio.sleep(self.settings.poll_seconds)
+
+    async def cleanup_loop(self) -> None:
+        """每小时清理一次过期文件；文件操作放到线程里，不阻塞事件循环。"""
+        while True:
+            try:
+                await asyncio.to_thread(cleanup_old_files, self.settings)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
     async def frame_inputs(self) -> dict[str, str]:
         """首帧/尾帧对应的节点输入名：优先用配置，否则从节点定义里按名称识别 IMAGE 输入。"""
@@ -768,6 +815,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         tasks = [
             asyncio.create_task(service.run(), name="h3-gateway-worker"),
             asyncio.create_task(service.listen_progress(), name="h3-gateway-progress"),
+            asyncio.create_task(service.cleanup_loop(), name="h3-gateway-cleanup"),
         ]
         try:
             yield

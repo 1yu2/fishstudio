@@ -60,10 +60,19 @@ export interface NodeResult {
   uploaded?: boolean
 }
 
+export interface DailyBudget {
+  /** 今日云端花费上限；null 表示不限 */
+  cap: number | null
+  spent: number
+  in_flight: number
+  remaining: number | null
+}
+
 export interface CanvasRuns {
   nodes: Record<string, { jobs: NodeJob[]; results: NodeResult[] }>
   active_jobs: number
   spent: number
+  budget?: DailyBudget
 }
 
 export interface CanvasModel {
