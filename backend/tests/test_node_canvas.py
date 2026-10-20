@@ -165,6 +165,12 @@ def test_canvas_lifecycle_and_autosave(pg):
 def test_run_nodes_uploads_and_results(pg, monkeypatch):
     from app.db.models import Artifact, GenerationJob
 
+    # 这里只验证任务参数；图片模型是否可用由 test_image_model_problem_* 覆盖
+    async def image_ready(session, model="", *, edit=False):
+        return ""
+
+    monkeypatch.setattr(service, "image_model_problem", image_ready)
+
     async def fake_plan(session, **kwargs):
         fake_plan.calls.append(kwargs)
         return {
@@ -452,3 +458,63 @@ def test_polled_jobs_stay_running_and_bypass_concurrency_limits(pg):
     # 项目里已有 6 个在跑（5 个轮询 + 1 个崩溃恢复），新任务受并发上限限制，不被领取
     assert fresh.id not in leased_ids and fresh.status == "pending"
     assert unsubmitted.id not in leased_ids
+
+
+class _FakeSnapshot:
+    def __init__(self, items):
+        self.items = items
+
+    def get(self, slug):
+        return self.items.get(slug)
+
+    def list(self, modality=None):
+        return tuple(item for item in self.items.values() if modality in (None, item.modality))
+
+
+class _FakeSession:
+    def __init__(self, routes):
+        self.routes = routes
+
+    async def get(self, model, key):
+        return self.routes.get(key)
+
+
+def _image_item(enabled=True, available=True):
+    return SimpleNamespace(
+        enabled=enabled, modality="image", instance=SimpleNamespace(is_available=lambda: available)
+    )
+
+
+def _with_catalog(monkeypatch, items):
+    monkeypatch.setattr(
+        "app.model_runtime.catalog.get_catalog", lambda: SimpleNamespace(snapshot=_FakeSnapshot(items))
+    )
+    monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "false")
+    monkeypatch.delenv("VOLCANO_API_KEY", raising=False)
+
+
+def test_image_model_problem_explains_missing_setup(monkeypatch):
+    _with_catalog(monkeypatch, {})
+    assert asyncio.run(service.image_model_problem(_FakeSession({}))) == service.NO_IMAGE_MODEL
+    assert "图片编辑" in asyncio.run(service.image_model_problem(_FakeSession({}), edit=True))
+    assert "不可用" in asyncio.run(service.image_model_problem(_FakeSession({}), "seedream"))
+
+
+def test_image_model_problem_accepts_route_fallback_and_explicit_model(monkeypatch):
+    _with_catalog(
+        monkeypatch,
+        {"primary": _image_item(available=False), "backup": _image_item(), "off": _image_item(enabled=False)},
+    )
+    route = SimpleNamespace(enabled=True, primary_deployment="primary", fallback_deployments=["backup"])
+    session = _FakeSession({("image_generation", "final"): route})
+    assert asyncio.run(service.image_model_problem(session)) == ""  # 主模型缺密钥，备用可用
+    assert asyncio.run(service.image_model_problem(session, "backup")) == ""
+    assert "不可用" in asyncio.run(service.image_model_problem(session, "off"))
+    route.fallback_deployments = []
+    assert "都不可用" in asyncio.run(service.image_model_problem(session))
+
+
+def test_image_model_problem_allows_mock_mode(monkeypatch):
+    _with_catalog(monkeypatch, {})
+    monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "true")
+    assert asyncio.run(service.image_model_problem(_FakeSession({}))) == ""
