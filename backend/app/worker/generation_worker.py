@@ -349,7 +349,9 @@ def _record_remote_progress(job: GenerationJob, remote: dict[str, Any]) -> None:
     job.result = {
         **(job.result or {}),
         "remote_status": remote_status,
-        "queue_position": int(queue_position) if isinstance(queue_position, int) and queue_position > 0 else 0,
+        "queue_position": int(queue_position)
+        if isinstance(queue_position, int) and queue_position > 0
+        else 0,
     }
 
 
