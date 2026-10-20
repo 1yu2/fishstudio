@@ -119,20 +119,33 @@ def concatenate_audio_tool(
             )
 
         if crossfade_duration > 0:
-            current = "a0"
-            current_duration = durations[0]
-            for index in range(1, len(paths)):
-                fade_seconds = min(
+            # 不用 acrossfade：FFmpeg 7.x 在两路输入结束时序不同时会偶发提前截断输出（约 1/10）。
+            # 改为每段各自淡入淡出、按起点延迟后 amix 相加，效果同 tri 曲线交叉淡化且结果稳定。
+            fades = [0.0] + [
+                min(
                     crossfade_duration / 1000.0,
-                    max(0.01, current_duration - 0.01),
+                    max(0.01, durations[index - 1] - 0.01),
                     max(0.01, durations[index] - 0.01),
                 )
-                output_label = "out" if index == len(paths) - 1 else f"xf{index}"
-                filters.append(
-                    f"[{current}][a{index}]acrossfade=d={fade_seconds:.3f}:c1=tri:c2=tri[{output_label}]"
-                )
-                current = output_label
-                current_duration += durations[index] - fade_seconds
+                for index in range(1, len(paths))
+            ]
+            start = 0.0
+            mixed: list[str] = []
+            for index, duration in enumerate(durations):
+                if index > 0:
+                    start += durations[index - 1] - fades[index]
+                steps: list[str] = []
+                if fades[index] > 0:
+                    steps.append(f"afade=t=in:st=0:d={fades[index]:.3f}:curve=tri")
+                if index < len(paths) - 1:
+                    fade_out = fades[index + 1]
+                    steps.append(f"afade=t=out:st={duration - fade_out:.3f}:d={fade_out:.3f}:curve=tri")
+                if start > 0:
+                    steps.append(f"adelay=delays={round(start * 48000)}S:all=1")
+                label = f"m{index}"
+                filters.append(f"[a{index}]{','.join(steps) or 'anull'}[{label}]")
+                mixed.append(f"[{label}]")
+            filters.append(f"{''.join(mixed)}amix=inputs={len(mixed)}:duration=longest:normalize=0[out]")
         else:
             labels: list[str] = []
             for index in range(len(paths)):
