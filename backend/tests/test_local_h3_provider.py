@@ -162,3 +162,17 @@ def test_local_h3_disabled_is_not_routable(monkeypatch):
     request = VideoGenerationRequest(prompt="test", duration=4)
     assert not provider.is_available()
     assert not provider.supports(request)
+
+
+async def test_local_h3_submitting_is_in_progress_and_unknown_status_has_a_code(monkeypatch):
+    _enable(monkeypatch)
+    state = {"body": {"status": "submitting", "progress": 0}}
+    _client(monkeypatch, lambda request: httpx.Response(200, json=state["body"]))
+    provider = LocalH3Provider()
+
+    submitting = await provider.get_status("task")
+    assert submitting.error_code == "pending" and submitting.retryable  # 交给 ComfyUI 的瞬间不能判失败
+
+    state["body"] = {"status": "weird", "error": None}
+    unknown = await provider.get_status("task")
+    assert unknown.error_code == "task_failed" and "weird" in unknown.error_message
