@@ -10,31 +10,56 @@
  */
 import { apiFetch, getToken } from '../api'
 
-const objectUrlCache = new Map<string, Promise<string>>()
-
-/** 受保护 URL（/api/...）→ blob object URL；同一 URL 复用进行中的请求。 */
-export async function fetchMediaUrl(url: string): Promise<string> {
-  let pending = objectUrlCache.get(url)
-  if (!pending) {
-    pending = (async () => {
-      const res = await apiFetch(url)
-      if (!res.ok) {
-        objectUrlCache.delete(url)
-        throw new Error(`媒体加载失败 (${res.status})`)
-      }
-      const blob = await res.blob()
-      return URL.createObjectURL(blob)
-    })()
-    objectUrlCache.set(url, pending)
-  }
-  return pending
+interface CacheEntry {
+  promise: Promise<string>
+  /** 正在使用这个 object URL 的组件数；归零后才释放 */
+  users: number
 }
 
-/** 卸载/释放 object URL（组件 unmount 时调用）。 */
-export function revokeMediaUrl(url: string, objectUrl: string): void {
-  if (objectUrlCache.get(url)) {
-    objectUrlCache.delete(url)
-    URL.revokeObjectURL(objectUrl)
+const objectUrlCache = new Map<string, CacheEntry>()
+/** 最后一个使用者离开后延迟释放：React StrictMode 卸载后会立刻重新挂载，避免重复下载 */
+const RELEASE_DELAY_MS = 1000
+
+export interface MediaLease {
+  promise: Promise<string>
+  /** 不再使用时调用一次；没有其他使用者时释放 object URL */
+  release: () => void
+}
+
+/**
+ * 受保护 URL（/api/...）→ blob object URL。同一 URL 的多个组件共用一份下载；
+ * 每个使用者拿到自己的 release，只会归还自己占用的那一份。
+ */
+export function acquireMediaUrl(url: string): MediaLease {
+  let entry = objectUrlCache.get(url)
+  if (!entry) {
+    const promise = (async () => {
+      const res = await apiFetch(url)
+      if (!res.ok) throw new Error(`媒体加载失败 (${res.status})`)
+      return URL.createObjectURL(await res.blob())
+    })()
+    const created: CacheEntry = { promise, users: 0 }
+    objectUrlCache.set(url, created)
+    // 失败的下载不缓存，下次重新请求
+    promise.catch(() => { if (objectUrlCache.get(url) === created) objectUrlCache.delete(url) })
+    entry = created
+  }
+  const held = entry
+  held.users += 1
+  let released = false
+  return {
+    promise: held.promise,
+    release: () => {
+      if (released) return
+      released = true
+      held.users = Math.max(0, held.users - 1)
+      if (held.users > 0) return
+      window.setTimeout(() => {
+        if (held.users > 0) return
+        if (objectUrlCache.get(url) === held) objectUrlCache.delete(url)
+        held.promise.then((objectUrl) => URL.revokeObjectURL(objectUrl)).catch(() => undefined)
+      }, RELEASE_DELAY_MS)
+    },
   }
 }
 

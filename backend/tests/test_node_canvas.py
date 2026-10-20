@@ -272,7 +272,7 @@ def test_run_nodes_uploads_and_results(pg, monkeypatch):
     assert fake_plan.calls[0]["mode"] == "first_last_frame" and fake_plan.calls[0]["tier"] == "preview"
     assert [job["status"] for job in runs["nodes"]["img"]["jobs"]] == ["succeeded"]
     assert len(runs["nodes"]["img"]["results"]) == 2
-    assert runs["nodes"]["vid"]["jobs"][0]["status"] == "pending"
+    assert runs["nodes"]["vid"]["jobs"][0]["status"] == "queued"  # 还没被 Worker 领取
     assert runs["nodes"]["up"]["results"][0]["uploaded"] is True
     assert runs["active_jobs"] == 1
     assert quote == {
@@ -282,3 +282,36 @@ def test_run_nodes_uploads_and_results(pg, monkeypatch):
         "resolution": "480p",
         "estimated_cost": 0.72,
     }
+
+
+def test_display_status_follows_remote_state_between_polls():
+    from types import SimpleNamespace as Job
+
+    assert service._display_status(Job(status="pending", external_task_id="", result={})) == ("queued", 0)
+    remote_queued = Job(
+        status="pending", external_task_id="t1", result={"remote_status": "queued", "queue_position": 2}
+    )
+    assert service._display_status(remote_queued) == ("queued", 2)
+    assert service._display_status(
+        Job(status="pending", external_task_id="t1", result={"remote_status": "running"})
+    ) == ("running", 0)
+    assert service._display_status(Job(status="running", external_task_id="t1", result={})) == ("running", 0)
+    assert service._display_status(
+        Job(status="succeeded", external_task_id="t1", result={"queue_position": 3})
+    ) == ("succeeded", 0)
+
+
+def test_worker_records_remote_progress_and_queue_position():
+    from types import SimpleNamespace as Job
+
+    from app.worker.generation_worker import _record_remote_progress
+
+    job = Job(progress=10, result={"keep": 1})
+    _record_remote_progress(job, {"status": "running", "progress": 37})
+    assert job.progress == 37 and job.result == {"keep": 1, "remote_status": "running", "queue_position": 0}
+    _record_remote_progress(job, {"status": "running", "progress": 20})
+    assert job.progress == 37  # 进度只增不减
+    _record_remote_progress(job, {"status": "queued", "queue_position": 1})
+    assert job.result["queue_position"] == 1 and job.progress == 37
+    _record_remote_progress(job, {"status": "running", "progress": 100})
+    assert job.progress == 99  # 100 留给真正完成

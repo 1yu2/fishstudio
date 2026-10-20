@@ -333,3 +333,49 @@ def test_fishstudio_local_h3_payload_is_accepted_by_gateway(monkeypatch, tmp_pat
     frames = builder.frame_references(GenerationRequest.model_validate(payload))
 
     assert decode_image_reference(frames["first_frame"], max_bytes=1024)[0] == b"\x89PNG-frame"
+
+
+def test_progress_tracker_maps_comfy_messages_to_overall_progress():
+    from gateway.h3_gateway import ProgressTracker
+
+    tracker = ProgressTracker()
+    tracker.started("p1")
+    assert tracker.get("p1") == 5
+    tracker.handle({"type": "executing", "data": {"prompt_id": "p1", "node": "140:128"}})
+    assert tracker.get("p1") == 10
+    tracker.handle({"type": "progress", "data": {"prompt_id": "p1", "node": "140:125", "value": 4, "max": 8}})
+    assert tracker.get("p1") == 53
+    tracker.handle({"type": "progress", "data": {"prompt_id": "p1", "node": "140:999", "value": 1, "max": 1}})
+    tracker.handle({"type": "executing", "data": {"prompt_id": "p1", "node": "140:128"}})
+    assert tracker.get("p1") == 53  # 只增不减，其他节点的进度不算
+    tracker.handle({"type": "executing", "data": {"prompt_id": "p1", "node": "140:122"}})
+    assert tracker.get("p1") == 92
+    tracker.handle({"type": "status", "data": {}})
+    tracker.forget("p1")
+    assert tracker.get("p1") == 0
+
+
+def test_queue_position_and_progress_in_task_response(monkeypatch, tmp_path):
+    from gateway.h3_gateway import _public_task
+
+    settings = _i2v_settings(monkeypatch, tmp_path)
+    service = _service(settings, FakeComfy())
+
+    async def _run():
+        first = await service.store.create("k1", _i2v_request().model_dump())
+        second = await service.store.create("k2", _i2v_request().model_dump())
+        third = await service.store.create("k3", _i2v_request().model_dump())
+        await service._submit(first)
+        return [
+            await service.store.ahead_of(await service.store.get(t["task_id"]))
+            for t in (first, second, third)
+        ], await service.store.get(third["task_id"])
+
+    ahead, third = asyncio.run(_run())
+
+    assert ahead == [0, 1, 2]
+    assert _public_task(third, queue_position=2)["queue_position"] == 2
+    running = {**third, "status": "running"}
+    assert _public_task(running, progress=40, queue_position=2)["queue_position"] == 0  # 只有排队中才有位置
+    assert _public_task(running, progress=40)["progress"] == 40
+    assert _public_task({**third, "status": "succeeded"}, progress=40)["progress"] == 100

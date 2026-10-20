@@ -14,7 +14,7 @@ import {
   type ImgHTMLAttributes,
   type VideoHTMLAttributes,
 } from 'react'
-import { fetchMediaUrl, isProtectedMediaUrl, legacyStorageUrl, revokeMediaUrl } from '../../api/media'
+import { acquireMediaUrl, isProtectedMediaUrl, legacyStorageUrl } from '../../api/media'
 
 type MediaState = 'loading' | 'ready' | 'error'
 
@@ -37,12 +37,10 @@ function useProtectedSrc(src: string | undefined): { resolved: string | undefine
     let cancelled = false
     setResolved(undefined)
     setState('loading')
-    fetchMediaUrl(src)
+    const lease = acquireMediaUrl(src)
+    lease.promise
       .then((objectUrl) => {
-        if (cancelled) {
-          revokeMediaUrl(src, objectUrl)
-          return
-        }
+        if (cancelled) return
         setResolved(objectUrl)
         setState('ready')
       })
@@ -51,10 +49,7 @@ function useProtectedSrc(src: string | undefined): { resolved: string | undefine
       })
     return () => {
       cancelled = true
-      setResolved((current) => {
-        if (current) revokeMediaUrl(src, current)
-        return undefined
-      })
+      lease.release()
     }
   }, [src])
 

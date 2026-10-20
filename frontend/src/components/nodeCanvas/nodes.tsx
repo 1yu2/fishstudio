@@ -4,10 +4,9 @@ import { Film, ImageIcon, Loader2, Play, Type, Upload } from 'lucide-react'
 import type { CanvasModel, CanvasNodeType, Quote, StoredNode } from '../../api/nodeCanvas'
 import { ProtectedImage, ProtectedVideo } from '../common/ProtectedMedia'
 import { useCanvas } from './context'
-import { ACTIVE, HANDLE_LABELS, INPUTS, latestJob, resolveInputs, selectedResult, type ImageData, type InputHandle, type TextData, type VideoData } from './graph'
+import { ACTIVE, HANDLE_LABELS, statusText, INPUTS, latestJob, resolveInputs, selectedResult, type ImageData, type InputHandle, type TextData, type VideoData } from './graph'
 
 const ICONS = { text: Type, image: ImageIcon, video: Film }
-const STATUS: Record<string, string> = { pending: '排队中', leased: '准备中', running: '生成中', succeeded: '完成', failed: '失败', cancelled: '已取消' }
 
 function money(value: number | null | undefined) {
   return value === null || value === undefined ? '未配置价格' : `¥${value.toFixed(value < 1 ? 3 : 2)}`
@@ -24,9 +23,11 @@ function Shell({ id, type, data, selected, children }: { id: string; type: Canva
       <input className="nc-node__label nodrag" aria-label="节点名称" value={data.label || ''} placeholder={type === 'text' ? '文本' : type === 'image' ? '图片' : '视频'}
         onChange={(event) => updateData(id, { label: event.target.value })} />
       {job && <span className={`nc-status nc-status--${job.status}`} title={job.error || undefined}>
-        {ACTIVE.has(job.status) && <Loader2 size={11} className="nc-spin" />}{STATUS[job.status] || job.status}
+        {ACTIVE.has(job.status) && <Loader2 size={11} className="nc-spin" />}{statusText(job)}
       </span>}
     </header>
+    {job?.status === 'running' && job.progress > 0 && <div className="nc-progress" role="progressbar" aria-label="生成进度"
+      aria-valuenow={job.progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${job.progress}%` }} /></div>}
     {inputs.map((handle, index) => <Handle key={handle} id={handle} type="target" position={Position.Left}
       className={`nc-handle nc-handle--${handle}`} style={{ top: 58 + index * 34 }}>
       <span className="nc-handle__label">{HANDLE_LABELS[handle]}</span>
@@ -44,6 +45,13 @@ export const TextNode = memo(function TextNode({ id, data, selected }: NodeProps
       onChange={(event) => updateData(id, { text: event.target.value })} />
   </Shell>
 })
+
+/** 结果的生成时间，如 18:49；没有时间时留空。 */
+function clock(value?: string | null) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
 
 function useQuote(enabled: boolean, request: unknown) {
   const { quote } = useCanvas()
@@ -104,7 +112,9 @@ function History({ id, selected, onSelect, kind }: { id: string; selected?: stri
   return <div className="nc-history nodrag nowheel" aria-label="生成历史">
     {results.map((result, index) => <button key={result.artifact_id} className={result.artifact_id === current ? 'nc-history__item nc-history__item--on' : 'nc-history__item'}
       aria-label={`结果 ${results.length - index}`} onClick={() => onSelect(result.artifact_id)}>
-      {kind === 'image' ? <ProtectedImage src={result.url} alt="" /> : <span>#{results.length - index}{result.tier === 'final' ? ' 成片' : result.uploaded ? ' 上传' : ' 预览'}</span>}
+      {kind === 'image' ? <ProtectedImage src={result.url} alt="" /> : <span>
+        <b>#{results.length - index}</b>{result.uploaded ? '上传' : result.tier === 'final' ? '成片' : clock(result.created_at)}
+      </span>}
     </button>)}
   </div>
 }
@@ -138,7 +148,7 @@ export const VideoNode = memo(function VideoNode({ id, data, selected }: NodePro
   const tier = value.tier || 'preview'
   const fallback = tier === 'final' ? models?.defaults.video_final : models?.defaults.video_preview
   return <Shell id={id} type="video" data={value} selected={!!selected}>
-    <div className="nc-preview nc-preview--video">{result ? <ProtectedVideo key={result.url} src={result.url} controls playsInline /> : <span>还没有视频</span>}</div>
+    <div className="nc-preview nc-preview--video nodrag nowheel">{result ? <ProtectedVideo key={result.url} src={result.url} controls playsInline /> : <span>还没有视频</span>}</div>
     <History id={id} kind="video" selected={value.selected} onSelect={(artifactId) => updateData(id, { selected: artifactId })} />
     <Generator id={id} node={node} kind="video">
       <textarea className="nc-textarea nodrag nowheel" aria-label="提示词" rows={3} value={value.prompt || ''} placeholder="动作、运镜与氛围"

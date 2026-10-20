@@ -44,6 +44,8 @@ export interface NodeJob {
   id: string
   status: string
   progress: number
+  /** 排队时前面还有几个任务；0 表示未知或不在排队 */
+  queue_position: number
   error: string
   model: string
   created_at: string | null

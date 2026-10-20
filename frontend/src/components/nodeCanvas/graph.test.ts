@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasRuns, StoredEdge, StoredNode } from '../../api/nodeCanvas'
-import { canConnect, dropTarget, layoutSplit, resolveInputs } from './graph'
+import { canConnect, dropTarget, layoutSplit, resolveInputs, statusText } from './graph'
 
 const node = (id: string, type: StoredNode['type'], data: Record<string, unknown> = {}): StoredNode => ({ id, type, position: { x: 0, y: 0 }, data })
 const edge = (source: string, target: string, targetHandle: string): StoredEdge => ({ id: `${source}-${target}-${targetHandle}`, source, target, sourceHandle: 'out', targetHandle })
@@ -84,5 +84,16 @@ describe('layoutSplit', () => {
     expect(Math.min(...nodes.map((item) => item.position.y))).toBeGreaterThan(0)
     expect(edges.map((item) => item.targetHandle)).toEqual(['reference', 'first_frame', 'first_frame'])
     expect(edges[0]).toMatchObject({ source: nodes[0].id, target: nodes[1].id })
+  })
+})
+
+describe('statusText', () => {
+  const job = { id: 'j', status: 'running', progress: 0, queue_position: 0, error: '', model: 'h3', created_at: null }
+  it('shows percentage while generating and queue position while waiting', () => {
+    expect(statusText({ ...job, progress: 37 })).toBe('生成中 37%')
+    expect(statusText(job)).toBe('生成中')
+    expect(statusText({ ...job, status: 'queued', queue_position: 2 })).toBe('排队中 · 前面 2 个')
+    expect(statusText({ ...job, status: 'queued' })).toBe('排队中')
+    expect(statusText({ ...job, status: 'succeeded', progress: 100 })).toBe('完成')
   })
 })

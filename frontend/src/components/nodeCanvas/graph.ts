@@ -2,7 +2,7 @@
  * 节点画布的纯逻辑：连线规则、节点输入解析、拖出端口建节点、Copilot 拆镜头的布局。
  * 不依赖 React，便于单测。
  */
-import type { CanvasNodeType, CanvasRuns, NodeResult, RunRequest, SplitResult, StoredEdge, StoredNode, VideoTier } from '../../api/nodeCanvas'
+import type { CanvasNodeType, CanvasRuns, NodeJob, NodeResult, RunRequest, SplitResult, StoredEdge, StoredNode, VideoTier } from '../../api/nodeCanvas'
 
 export type InputHandle = 'prompt' | 'reference' | 'first_frame' | 'last_frame'
 
@@ -188,3 +188,13 @@ export function latestJob(runs: CanvasRuns | null, nodeId: string) {
 }
 
 export const ACTIVE = new Set(['pending', 'leased', 'running', 'queued'])
+
+export const STATUS: Record<string, string> = { pending: '排队中', queued: '排队中', leased: '准备中', running: '生成中', succeeded: '完成', failed: '失败', cancelled: '已取消' }
+
+/** 节点右上角的状态文字：生成中带百分比，排队时带前面的任务数。 */
+export function statusText(job: NodeJob): string {
+  const label = STATUS[job.status] || job.status
+  if (job.status === 'running' && job.progress > 0) return `${label} ${job.progress}%`
+  if ((job.status === 'queued' || job.status === 'pending') && job.queue_position > 0) return `${label} · 前面 ${job.queue_position} 个`
+  return label
+}
