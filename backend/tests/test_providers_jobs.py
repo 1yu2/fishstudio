@@ -750,6 +750,18 @@ async def test_requeue_for_poll_does_not_burn_attempt():
     assert job.lease_until > datetime.now(timezone.utc) + timedelta(seconds=5)
 
 
+async def test_requeue_for_poll_keeps_submitted_job_running():
+    from app.services import job_service
+
+    job = _make_job(attempt=2)
+    job.external_task_id = "remote-1"
+    job.leased_by = "worker-a"
+    await job_service.requeue_for_poll(_FakeSession(), job, delay_seconds=10)
+    assert job.status == "running"  # 已提交给供应商：界面继续显示生成中
+    assert job.leased_by == ""  # 释放租约，下一轮任何 Worker 都能继续轮询
+    assert job.attempt == 1
+
+
 # ---------- TTS provider（P1-12） ----------
 
 

@@ -268,7 +268,8 @@ class LocalH3Provider(VideoProvider):
                 external_request_id=external_task_id,
                 raw_metadata=data,
             )
-        if status in {"queued", "running", "processing"}:
+        # submitting：Gateway 正在把任务交给 ComfyUI（含上传首尾帧），属于进行中
+        if status in {"queued", "submitting", "running", "processing"}:
             return ProviderResult(
                 success=False,
                 provider=self.name,
@@ -280,8 +281,11 @@ class LocalH3Provider(VideoProvider):
                 raw_metadata=data,
             )
         error = data.get("error") or {}
-        code = str(error.get("code") if isinstance(error, dict) else "task_failed")
-        message = str(error.get("message") if isinstance(error, dict) else error)
+        if isinstance(error, dict):
+            code = str(error.get("code") or "task_failed")
+            message = str(error.get("message") or f"Local H3 任务状态异常: {status or 'unknown'}")
+        else:
+            code, message = "task_failed", str(error)
         return ProviderResult(
             success=False,
             provider=self.name,

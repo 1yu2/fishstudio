@@ -296,6 +296,11 @@ def test_display_status_follows_remote_state_between_polls():
         Job(status="pending", external_task_id="t1", result={"remote_status": "running"})
     ) == ("running", 0)
     assert service._display_status(Job(status="running", external_task_id="t1", result={})) == ("running", 0)
+    running_but_queued_remotely = Job(
+        status="running", external_task_id="t1", result={"remote_status": "queued", "queue_position": 1}
+    )
+    assert service._display_status(running_but_queued_remotely) == ("queued", 1)
+    assert service._display_status(Job(status="leased", external_task_id="", result={})) == ("leased", 0)
     assert service._display_status(
         Job(status="succeeded", external_task_id="t1", result={"queue_position": 3})
     ) == ("succeeded", 0)
@@ -393,3 +398,57 @@ def test_daily_cap_blocks_cloud_runs_but_not_local(pg, monkeypatch):
     assert first.params["budget_estimate"] == "0.40"
     assert local.params["budget_estimate"] == "0"
     assert budget == {"cap": 1.0, "spent": 0.3, "in_flight": 0.4, "remaining": 0.3}
+
+
+@requires_pg
+def test_polled_jobs_stay_running_and_bypass_concurrency_limits(pg):
+    from datetime import datetime, timedelta, timezone
+
+    from app.db.models import GenerationJob
+    from app.services import job_service
+
+    past = datetime.now(timezone.utc) - timedelta(seconds=5)
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+
+            def job(key, **values):
+                row = GenerationJob(
+                    operation="generate_video",
+                    project_id=canvas.project_id,
+                    idempotency_key=key,
+                    provider="local_h3",
+                    model="MiniMax-H3",
+                    worker_class="video",
+                    **values,
+                )
+                s.add(row)
+                return row
+
+            polling = [
+                job(f"poll-{i}", status="running", external_task_id=f"t{i}", leased_by="", lease_until=past)
+                for i in range(5)
+            ]
+            fresh = job("fresh", status="pending")
+            crashed = job(
+                "crashed", status="running", external_task_id="tc", leased_by="dead", lease_until=past
+            )
+            unsubmitted = job("unsubmitted", status="leased", leased_by="dead", lease_until=past)
+            await s.flush()
+
+            recovered = await job_service.recover_expired_leases(s)
+            leased = await job_service.lease_jobs(s, limit=20, worker_id="w1", max_project_active=5)
+            return polling, fresh, crashed, unsubmitted, recovered, {j.id for j in leased}
+
+    polling, fresh, crashed, unsubmitted, recovered, leased_ids = asyncio.run(_run())
+
+    assert recovered == 2
+    assert crashed.status == "running" and crashed.id in leased_ids  # 已提交的崩溃任务直接继续轮询
+    assert unsubmitted.status == "pending"  # 未提交的回到队列
+    for row in polling:
+        assert row.id in leased_ids and row.status == "running" and row.leased_by == "w1"
+    # 项目里已有 6 个在跑（5 个轮询 + 1 个崩溃恢复），新任务受并发上限限制，不被领取
+    assert fresh.id not in leased_ids and fresh.status == "pending"
+    assert unsubmitted.id not in leased_ids

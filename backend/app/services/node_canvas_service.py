@@ -384,12 +384,12 @@ async def run_node(
 def _display_status(job: GenerationJob) -> tuple[str, int]:
     """界面展示用的状态。
 
-    视频任务提交给供应商后，Worker 每轮查询之间会把 job 放回 pending 等待下次轮询，
-    所以数据库里的 pending 不等于“还在排队”：已有外部任务 ID 时按供应商的状态展示。
+    已提交给供应商的任务按供应商的状态展示：供应商那边还在排队就显示排队和位置，否则显示生成中。
+    （pending + 外部任务 ID 是旧版 Worker 留下的轮询状态，一并兼容。）
     """
     remote = job.result or {}
     queue_position = int(remote.get("queue_position") or 0)
-    if job.status == "pending" and job.external_task_id:
+    if job.status in ("pending", "running") and job.external_task_id:
         if remote.get("remote_status") == "queued" or queue_position > 0:
             return "queued", queue_position
         return "running", 0

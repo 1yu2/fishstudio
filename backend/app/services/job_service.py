@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -152,16 +152,22 @@ async def lease_jobs(
         .join(SeriesProject, SeriesProject.id == GenerationJob.project_id)
         .where(
             or_(
-                # pending 且 (无 lease_until 或退避时间已到 — lease_until 复用为 run_after 语义)
-                (GenerationJob.status == "pending")
-                & or_(GenerationJob.lease_until.is_(None), GenerationJob.lease_until <= now),
-                (GenerationJob.status == "leased") & (GenerationJob.lease_until < now),
+                and_(
+                    or_(
+                        # pending 且 (无 lease_until 或退避时间已到 — lease_until 复用为 run_after 语义)
+                        (GenerationJob.status == "pending")
+                        & or_(GenerationJob.lease_until.is_(None), GenerationJob.lease_until <= now),
+                        (GenerationJob.status == "leased") & (GenerationJob.lease_until < now),
+                    ),
+                    active_for_user < max_user_active,
+                    active_for_project < max_project_active,
+                    active_for_deployment < max_deployment_active,
+                ),
+                # 已提交给供应商、到了下次轮询时间的任务：已经占着并发名额，不再受限，否则会互相卡死
+                (GenerationJob.status == "running")
+                & (GenerationJob.leased_by == "")
+                & (GenerationJob.lease_until <= now),
             )
-        )
-        .where(
-            active_for_user < max_user_active,
-            active_for_project < max_project_active,
-            active_for_deployment < max_deployment_active,
         )
         .where(
             or_(
@@ -185,7 +191,9 @@ async def lease_jobs(
     result = await session.execute(stmt)
     jobs = list(result.scalars().all())
     for job in jobs:
-        job.status = "leased"
+        # 继续轮询的任务保持 running，界面不会在“生成中”和“准备中”之间跳
+        if job.status != "running":
+            job.status = "leased"
         job.lease_until = now + timedelta(seconds=lease_seconds)
         job.heartbeat_at = now
         job.leased_by = worker_id
@@ -195,10 +203,13 @@ async def lease_jobs(
 
 
 async def mark_running(session: AsyncSession, job: GenerationJob) -> None:
+    already_running = job.status == "running"
     job.status = "running"
     job.started_at = job.started_at or _utcnow()
     job.heartbeat_at = _utcnow()
     await session.flush()
+    if already_running:
+        return  # 轮询中每轮都会调用，只在第一次进入 running 时记事件
     from app.services import job_event_service
 
     await job_event_service.emit(session, job, "job.running")
@@ -279,30 +290,39 @@ async def cancel_job(session: AsyncSession, job_id: str) -> bool:
 
 
 async def requeue_for_poll(session: AsyncSession, job: GenerationJob, delay_seconds: float = 3.0) -> None:
-    """外部任务未完成，重新入队等下一轮轮询。
+    """外部任务未完成，释放租约，等下一轮轮询。
 
+    已提交给供应商的任务保持 running（只是没有 Worker 持有：leased_by 为空），
+    界面和统计看到的就是“生成中”；还没提交的任务（如熔断时）回到 pending。
     状态轮询不算一次执行尝试，把 lease 时加的 attempt 减回，避免烧光 max_attempts。
-    lease_until 同样复用为 run_after，控制轮询间隔。
+    lease_until 复用为下次轮询时间。
     """
-    job.status = "pending"
+    job.status = "running" if job.external_task_id else "pending"
+    job.leased_by = ""
     job.attempt = max(0, job.attempt - 1)
     job.lease_until = _utcnow() + timedelta(seconds=delay_seconds)
     await session.flush()
 
 
 async def recover_expired_leases(session: AsyncSession) -> int:
-    """把租约过期的 leased/running job 重置为 pending（worker 崩溃回收）。返回回收数。"""
+    """回收 Worker 崩溃留下的过期租约。返回回收数。
+
+    已提交给供应商的 running 任务不回到 pending：释放租约后保持 running，下一轮直接继续轮询；
+    其余回到 pending 重新执行。等待轮询的 running（leased_by 为空）不是租约，不在此列。
+    """
     now = _utcnow()
     stmt = select(GenerationJob).where(
         GenerationJob.status.in_(["leased", "running"]),
+        GenerationJob.leased_by != "",
         GenerationJob.lease_until.is_not(None),
         GenerationJob.lease_until < now,
     )
     result = await session.execute(stmt)
     jobs = list(result.scalars().all())
     for job in jobs:
-        job.status = "pending"
-        job.lease_until = None
+        waiting = job.status == "running" and bool(job.external_task_id)
+        job.status = "running" if waiting else "pending"
+        job.lease_until = now if waiting else None
         job.leased_by = ""
     await session.flush()
     if jobs:
