@@ -154,5 +154,6 @@ export const nodeCanvasApi = {
     form.append('file', file)
     return json<NodeResult>(`${base(id)}/uploads`, { method: 'POST', body: form })
   },
+  cancelJob: (jobId: string) => json<unknown>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
   split: (id: string, idea: string, shots: number) => json<SplitResult>(`${base(id)}/copilot/split`, send('POST', { idea, shots })),
 }

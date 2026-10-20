@@ -180,6 +180,12 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
         setPolling(true)
       } catch (error) { toast(error instanceof Error ? error.message : '提交失败', 'error') }
     },
+    cancel: async (jobId: string) => {
+      try {
+        await nodeCanvasApi.cancelJob(jobId)
+        await refreshRuns()
+      } catch (error) { toast(error instanceof Error ? error.message : '取消失败', 'error') }
+    },
     upload: async (nodeId: string, file: File) => {
       try {
         await flushThen()

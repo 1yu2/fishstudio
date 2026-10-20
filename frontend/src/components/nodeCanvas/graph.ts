@@ -189,7 +189,7 @@ export function latestJob(runs: CanvasRuns | null, nodeId: string) {
 
 export const ACTIVE = new Set(['pending', 'leased', 'running', 'queued'])
 
-export const STATUS: Record<string, string> = { pending: '排队中', queued: '排队中', leased: '准备中', running: '生成中', succeeded: '完成', failed: '失败', cancelled: '已取消' }
+export const STATUS: Record<string, string> = { pending: '排队中', queued: '排队中', leased: '准备中', running: '生成中', succeeded: '完成', failed: '失败', canceled: '已取消' }
 
 /** 节点右上角的状态文字：生成中带百分比，排队时带前面的任务数。 */
 export function statusText(job: NodeJob): string {

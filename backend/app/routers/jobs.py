@@ -259,7 +259,13 @@ async def cancel_job(
     job = await _get_job_checked(session, job_id, user)
     # best-effort 取消外部任务：不阻塞本地取消，失败仅记日志
     if job.external_task_id and job.provider:
-        deployment = _media_runtime.get("video", job.provider)
+        # 优先按提交时的 Deployment 找（同一类型可能有多台，如多个本地 H3），找不到再按供应商名
+        snapshot = (job.params or {}).get("routing_snapshot") or {}
+        deployment = (
+            _media_runtime.get("video", snapshot.get("deployment_name") or "")
+            if snapshot.get("deployment_name")
+            else None
+        ) or _media_runtime.get("video", job.provider)
         provider = deployment.provider if deployment else None
         if provider is not None:
             try:

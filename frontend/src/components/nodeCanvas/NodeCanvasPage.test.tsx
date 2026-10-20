@@ -9,7 +9,7 @@ vi.mock('../../api/nodeCanvas', async (importOriginal) => {
   return {
     ...actual,
     nodeCanvasApi: {
-      get: vi.fn(), models: vi.fn(), runs: vi.fn(), save: vi.fn(), quote: vi.fn(), run: vi.fn(), upload: vi.fn(), split: vi.fn(), rename: vi.fn(),
+      get: vi.fn(), models: vi.fn(), runs: vi.fn(), save: vi.fn(), quote: vi.fn(), run: vi.fn(), upload: vi.fn(), split: vi.fn(), rename: vi.fn(), cancelJob: vi.fn(),
     },
   }
 })
@@ -86,5 +86,38 @@ describe('NodeCanvasPage', () => {
     expect(await screen.findByDisplayValue('角色 · 林夏')).toBeInTheDocument()
     expect(screen.getByDisplayValue('1 · 推门')).toBeInTheDocument()
     expect(api.split).toHaveBeenCalledWith('c1', '雨夜便利店', 4)
+  })
+
+  function withImageJob(status: string, error = '') {
+    api.get.mockResolvedValue({
+      id: 'c1', title: '雨夜', aspect_ratio: '9:16', node_count: 1, updated_at: null, created_at: null, revision: 3,
+      graph: { nodes: [{ id: 'img-1', type: 'image', position: { x: 0, y: 0 }, data: { label: '定妆', prompt: '林夏' } }], edges: [] },
+    })
+    api.runs.mockResolvedValue({
+      nodes: { 'img-1': { jobs: [{ id: 'job-1', status, progress: 40, queue_position: 0, error, model: 'seedream', created_at: null }], results: [] } },
+      active_jobs: status === 'running' ? 1 : 0, spent: 0,
+    })
+  }
+
+  it('cancels a running node job', async () => {
+    withImageJob('running')
+    api.cancelJob.mockResolvedValue({})
+    renderPage()
+    const cancel = (await screen.findByText('取消')).closest('button')!
+    await act(async () => { fireEvent.click(cancel) })
+    expect(api.cancelJob).toHaveBeenCalledWith('job-1')
+    expect(screen.queryByText('生成')).not.toBeInTheDocument()
+  })
+
+  it('retries a failed node job with the current inputs', async () => {
+    withImageJob('failed', 'provider timeout')
+    renderPage()
+    expect(await screen.findByText('provider timeout')).toBeInTheDocument()
+    const retry = (await screen.findByText('重试')).closest('button')!
+    await waitFor(() => expect(retry).not.toBeDisabled())
+    await act(async () => { fireEvent.click(retry) })
+    await waitFor(() => expect(api.run).toHaveBeenCalled())
+    expect(api.run.mock.calls[0][1]).toBe('img-1')
+    expect(api.run.mock.calls[0][2]).toMatchObject({ kind: 'image', prompt: '林夏' })
   })
 })
