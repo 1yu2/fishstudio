@@ -272,7 +272,7 @@ def test_run_nodes_uploads_and_results(pg, monkeypatch):
     assert fake_plan.calls[0]["mode"] == "first_last_frame" and fake_plan.calls[0]["tier"] == "preview"
     assert [job["status"] for job in runs["nodes"]["img"]["jobs"]] == ["succeeded"]
     assert len(runs["nodes"]["img"]["results"]) == 2
-    assert runs["nodes"]["vid"]["jobs"][0]["status"] == "pending"
+    assert runs["nodes"]["vid"]["jobs"][0]["status"] == "queued"  # 还没被 Worker 领取
     assert runs["nodes"]["up"]["results"][0]["uploaded"] is True
     assert runs["active_jobs"] == 1
     assert quote == {
