@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { Film, ImageIcon, Loader2, Play, Type, Upload } from 'lucide-react'
+import { Film, ImageIcon, Loader2, Play, RotateCcw, Square, Type, Upload } from 'lucide-react'
 import type { CanvasModel, CanvasNodeType, Quote, StoredNode } from '../../api/nodeCanvas'
 import { ProtectedImage, ProtectedVideo } from '../common/ProtectedMedia'
 import { useCanvas } from './context'
@@ -79,7 +79,7 @@ function ModelSelect({ kind, value, fallback, onChange }: { kind: 'image' | 'vid
 }
 
 function Generator({ id, node, kind, children }: { id: string; node: StoredNode; kind: 'image' | 'video'; children: ReactNode }) {
-  const { nodes, edges, runs, aspectRatio, run, upload } = useCanvas()
+  const { nodes, edges, runs, aspectRatio, run, upload, cancel } = useCanvas()
   const { request, blockers, upstreamPrompt } = useMemo(() => resolveInputs(node, nodes, edges, runs, aspectRatio), [node, nodes, edges, runs, aspectRatio])
   const quote = useQuote(blockers.length === 0, request)
   const [busy, setBusy] = useState(false)
@@ -91,15 +91,20 @@ function Generator({ id, node, kind, children }: { id: string; node: StoredNode;
     {upstreamPrompt && <div className="nc-upstream" title={upstreamPrompt}>上游提示词：{upstreamPrompt}</div>}
     {children}
     {blockers.length > 0 && <div className="nc-blockers">{blockers.map((text) => <div key={text}>{text}</div>)}</div>}
-    {job?.status === 'failed' && job.error && <div className="nc-error" title={job.error}>{job.error}</div>}
+    {job?.status === 'failed' && <div className="nc-error" title={job.error}>
+      <span>{job.error || '生成失败'}</span>
+      <button className="nc-link nodrag" disabled={busy || blockers.length > 0} onClick={() => void start()}><RotateCcw size={12} />重试</button>
+    </div>}
     <footer className="nc-node__foot">
       <input ref={fileRef} type="file" hidden accept={kind === 'image' ? 'image/png,image/jpeg,image/webp' : 'video/mp4,video/quicktime,video/webm'}
         onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void upload(id, file) }} />
       <button className="nc-icon nodrag" aria-label="上传" title={kind === 'image' ? '上传图片' : '上传视频'} onClick={() => fileRef.current?.click()}><Upload size={14} /></button>
       <span className="nc-quote">{quote ? `预计 ${money(quote.estimated_cost)}` : ''}</span>
-      <button className="nc-run nodrag" disabled={busy || running || blockers.length > 0} onClick={() => void start()}>
-        {busy || running ? <Loader2 size={13} className="nc-spin" /> : <Play size={13} />}生成
-      </button>
+      {running && job
+        ? <button className="nc-run nc-run--stop nodrag" onClick={() => void cancel(job.id)}><Square size={11} />取消</button>
+        : <button className="nc-run nodrag" disabled={busy || blockers.length > 0} onClick={() => void start()}>
+          {busy ? <Loader2 size={13} className="nc-spin" /> : <Play size={13} />}生成
+        </button>}
     </footer>
   </>
 }

@@ -11,6 +11,7 @@ export interface CanvasActions {
   updateData: (nodeId: string, patch: Record<string, unknown>) => void
   run: (nodeId: string, request: RunRequest) => Promise<void>
   upload: (nodeId: string, file: File) => Promise<void>
+  cancel: (jobId: string) => Promise<void>
   quote: (request: RunRequest) => Promise<Quote>
 }
 
