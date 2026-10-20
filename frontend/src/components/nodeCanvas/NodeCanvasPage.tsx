@@ -7,7 +7,7 @@ import '@xyflow/react/dist/style.css'
 import { ArrowLeft, Check, Film, ImageIcon, Loader2, Sparkles, Type, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import {
-  ConflictError, nodeCanvasApi, type CanvasDetail, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
+  ConflictError, nodeCanvasApi, type CanvasDetail, type DailyBudget, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
   type SplitResult, type StoredEdge, type StoredGraph, type StoredNode,
 } from '../../api/nodeCanvas'
 import { paths } from '../../routePaths'
@@ -34,6 +34,17 @@ function stored(nodes: Node[]): StoredNode[] {
 
 function storedEdges(edges: Edge[]): StoredEdge[] {
   return edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle ?? null, targetHandle: edge.targetHandle ?? null }))
+}
+
+/** 今日云端花费 / 上限；进行中的任务按预估计入，剩余不足两成时变色。 */
+function BudgetBadge({ budget }: { budget: DailyBudget }) {
+  const cap = budget.cap ?? 0
+  const used = budget.spent + budget.in_flight
+  const low = cap > 0 && (budget.remaining ?? 0) < cap * 0.2
+  return <span className={`nc-budget${low ? ' nc-budget--low' : ''}`}
+    title={`今日云端已花 ¥${budget.spent.toFixed(2)}，进行中预估 ¥${budget.in_flight.toFixed(2)}；本地预览不计入`}>
+    今日云端 ¥{used.toFixed(2)} / ¥{cap.toFixed(0)}
+  </span>
 }
 
 function themeMode(): 'dark' | 'light' {
@@ -242,6 +253,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
             <span className="nc-divider" />
             <span className={`nc-save nc-save--${saveState}`}>{saveState === 'saved' ? <Check size={12} /> : saveState === 'saving' ? <Loader2 size={12} className="nc-spin" /> : null}{saveLabel}</span>
             <span className="nc-spent" title="本画布累计花费">已花费 ¥{Number(runs?.spent || 0).toFixed(2)}</span>
+            {runs?.budget?.cap != null && <BudgetBadge budget={runs.budget} />}
             {!copilot && <button className="nc-tool nc-tool--accent" onClick={() => setCopilot(true)}><Sparkles size={14} />Copilot</button>}
           </Panel>
           {nodes.length === 0 && <Panel position="top-center" className="nc-empty">

@@ -379,3 +379,41 @@ def test_queue_position_and_progress_in_task_response(monkeypatch, tmp_path):
     assert _public_task(running, progress=40, queue_position=2)["queue_position"] == 0  # 只有排队中才有位置
     assert _public_task(running, progress=40)["progress"] == 40
     assert _public_task({**third, "status": "succeeded"}, progress=40)["progress"] == 100
+
+
+def test_cleanup_removes_only_expired_fishstudio_files(monkeypatch, tmp_path):
+    import os
+
+    from gateway.h3_gateway import cleanup_old_files
+
+    output, inputs = tmp_path / "comfy_out", tmp_path / "comfy_in"
+    settings = _i2v_settings(
+        monkeypatch, tmp_path, H3_COMFY_OUTPUT_DIR=str(output), H3_COMFY_INPUT_DIR=str(inputs)
+    )
+    (output / "fishstudio").mkdir(parents=True)
+    (output / "other").mkdir()
+    inputs.mkdir()
+    old_artifact = settings.artifact_dir / "aaa.mp4"
+    new_artifact = settings.artifact_dir / "bbb.mp4"
+    old_output = output / "fishstudio" / "h3_x_00001_.mp4"
+    foreign_output = output / "other" / "keep.mp4"
+    old_frame = inputs / "fishstudio_h3_x_first_frame.png"
+    foreign_input = inputs / "my_photo.png"
+    for path in (old_artifact, new_artifact, old_output, foreign_output, old_frame, foreign_input):
+        path.write_bytes(b"x")
+    now = 1_000_000.0
+    for path in (old_artifact, old_output, foreign_output, old_frame, foreign_input):
+        os.utime(path, (now - 25 * 3600, now - 25 * 3600))
+    os.utime(new_artifact, (now - 3600, now - 3600))
+
+    assert cleanup_old_files(settings, now=now) == 3
+    assert not old_artifact.exists() and not old_output.exists() and not old_frame.exists()
+    assert new_artifact.exists() and foreign_output.exists() and foreign_input.exists()
+
+
+def test_cleanup_disabled_with_zero_retention(monkeypatch, tmp_path):
+    from gateway.h3_gateway import cleanup_old_files
+
+    settings = _i2v_settings(monkeypatch, tmp_path, H3_GATEWAY_RETENTION_HOURS="0")
+    (settings.artifact_dir / "old.mp4").write_bytes(b"x")
+    assert cleanup_old_files(settings, now=10**12) == 0
