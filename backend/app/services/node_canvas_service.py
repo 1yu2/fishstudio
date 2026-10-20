@@ -277,6 +277,53 @@ def _image_price(slug: str, count: int) -> Optional[Decimal]:
         return None
 
 
+NO_IMAGE_MODEL = "还没有可用的图片模型：在「设置 → 模型服务」添加图片模型，并在「默认模型」里设置「图片生成」。也可以先上传图片"
+
+
+def _image_deployment_ready(item: Any) -> bool:
+    if item is None or not item.enabled or item.modality != "image":
+        return False
+    available = getattr(item.instance, "is_available", None)
+    return available() if available is not None else True
+
+
+async def image_model_problem(session: AsyncSession, model: str = "", *, edit: bool = False) -> str:
+    """图片节点能否生成；返回给用户看的原因，空字符串表示可以。
+
+    与 Worker 的解析顺序一致：指定模型 → 用途默认路由（主 + 备用）→ 没有任何图片配置时的旧 env 兜底。
+    提前检查，避免任务排进队列后才在 Worker 里失败。
+    """
+    from app.config import mock_providers_enabled
+    from app.model_runtime.catalog import get_catalog
+    from app.providers.volcano_image import VolcanoImageProvider
+
+    if mock_providers_enabled():
+        return ""
+    snapshot = get_catalog().snapshot
+    if model:
+        if _image_deployment_ready(snapshot.get(model)):
+            return ""
+        return f"所选图片模型「{model}」不可用：可能已停用或缺少 API Key，请在「设置 → 模型服务」检查，或改用默认模型"
+    purpose = "image_edit" if edit else "image_generation"
+    route = await session.get(ModelRoute, (purpose, "final"))
+    if route is not None and route.enabled:
+        slugs = [route.primary_deployment, *(route.fallback_deployments or [])]
+        if any(_image_deployment_ready(snapshot.get(slug)) for slug in slugs):
+            return ""
+        return f"默认的{'图片编辑' if edit else '图片生成'}模型都不可用：请在「设置 → 模型服务」检查是否启用、是否配置了 API Key"
+    if (
+        route is None
+        and not snapshot.list("image")
+        and VolcanoImageProvider.from_legacy_env(purpose).is_available()
+    ):
+        return ""
+    if edit:
+        return (
+            "还没有可用的图片编辑模型：连了参考图时需要在「默认模型」里设置「图片编辑」，或先去掉参考图连线"
+        )
+    return NO_IMAGE_MODEL
+
+
 async def _default_image_model(session: AsyncSession, edit: bool) -> str:
     route = await session.get(ModelRoute, ("image_edit" if edit else "image_generation", "final"))
     return route.primary_deployment if route else ""
@@ -319,6 +366,9 @@ async def run_node(
             await _storage_key(session, canvas, artifact_id, "image")
             for artifact_id in req.reference_artifact_ids
         ]
+        problem = await image_model_problem(session, req.model, edit=bool(references))
+        if problem:
+            raise CanvasError(problem)
         slug = req.model or await _default_image_model(session, edit=bool(references))
         estimate = _image_price(slug, req.count) or Decimal(0)
         await _reserve_budget(session, canvas, estimate)
@@ -551,7 +601,7 @@ async def available_models(session: AsyncSession) -> dict[str, Any]:
         if route is None and tier != "final":
             route = await session.get(ModelRoute, (purpose, "final"))
         defaults[key] = route.primary_deployment if route else ""
-    return {**out, "defaults": defaults}
+    return {**out, "defaults": defaults, "image_problem": await image_model_problem(session)}
 
 
 # ── Copilot：想法 → 角色与镜头 ────────────────────────────────────────────

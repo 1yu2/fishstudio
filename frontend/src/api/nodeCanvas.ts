@@ -88,6 +88,8 @@ export interface CanvasModels {
   image: CanvasModel[]
   video: CanvasModel[]
   defaults: { image: string; video_preview: string; video_final: string }
+  /** 用默认模型生成图片会遇到的问题；空字符串表示可以生成 */
+  image_problem?: string
 }
 
 export interface RunRequest {

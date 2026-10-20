@@ -79,8 +79,12 @@ function ModelSelect({ kind, value, fallback, onChange }: { kind: 'image' | 'vid
 }
 
 function Generator({ id, node, kind, children }: { id: string; node: StoredNode; kind: 'image' | 'video'; children: ReactNode }) {
-  const { nodes, edges, runs, aspectRatio, run, upload, cancel } = useCanvas()
-  const { request, blockers, upstreamPrompt } = useMemo(() => resolveInputs(node, nodes, edges, runs, aspectRatio), [node, nodes, edges, runs, aspectRatio])
+  const { nodes, edges, runs, aspectRatio, run, upload, cancel, models } = useCanvas()
+  const resolved = useMemo(() => resolveInputs(node, nodes, edges, runs, aspectRatio), [node, nodes, edges, runs, aspectRatio])
+  const { request, upstreamPrompt } = resolved
+  // 没有选具体模型、默认图片模型又不可用时，提前提示，不让任务排进队列再失败
+  const modelProblem = kind === 'image' && !request.model && models?.image_problem ? models.image_problem : ''
+  const blockers = modelProblem ? [modelProblem, ...resolved.blockers] : resolved.blockers
   const quote = useQuote(blockers.length === 0, request)
   const [busy, setBusy] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
