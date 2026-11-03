@@ -282,6 +282,36 @@ def test_bootstrap_is_idempotent(mig_env):
     assert revision == "0026"
 
 
+def test_concurrent_startup_is_serialized_by_advisory_lock(mig_env, monkeypatch):
+    """多副本同时启动：startup lock 串行化，空库上并发 bootstrap 都成功且不重复建表。
+
+    无锁时并发 CREATE TABLE 会撞 pg_type_typname_nsp_index 唯一约束，失败的
+    uvicorn 子进程退出（0.1 多副本验证实测）。
+    """
+    import app.db.init_db as init_db
+
+    monkeypatch.setattr(init_db, "engine", mig_env.engine)
+    timeline: list[tuple[str, int]] = []
+
+    async def _starter(index: int):
+        async with init_db._startup_lock():
+            timeline.append(("enter", index))
+            await mig_env.bootstrap_and_upgrade()
+            timeline.append(("exit", index))
+
+    async def _run():
+        await asyncio.gather(*(_starter(i) for i in range(3)))
+
+    asyncio.run(_run())
+
+    # 每个进入之后紧跟它自己的退出：临界区互不重叠
+    assert [event for event, _ in timeline] == ["enter", "exit"] * 3
+    assert all(timeline[i][1] == timeline[i + 1][1] for i in range(0, 6, 2))
+    tables, revision = _tables_and_revision()
+    assert EXPECTED_TABLES <= tables
+    assert revision == "0026"
+
+
 def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
     """0007～0010 可降至 0006 再回升，既有项目数据不丢失。"""
     from sqlalchemy import text
