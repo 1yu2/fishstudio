@@ -82,7 +82,7 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             credential_ref="env:VOLCANO_API_KEY",
             config={},
             capabilities={"operations": ["generate", "edit"]},
-            pricing={"currency": "CNY", "output_per_image": "0.20"},
+            pricing={"currency": "CNY", "output_per_image": "0.25", "source": "volcengine-ark-2026-11"},
         )
         via_dmxapi = "dmxapi.cn" in base_url.lower() or _enabled("VOLCANO_USE_DMXAPI")
         add(
@@ -92,13 +92,18 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             # 直连方舟使用原生异步 Adapter；DMXAPI 代理协议不同，仍走旧 Driver。
             driver="volcano_video" if via_dmxapi else "ark_video",
             modality="video",
-            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
+            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-0-pro-fast-251015"),
             base_url=base_url,
             credential_ref="env:VOLCANO_API_KEY",
             config={"protocol": "volcano"} if via_dmxapi else {},
-            capabilities={"min_duration": 4, "max_duration": 12},
-            # 占位价，待在模型服务页按方舟刊例改为 output_per_million_tokens。
-            pricing={"currency": "CNY", "output_per_second": "0.50"},
+            # 1.0 Pro Fast 仅支持文生视频与首帧图生视频，时长 2-12 秒。
+            capabilities={"modes": ["text", "first_frame"], "min_duration": 2, "max_duration": 12},
+            # 方舟官方刊例：在线推理 4.20 元 / 百万 Token。
+            pricing={
+                "currency": "CNY",
+                "output_per_million_tokens": "4.20",
+                "source": "volcengine-ark-2026-11",
+            },
             priority=120,
         )
     else:
@@ -110,12 +115,16 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             slug="volcano-video",
             driver="volcano_video",
             modality="video",
-            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
+            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-0-pro-fast-251015"),
             base_url=_env("VOLCANO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
             credential_ref="env:VOLCANO_API_KEY",
             config={"protocol": "volcano"},
-            capabilities={"min_duration": 4, "max_duration": 12},
-            pricing={"currency": "CNY", "output_per_second": "0.50"},
+            capabilities={"modes": ["text", "first_frame"], "min_duration": 2, "max_duration": 12},
+            pricing={
+                "currency": "CNY",
+                "output_per_million_tokens": "4.20",
+                "source": "volcengine-ark-2026-11",
+            },
             priority=120,
             enabled=False,
         )
@@ -183,17 +192,18 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
         )
     if _env("DASHSCOPE_API_KEY"):
         add(
-            ("DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL"),
+            ("DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL", "QWEN_TTS_MODEL"),
             name="Qwen TTS",
             slug="qwen-tts",
             driver="qwen_tts",
             modality="speech",
-            model="qwen-tts",
+            model=_env("QWEN_TTS_MODEL", "qwen3-tts-flash"),
             base_url=_env("DASHSCOPE_BASE_URL"),
             credential_ref="env:DASHSCOPE_API_KEY",
             config={},
             capabilities={},
-            pricing={},
+            # 百炼官方刊例：0.8 元 / 1 万输入字符，输出免费。
+            pricing={"currency": "CNY", "per_10k_characters": "0.80", "source": "aliyun-bailian-2026-11"},
         )
     if _env("TENCENT_AI3D_API_KEY"):
         add(

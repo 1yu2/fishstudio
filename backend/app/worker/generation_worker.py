@@ -26,6 +26,7 @@ from app.providers.pricing import PRICE_TABLE_VERSION, actual_video_cost, estima
 from app.providers.video_router import NoProviderError, RouteDecision
 from app.services import (
     asset_service,
+    cost_service,
     job_event_service,
     job_service,
     lineage_service,
@@ -1124,6 +1125,8 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
     else:
         logger.warning(f"tts job {job.id}: shot {params.get('shot_id')} 不存在，跳过 track 回写")
 
+    # 优先用 provider 返回的字符数
+    tts_characters = int(result.usage.get("characters") or len(text.strip()))
     await finalize_job(
         session,
         job,
@@ -1139,8 +1142,11 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
             "status": "success",
             "latency_ms": int((time.monotonic() - started) * 1000),
             "output_units": float(result.usage.get("output_audio_seconds", 0) or 0),
+            # TTS 按输入字符计费（qwen3-tts-flash 刊例价）；Mock 不计费
+            "actual_cost": 0 if mocked else cost_service.tts_cost(tts_characters),
+            "cost_source": "provider_usage",
             "provider_request_id": result.external_request_id,
-            "event_metadata": {"mocked": mocked},
+            "event_metadata": {"mocked": mocked, "characters": tts_characters},
         },
     )
 

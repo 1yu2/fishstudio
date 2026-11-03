@@ -487,10 +487,10 @@ class TestCostQuoteAndBudget:
 
         by_op = {i.operation: i for i in quote.items}
         assert by_op["generate_video"].unit_count == 2  # 2 shots (R7 per-shot)
-        assert Decimal(by_op["generate_video"].subtotal) == Decimal("5.000000")
+        assert Decimal(by_op["generate_video"].subtotal) == Decimal("0.907200")  # 2 × 5s@720p，4.20/百万Token
         assert by_op["generate_image"].unit_count == 2
         assert by_op["render_episode"].subtotal == "0"
-        assert Decimal(quote.total) == Decimal("5.400000")
+        assert Decimal(quote.total) == Decimal("1.407200")  # 视频 0.9072 + 图片 2×0.25
         assert quote.price_table_version == pricing.PRICE_TABLE_VERSION
         assert quote.quote_id
 
@@ -661,7 +661,7 @@ class TestReserveBudget:
             model="",
             params={"candidate_count": 2},
         )
-        assert cost_service.estimate_job_retry_cost(img) == Decimal("0.400000")
+        assert cost_service.estimate_job_retry_cost(img) == Decimal("0.500000")
         render = SimpleNamespace(operation="render_episode", provider="", model="", params={})
         assert cost_service.estimate_job_retry_cost(render) == Decimal("0")
 

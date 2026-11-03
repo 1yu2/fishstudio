@@ -30,6 +30,10 @@ if ENV_PATH.exists():
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
 DASHSCOPE_BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com").strip()
 QWEN_VOICE_CLONE_TARGET_MODEL = os.getenv("QWEN_VOICE_CLONE_TARGET_MODEL", "qwen3-tts-vc-2026-01-22").strip()
+# 默认（无指定音色）合成走系统音色的 flash 模型：0.8 元 / 万字符，单次请求最多 600 字符。
+QWEN_TTS_MODEL = os.getenv("QWEN_TTS_MODEL", "qwen3-tts-flash").strip()
+QWEN_TTS_DEFAULT_VOICE = os.getenv("QWEN_TTS_DEFAULT_VOICE", "Cherry").strip()
+QWEN_TTS_FLASH_MAX_CHARS = 600
 
 # 音频存储目录
 STORAGE_DIR = BASE_DIR / "storage"
