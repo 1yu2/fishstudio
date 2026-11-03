@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import uuid
 from abc import ABC, abstractmethod
@@ -73,6 +74,37 @@ class TTSProvider(ABC):
 def estimate_duration_ms(text: str) -> int:
     """按文本字数估算语音时长（mock 与 artifact duration_ms 用）。"""
     return max(1000, int(len(text) / _CHARS_PER_SECOND * 1000))
+
+
+# 句末标点（含后随的引号/括号），分块时在其后断开
+_SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;\n])|(?<=[.])(?=\s)")
+
+
+def split_tts_text(text: str, max_chars: int) -> list[str]:
+    """按句末标点把文本切成每块不超过 max_chars 的片段（贪心合并相邻句子）。
+
+    单句本身超长时按 max_chars 硬切。空白文本返回空列表。
+    """
+    text = text.strip()
+    if not text:
+        return []
+    chunks: list[str] = []
+    current = ""
+    for sentence in (part for part in _SENTENCE_SPLIT.split(text) if part):
+        while len(sentence) > max_chars:  # 单句超长：硬切
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(sentence[:max_chars])
+            sentence = sentence[max_chars:]
+        if len(current) + len(sentence) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current += sentence
+    if current:
+        chunks.append(current)
+    return [chunk for chunk in chunks if chunk.strip()]
 
 
 class MockTTSProvider(TTSProvider):
@@ -140,13 +172,11 @@ class QwenTTSProvider(TTSProvider):
 
     - 有 voice_id 时直接使用持久化音色合成，不重复创建音色；
     - 只有 reference_audio 时执行一次声音复刻；
-    - 都没有时才走声音设计临时音色。
+    - 都没有时走 qwen3-tts-flash 系统默认音色（QWEN_TTS_MODEL / QWEN_TTS_DEFAULT_VOICE）。
     底层是同步 requests 调用，这里用 run_in_executor 避免阻塞事件循环。
     """
 
     name = "qwen_tts"
-    # 默认音色描述（无 voice asset / 无参考音频时）
-    DEFAULT_VOICE_DESCRIPTION = "自然清晰的中文旁白声，语速适中"
 
     def __init__(self, api_key: str | None = None):
         self.api_key = (api_key if api_key is not None else os.getenv("DASHSCOPE_API_KEY", "")).strip()
@@ -157,7 +187,7 @@ class QwenTTSProvider(TTSProvider):
     def _synthesize_sync(self, req: TTSRequest) -> dict:
         """同步调用 qwen_tts 工具函数，返回解析后的结果 dict（含 audio_url）。
 
-        voice_id 优先级：持久化 voice_id → reference_audio → 临时声音设计。
+        voice_id 优先级：持久化 voice_id → reference_audio → flash 系统默认音色。
         """
         from app.tools import qwen_tts
 
@@ -182,20 +212,55 @@ class QwenTTSProvider(TTSProvider):
             else:
                 raw = tool_fn(req.voice_reference, req.text, req.lang)
         else:
-            tool_fn = getattr(qwen_tts.qwen_voice_design_tool, "func", None)
-            if tool_fn is None:
-                raw = qwen_tts.qwen_voice_design_tool.invoke(
-                    {
-                        "voice_description": self.DEFAULT_VOICE_DESCRIPTION,
-                        "text": req.text,
-                        "language": req.lang,
-                    }
-                )
-            else:
-                raw = tool_fn(self.DEFAULT_VOICE_DESCRIPTION, req.text, req.lang)
+            return self._synthesize_flash_sync(req)
         if isinstance(raw, str) and raw.startswith("Error:"):
             raise RuntimeError(raw)
         return json.loads(raw)
+
+    def _synthesize_flash_sync(self, req: TTSRequest) -> dict:
+        """无指定音色：qwen3-tts-flash + 系统默认音色（不再每次创建临时设计音色）。
+
+        flash 单次请求最多 600 字符，超长文本按句切块分别合成后拼接。
+        """
+        from app.tools import audio_mixing, qwen_tts
+
+        synth = getattr(qwen_tts.qwen_voice_synthesis_tool, "func", None)
+        chunks = split_tts_text(req.text, qwen_tts.QWEN_TTS_FLASH_MAX_CHARS)
+        if not chunks:
+            raise RuntimeError("Error: 合成文本为空")
+        results: list[dict] = []
+        for chunk in chunks:
+            payload = {
+                "voice_id": qwen_tts.QWEN_TTS_DEFAULT_VOICE,
+                "text": chunk,
+                "language": req.lang,
+                "target_model": qwen_tts.QWEN_TTS_MODEL,
+            }
+            raw = (
+                synth(**payload) if synth is not None else qwen_tts.qwen_voice_synthesis_tool.invoke(payload)
+            )
+            if isinstance(raw, str) and raw.startswith("Error"):
+                raise RuntimeError(raw)
+            results.append(json.loads(raw))
+        merged = dict(results[0])
+        merged["characters"] = sum(len(chunk) for chunk in chunks)
+        if len(results) > 1:
+            concat = getattr(audio_mixing.concatenate_audio_tool, "func", None)
+            args = [item["audio_url"] for item in results]
+            raw = (
+                concat(args, 0, 0)
+                if concat is not None
+                else audio_mixing.concatenate_audio_tool.invoke(
+                    {"audio_files": args, "crossfade_duration": 0, "silence_duration": 0}
+                )
+            )
+            if isinstance(raw, str) and raw.startswith("Error"):
+                raise RuntimeError(raw)
+            joined = json.loads(raw)
+            merged["audio_url"] = joined["audio_url"]
+            merged["local_path"] = joined["local_path"]
+            merged["chunks"] = len(results)
+        return merged
 
     async def synthesize(self, req: TTSRequest) -> ProviderResult:
         if not self.is_available():
@@ -235,7 +300,11 @@ class QwenTTSProvider(TTSProvider):
             model=result.get("provider", "qwen-tts"),
             external_request_id=result.get("request_id", ""),
             artifacts=[{"storage_key": storage_key, "type": "audio", "duration_ms": duration_ms}],
-            usage={"output_audio_seconds": duration_ms / 1000.0},
+            usage={
+                "output_audio_seconds": duration_ms / 1000.0,
+                # 计费按输入字符数（qwen3-tts-flash 0.8 元 / 万字符）
+                "characters": int(result.get("characters") or len(req.text.strip())),
+            },
             raw_metadata={
                 "voice_name": result.get("voice_name", ""),
                 "voice_id": result.get("voice_id", req.voice_id),

@@ -918,6 +918,6 @@ async def test_volcano_image_generate_error(monkeypatch):
 def test_image_pricing():
     from app.providers.pricing import estimate_image_cost
 
-    # 火山图片占位单价 0.20/张（待官方刊例核实）
-    assert estimate_image_cost("volcano_image", "seedream-4.5", count=2) == Decimal("0.400000")
+    # 火山 Seedream 4.5 官方刊例 0.25 元/张
+    assert estimate_image_cost("volcano_image", "seedream-4.5", count=2) == Decimal("0.500000")
     assert estimate_image_cost("mock_image", "mock-image") is None  # 无条目不按 0 计费

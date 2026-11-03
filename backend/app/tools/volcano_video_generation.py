@@ -40,7 +40,7 @@ DMXAPI_BASE_URL = "https://www.dmxapi.cn/v1"
 DMXAPI_VIDEO_MODEL = "doubao-seedance-1-5-pro-responses"
 
 # 火山引擎直连配置
-VOLCANO_VIDEO_MODEL = os.getenv("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro").strip()
+VOLCANO_VIDEO_MODEL = os.getenv("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-0-pro-fast-251015").strip()
 
 # 根据配置选择使用的 API
 if VOLCANO_USE_DMXAPI:
@@ -376,8 +376,10 @@ def submit_dmxapi_task(
     if duration:
         payload["duration"] = duration
 
+    # 显式下发分辨率（方舟缺省为 1080p，会按 1080p 计费）；1.0 系列不支持音频生成。
     payload["resolution"] = "720p"
-    payload["generate_audio"] = True
+    if "seedance-1-0" not in model:
+        payload["generate_audio"] = True
 
     headers = {"Authorization": f"Bearer {VOLCANO_API_KEY}", "Content-Type": "application/json"}
 
@@ -623,9 +625,11 @@ def submit_volcano_task(
     if duration:
         payload["duration"] = duration
 
-    # Seedance 1.5 Pro 支持的参数
-    payload["resolution"] = "720p"  # 1.5 Pro 最高 720p
-    payload["audio"] = True  # 支持音频生成
+    # 显式下发分辨率（方舟缺省为 1080p，会按 1080p 计费）；音频生成仅 1.5 及以后的模型支持，
+    # 1.0 系列（含默认的 1.0 Pro Fast）不带该参数。
+    payload["resolution"] = "720p"
+    if "seedance-1-0" not in used_model:
+        payload["audio"] = True
 
     headers = {"Authorization": f"Bearer {VOLCANO_API_KEY}", "Content-Type": "application/json"}
 
@@ -787,8 +791,8 @@ def legacy_generate_volcano_video(
     """
     火山引擎 AI 视频生成服务，使用 Seedance API 生成视频。
     支持三种模式：
-    1. 文生视频（mode='text'）：基于文本描述生成视频，使用 Seedance 1.5 Pro
-    2. 图生视频-首帧（mode='image'）：基于首帧图片生成视频，使用 Seedance 1.5 Pro
+    1. 文生视频（mode='text'）：基于文本描述生成视频，使用默认模型 VOLCANO_VIDEO_MODEL（1.0 Pro Fast）
+    2. 图生视频-首帧（mode='image'）：基于首帧图片生成视频，使用默认模型 VOLCANO_VIDEO_MODEL（1.0 Pro Fast）
     3. 首尾帧（mode='start_end'）：基于首帧和尾帧图片生成过渡视频，使用 Seedance 1.0 Lite I2V
 
     Args:

@@ -523,8 +523,8 @@ async def plan_shot_audio_jobs(
 ) -> list[GenerationJob]:
     """按当前 revision shots 的 dialogue_tracks/narration_tracks 展开 tts Job（每条有 text 的 track 一个）。
 
-    TTS 单价未入价格表，用 cost_service 的占位单价做预算预留（复审 0.6：
-    TTS 也计费，统一受费用 Gate + reserve_budget 控制；pricing 接管后改走价格表）。
+    TTS 按字符计费（cost_service.tts_cost，百炼 qwen3-tts-flash 刊例价），做预算预留（复审 0.6：
+    TTS 也计费，统一受费用 Gate + reserve_budget 控制）。
     幂等键含 run/step/shot/track_type/track_index/attempt。
     """
     shots = await _current_revision_shots(session, episode_id)
@@ -536,14 +536,14 @@ async def plan_shot_audio_jobs(
         return []
     from app.services import cost_service  # 延迟导入避免环
 
-    tts_seconds = 0
+    tts_chars = 0
     for shot in shots:
         for tracks in (shot.dialogue_tracks or [], shot.narration_tracks or []):
             for track in tracks or []:
                 text = (track or {}).get("text") or ""
                 if text.strip():
-                    tts_seconds += cost_service._estimate_tts_seconds(text)
-    estimated = cost_service.TTS_PRICE_PER_SECOND * tts_seconds
+                    tts_chars += cost_service.tts_char_count(text)
+    estimated = cost_service.tts_cost(tts_chars)
     if not await _reserve_budget_or_fail(session, run, step, estimated):
         await session.flush()
         return []

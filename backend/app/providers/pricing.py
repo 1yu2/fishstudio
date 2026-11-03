@@ -8,7 +8,7 @@ import os
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Optional
 
-PRICE_TABLE_VERSION = "2026-08-03"
+PRICE_TABLE_VERSION = "2026-11-03"
 VIDEO_ROUTING_VERSION = "2026-08-05.3"
 
 _ZERO = Decimal("0")
@@ -45,7 +45,12 @@ PRICE_TABLE: dict[tuple[str, str, str], dict] = {
     ("minimax", "MiniMax-Hailuo-02", "512P"): {
         "per_piece": {6: Decimal("0.60"), 10: Decimal("1.00")},
     },
-    # 占位价（0.50/秒），待火山官方刊例核实后更新
+    # 方舟官方刊例（2026-11 核实）：Seedance 1.0 Pro Fast 在线推理 4.20 元 / 百万 Token，
+    # 无音频生成；Token 数 = 宽 × 高 × 帧率 × 秒数 / 1024。
+    ("volcano", "doubao-seedance-1-0-pro-fast-251015", "*"): {
+        "output_per_million_tokens": Decimal("4.20"),
+    },
+    # 以下 1.5 Pro 条目不在官方刊例中（0.50/秒为未核实占位价），仅为历史 Job 的重估保留。
     ("volcano", "doubao-seedance-1-5-pro", "*"): {
         "output_per_second": Decimal("0.50"),
     },
@@ -55,15 +60,15 @@ PRICE_TABLE: dict[tuple[str, str, str], dict] = {
 }
 
 # 图片单价表（CNY/张）。(provider, model) -> 单张价。
-# TODO(pricing): 火山 Seedream 占位单价（0.20/张），待官方刊例核实后更新；
+# 火山 Seedream 4.5 官方刊例 0.25 元/张（2026-11 核实）；
 # mock 图片不计费（不在表中，estimate_image_cost 返回 None，调用方按 0 处理）。
 IMAGE_PRICE_TABLE: dict[tuple[str, str], Decimal] = {
-    ("volcano_image", "seedream-4.5"): Decimal("0.20"),
+    ("volcano_image", "seedream-4.5"): Decimal("0.25"),
 }
 
 # 音色创建价格（按次）。(provider) -> 每次价格。
 VOICE_ENROLL_PRICE: dict[str, Decimal] = {
-    "qwen_tts": Decimal("2.00"),  # 占位，待供应商刊例核实
+    "qwen_tts": Decimal("2.00"),  # 未核实（音色创建价，待供应商刊例确认）
     "mock_tts": Decimal("0"),
 }
 
@@ -75,6 +80,10 @@ def estimate_image_cost(provider: str, model: str, *, count: int = 1) -> Optiona
         return None
     return (unit * count).quantize(Decimal("0.000001"))
 
+
+# TTS 单价（CNY / 万字符）：百炼 qwen3-tts-flash 官方刊例 0.8 元 / 1 万输入字符，输出免费。
+# 复刻/设计音色（vc/vd 模型）的合成价格未核实，暂按同价估算。
+TTS_PRICE_PER_10K_CHARS = Decimal("0.80")
 
 _TEXT_PRICING_KEYS = {"currency", "version", "unit", "source", "status", "per_piece"}
 
@@ -153,6 +162,17 @@ def estimate_video_cost(
         input_image_count=input_image_count,
         input_audio_seconds=input_audio_seconds,
         regeneration_output_seconds=regeneration_output_seconds,
+        # 按 Token 计费的模型（方舟 Seedance）需要由分辨率 × 时长推算 Token 数，
+        # 否则静态估算路径（路由/重试预留）会得到 None。
+        video_tokens=(
+            # 非方舟档位（如策略默认的 768P）按方舟默认 720p 估算
+            (
+                estimate_video_tokens(resolution, output_seconds)
+                or estimate_video_tokens("720p", output_seconds)
+            )
+            if entry.get("output_per_million_tokens") is not None
+            else None
+        ),
     )
 
 
