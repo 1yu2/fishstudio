@@ -78,13 +78,9 @@ async def _get_or_create_job(
                 setattr(existing, key, fields[key])
                 await session.flush()
         return existing, False
-    job = GenerationJob(idempotency_key=idempotency_key, status="pending", **fields)
-    session.add(job)
-    await session.flush()
-    from app.services import job_event_service
+    from app.services import job_service
 
-    await job_event_service.emit(session, job, "job.queued")
-    await job_event_service.notify_ready(job.id)
+    job = await job_service.create_job(session, idempotency_key=idempotency_key, **fields)
     return job, True
 
 

@@ -287,8 +287,7 @@ async def create_regeneration_job(
     quote.status = "queued"
     quote.requested_by = requested_by
     await session.flush()
-    params["regeneration_request_id"] = quote.id
-    job.params = params
+    job.params = {**job.params, "regeneration_request_id": quote.id}
     candidate.status = "superseded" if candidate.status == "approved" else candidate.status
     await session.flush()
     return job

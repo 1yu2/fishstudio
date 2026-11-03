@@ -1,6 +1,7 @@
 """GenerationJob 生命周期服务：创建（幂等）、租约、状态流转、租约回收。"""
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence
 
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.db.models import GenerationJob, SeriesProject, WorkflowRun
+from app.services.execution_context import get_execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,17 @@ TERMINAL_STATES = ("succeeded", "failed", "canceled")
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def trace_from_context() -> dict:
+    """提取触发请求的 trace；脚本调用也分配独立 run_id。"""
+    ctx = get_execution_context()
+    trace = {
+        key: getattr(ctx, key)
+        for key in ("request_id", "run_id", "user_id", "canvas_id", "creative_role", "prompt_version")
+    }
+    trace["run_id"] = ctx.run_id or str(uuid.uuid4())
+    return trace
 
 
 async def create_job(
@@ -32,6 +45,10 @@ async def create_job(
     model: str = "",
     priority: int = 0,
     worker_class: str = "media",
+    workflow_run_id: Optional[str] = None,
+    workflow_step_id: Optional[str] = None,
+    step_attempt: int = 0,
+    logical_job_key: str = "",
 ) -> GenerationJob:
     """按 idempotency_key 幂等创建 job。已存在则直接返回已有 job。"""
     existing = await session.execute(
@@ -40,6 +57,9 @@ async def create_job(
     job = existing.scalar_one_or_none()
     if job is not None:
         return job
+    params = dict(params)
+    if "trace" not in params:
+        params["trace"] = trace_from_context()
     job = GenerationJob(
         operation=operation,
         project_id=project_id,
@@ -51,6 +71,10 @@ async def create_job(
         model=model,
         priority=priority,
         worker_class=worker_class,
+        workflow_run_id=workflow_run_id,
+        workflow_step_id=workflow_step_id,
+        step_attempt=step_attempt,
+        logical_job_key=logical_job_key,
         status="pending",
     )
     session.add(job)

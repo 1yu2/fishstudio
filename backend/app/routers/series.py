@@ -63,6 +63,7 @@ from app.services import (
     dependency_invalidation_service,
     director_service,
     feedback_service,
+    job_service,
     observer_service,
     planner_service,
     publish_service,
@@ -2278,6 +2279,7 @@ async def create_clone_voice_job(
         workflow_step_id=step.id,
         params={
             "asset_id": asset_id,
+            "trace": job_service.trace_from_context(),
             "reference_audio_storage_key": storage_key,
             "reference_audio_artifact_id": ref_artifact.id,
             "voice_name": body.voice_name or asset.name,
