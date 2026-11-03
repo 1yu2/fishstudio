@@ -17,9 +17,9 @@ services:
     image: postgres:16-alpine
 
   backend:
-    image: ghcr.io/${GHCR_REPO:?set GHCR_REPO=owner/repo in .env}/fishstudio-backend:${IMAGE_TAG:-latest}
+    image: &backend-image ghcr.io/${GHCR_REPO:?set GHCR_REPO=owner/repo in .env}/fishstudio-backend:${IMAGE_TAG:-latest}
     build: !reset null
-    environment:
+    environment: &cloud-env
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-fishstudio}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
@@ -32,6 +32,11 @@ services:
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
     # 不再对外发布；只在 docker 网络内暴露给 frontend/Caddy
     ports: !reset []
+
+  worker:
+    image: *backend-image
+    build: !reset null
+    environment: *cloud-env
 
   frontend:
     image: ghcr.io/${GHCR_REPO}/fishstudio-frontend:${IMAGE_TAG:-latest}

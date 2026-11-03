@@ -66,8 +66,11 @@ async def lifespan(app: FastAPI):
 
         worker_task = asyncio.create_task(run_worker())
         logger.info("🧵 embedded generation worker started")
+    # 多进程/多副本时 WebSocket 广播经 Redis 转发（未配置 REDIS_URL 则仅进程内）
+    await manager.start_relay()
     yield
     # shutdown
+    await manager.stop_relay()
     if worker_task is not None:
         worker_task.cancel()
         try:
