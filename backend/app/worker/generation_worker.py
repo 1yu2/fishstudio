@@ -28,6 +28,7 @@ from app.services import (
     asset_service,
     job_event_service,
     job_service,
+    media_probe,
     model_invocation_service,
     provider_circuit_service,
     timeline_renderer,
@@ -669,6 +670,7 @@ async def _finish_job(
                 ),
             },
         )
+        await media_probe.attach_l1_check(artifact, asset_service.STORAGE_DIR / storage_key, job.params or {})
         artifact_id = artifact.id
         url = asset_service.artifact_url(artifact)
         shot_id = (job.params or {}).get("shot_id") or job.shot_id
@@ -811,6 +813,7 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
             mime_type="image/png",
             meta={"prompt": req.prompt, "mocked": mocked},
         )
+        await media_probe.attach_l1_check(artifact, asset_service.STORAGE_DIR / sk, job.params or {})
         artifact_ids.append(artifact.id)
         storage_keys.append(sk)
         shot_id = (job.params or {}).get("shot_id") or job.shot_id
