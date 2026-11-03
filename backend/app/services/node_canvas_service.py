@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Artifact, GenerationJob, ModelRoute, NodeCanvas, SeriesProject, User
-from app.services import asset_service, budget_service, job_service, series_service
+from app.services import asset_service, budget_service, feedback_service, job_service, series_service
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +142,11 @@ class Graph(BaseModel):
 
 
 async def save_graph(
-    session: AsyncSession, canvas: NodeCanvas, graph: dict[str, Any], revision: int
+    session: AsyncSession,
+    canvas: NodeCanvas,
+    graph: dict[str, Any],
+    revision: int,
+    user_id: Optional[int] = None,
 ) -> NodeCanvas:
     if revision != canvas.revision:
         raise CanvasConflict("画布已在其他窗口更新，请刷新后再编辑")
@@ -156,10 +160,77 @@ async def save_graph(
     if len(ids) != len(normalized.nodes):
         raise CanvasError("节点 id 重复")
     normalized.edges = [edge for edge in normalized.edges if edge.source in ids and edge.target in ids]
+    old_selected = _selected_map(canvas.graph)
     canvas.graph = normalized.model_dump(mode="json", exclude_none=True)
     canvas.revision += 1
     await session.flush()
+    new_selected = _selected_map(canvas.graph)
+    for node_id, artifact_id in new_selected.items():
+        if old_selected.get(node_id) != artifact_id:
+            await _safe_feedback(session, canvas, "selected", user_id=user_id, artifact_id=artifact_id)
     return canvas
+
+
+def _selected_map(graph: Optional[dict[str, Any]]) -> dict[str, str]:
+    """节点 id → 当前选中的 artifact_id（没选中的节点不出现）。"""
+    result: dict[str, str] = {}
+    for node in (graph or {}).get("nodes", []):
+        selected = (node.get("data") or {}).get("selected")
+        if isinstance(selected, str) and selected:
+            result[node.get("id")] = selected
+    return result
+
+
+async def _safe_feedback(
+    session: AsyncSession,
+    canvas: NodeCanvas,
+    action: str,
+    *,
+    user_id: Optional[int],
+    artifact_id: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> None:
+    """写画布反馈；给了 node_id 时先查该节点已有的成功结果再记在它身上。
+
+    为反馈做的查询和写入都在同一个 savepoint 里：任何失败只回滚 savepoint 并记日志，
+    不会让外层事务进入 aborted 状态，也就不会阻断保存 / 建任务 / 上传主流程。
+    """
+    try:
+        async with session.begin_nested():
+            target = artifact_id
+            if node_id is not None:
+                target = await _existing_result_id(session, canvas, node_id)
+            if not target:
+                return
+            await feedback_service.record_canvas_feedback(
+                session, canvas=canvas, artifact_id=target, user_id=user_id, action=action
+            )
+    except Exception:
+        logger.warning("画布反馈写入失败（已忽略）：canvas=%s action=%s", canvas.id, action, exc_info=True)
+
+
+async def _existing_result_id(session: AsyncSession, canvas: NodeCanvas, node_id: str) -> Optional[str]:
+    """节点已有的成功生成结果：优先当前选中的，否则最新的；没有则返回 None。须在 savepoint 内调用。"""
+    rows = (
+        (
+            await session.execute(
+                select(Artifact.id)
+                .join(GenerationJob, Artifact.job_id == GenerationJob.id)
+                .where(
+                    Artifact.project_id == canvas.project_id,
+                    GenerationJob.status == "succeeded",
+                    GenerationJob.params["canvas_node_id"].astext == node_id,
+                )
+                .order_by(Artifact.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return None
+    selected = _selected_map(canvas.graph).get(node_id)
+    return selected if selected in rows else rows[0]
 
 
 async def update_meta(
@@ -305,6 +376,20 @@ async def _reserve_budget(session: AsyncSession, canvas: NodeCanvas, estimate: D
 
 
 async def run_node(
+    session: AsyncSession,
+    canvas: NodeCanvas,
+    node_id: str,
+    req: NodeRunRequest,
+    user_id: Optional[int] = None,
+) -> GenerationJob:
+    """创建节点生成任务；节点此前已有成功结果时，任务创建成功后记一条 regenerated 反馈。"""
+    job = await _create_node_job(session, canvas, node_id, req)
+    # 新任务尚未成功，不会被当作“已有结果”，所以建完再查也只会命中此前的成功结果
+    await _safe_feedback(session, canvas, "regenerated", user_id=user_id, node_id=node_id)
+    return job
+
+
+async def _create_node_job(
     session: AsyncSession, canvas: NodeCanvas, node_id: str, req: NodeRunRequest
 ) -> GenerationJob:
     from app.providers.pricing import PRICE_TABLE_VERSION
@@ -483,7 +568,14 @@ async def node_runs(session: AsyncSession, canvas: NodeCanvas) -> dict[str, Any]
 
 
 async def upload(
-    session: AsyncSession, canvas: NodeCanvas, *, node_id: str, filename: str, content_type: str, data: bytes
+    session: AsyncSession,
+    canvas: NodeCanvas,
+    *,
+    node_id: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    user_id: Optional[int] = None,
 ) -> Artifact:
     kind = UPLOAD_MIME.get((content_type or "").lower()) or UPLOAD_MIME.get(
         mimetypes.guess_type(filename)[0] or ""
@@ -497,7 +589,7 @@ async def upload(
     target = STORAGE_DIR / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
-    return await asset_service.create_artifact(
+    artifact = await asset_service.create_artifact(
         session,
         project_id=canvas.project_id,
         type=kind,
@@ -505,6 +597,9 @@ async def upload(
         mime_type=content_type or mimetypes.guess_type(filename)[0] or "",
         meta={"source": "canvas_upload", "canvas_node_id": node_id, "filename": filename[:200]},
     )
+    # 上传产物没有 job，不会被当作“已有生成结果”
+    await _safe_feedback(session, canvas, "replaced", user_id=user_id, node_id=node_id)
+    return artifact
 
 
 async def available_models(session: AsyncSession) -> dict[str, Any]:
