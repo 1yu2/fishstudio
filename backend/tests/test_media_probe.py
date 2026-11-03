@@ -174,18 +174,20 @@ def test_checks():
         {"ok": None, "error": "ffprobe unavailable"},
     ],
 )
-async def test_attach_merges_metadata(monkeypatch, tmp_path, probe, caplog):
+async def test_attach_merges_metadata(monkeypatch, tmp_path, probe):
     from app.db.models import Artifact
 
     original = {"prompt": "keep me", "provider": "mock"}
     artifact = Artifact(type="image", storage_key="image.png", artifact_metadata=original)
     monkeypatch.setattr(media_probe, "probe_media", AsyncMock(return_value=probe))
-    with caplog.at_level("INFO", logger=media_probe.__name__):
-        await media_probe.attach_l1_check(artifact, tmp_path / "image.png", {})
+    # 其他测试的日志初始化可能关闭传播，caplog 不稳定；直接截获 logger 调用
+    log_info = Mock()
+    monkeypatch.setattr(media_probe.logger, "info", log_info)
+    await media_probe.attach_l1_check(artifact, tmp_path / "image.png", {})
     assert artifact.artifact_metadata is not original
     assert artifact.artifact_metadata["prompt"] == "keep me"
     assert "l1_check" not in original
     assert artifact.artifact_metadata["l1_check"]["probe"] == probe
     expected_ok = None if probe["ok"] is None else probe["width"] >= 480
     assert artifact.artifact_metadata["l1_check"]["ok"] is expected_ok
-    assert "Artifact L1 check" in caplog.text
+    assert "Artifact L1 check" in log_info.call_args.args[0]
