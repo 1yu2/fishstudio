@@ -50,6 +50,10 @@ PRICE_TABLE: dict[tuple[str, str, str], dict] = {
     ("volcano", "doubao-seedance-1-0-pro-fast-251015", "*"): {
         "output_per_million_tokens": Decimal("4.20"),
     },
+    # Seedance 2.0 mini（参考图/首尾帧能力）：23 元 / 百万 Token（无输入视频），2026-11 实测核实。
+    ("volcano", "doubao-seedance-2-0-mini-260615", "*"): {
+        "output_per_million_tokens": Decimal("23"),
+    },
     # 以下 1.5 Pro 条目不在官方刊例中（0.50/秒为未核实占位价），仅为历史 Job 的重估保留。
     ("volcano", "doubao-seedance-1-5-pro", "*"): {
         "output_per_second": Decimal("0.50"),
@@ -60,11 +64,31 @@ PRICE_TABLE: dict[tuple[str, str, str], dict] = {
 }
 
 # 图片单价表（CNY/张）。(provider, model) -> 单张价。
-# 火山 Seedream 4.5 官方刊例 0.25 元/张（2026-11 核实）；
+# 默认图片模型 doubao-seedream-5-0-flash-260915 官方刊例 0.12 元/张（2026-11 实测核实）；
+# Seedream 4.5（0.25 元/张）账号不可用，条目仅为历史 Job 的重估保留。
 # mock 图片不计费（不在表中，estimate_image_cost 返回 None，调用方按 0 处理）。
+DEFAULT_VOLCANO_IMAGE_MODEL = "doubao-seedream-5-0-flash-260915"
+
 IMAGE_PRICE_TABLE: dict[tuple[str, str], Decimal] = {
+    ("volcano_image", DEFAULT_VOLCANO_IMAGE_MODEL): Decimal("0.12"),
     ("volcano_image", "seedream-4.5"): Decimal("0.25"),
 }
+
+
+def env_image_price() -> Optional[Decimal]:
+    """VOLCANO_IMAGE_PRICE_CNY（每张）：配置的模型不在价格表时的兜底单价（如自建推理接入点 ep-...）。
+
+    未配置或非法/非正数返回 None，调用方仍按 unavailable 处理，绝不当作 0。
+    """
+    raw = os.getenv("VOLCANO_IMAGE_PRICE_CNY", "").strip()
+    if not raw:
+        return None
+    try:
+        value = Decimal(raw)
+    except InvalidOperation:
+        return None
+    return value if value > 0 else None
+
 
 # 音色创建价格（按次）。(provider) -> 每次价格。
 VOICE_ENROLL_PRICE: dict[str, Decimal] = {
@@ -76,6 +100,8 @@ VOICE_ENROLL_PRICE: dict[str, Decimal] = {
 def estimate_image_cost(provider: str, model: str, *, count: int = 1) -> Optional[Decimal]:
     """图片成本估算（CNY）。无价格条目返回 None（调用方需兜底，不得按 0 计费入账）。"""
     unit = IMAGE_PRICE_TABLE.get((provider, model))
+    if unit is None and provider == "volcano_image":
+        unit = env_image_price()
     if unit is None:
         return None
     return (unit * count).quantize(Decimal("0.000001"))
@@ -179,13 +205,18 @@ def estimate_video_cost(
 # 按 Token 计费的视频模型（如方舟 Seedance）：tokens ≈ 宽 × 高 × 帧率 × 秒数 / 1024。
 # 各画幅下像素数接近，按分辨率档位取 16:9 的像素数估算；实际用量以厂商返回的 usage 为准。
 _PIXELS_BY_RESOLUTION = {"480p": 854 * 480, "720p": 1280 * 720, "1080p": 1920 * 1080}
+# 安全余量：2026-11 实测方舟 Token 数（480p 9:16）1.0 pro-fast 2s = 19,845、2.0 mini 4s = 40,594
+# （输出 496x864、97 帧 = 24*4+1）。方舟多算 1 帧且 9:16 像素略多于 854x480，
+# 估算加 1 帧并乘 1.05，保证 ≥ 实测值，避免预算预留偏低。
+_VIDEO_TOKEN_SAFETY_MARGIN = Decimal("1.05")
 
 
 def estimate_video_tokens(resolution: str, duration: float, *, fps: int = 24) -> Optional[int]:
     pixels = _PIXELS_BY_RESOLUTION.get((resolution or "").lower())
     if pixels is None:
         return None
-    return int(pixels * fps * float(duration) / 1024)
+    frames = fps * Decimal(str(duration)) + 1
+    return int(pixels * frames / 1024 * _VIDEO_TOKEN_SAFETY_MARGIN)
 
 
 def estimate_video_cost_from_entry(

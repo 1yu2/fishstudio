@@ -13,6 +13,7 @@ import requests
 
 from app.providers.base import ProviderResult
 from app.providers.image_base import ImageGenerationRequest, ImageProvider
+from app.providers.pricing import DEFAULT_VOLCANO_IMAGE_MODEL
 from app.tools.volcano_image_generation import (
     download_and_save_image,
     parse_size,
@@ -47,7 +48,7 @@ class VolcanoImageProvider(ImageProvider):
     @classmethod
     def from_legacy_env(cls, purpose: str = "image_generation") -> "VolcanoImageProvider":
         """仅在数据库没有图片配置时使用的旧 env 兼容入口。"""
-        generation_model = os.getenv("VOLCANO_IMAGE_MODEL", "seedream-4.5").strip()
+        generation_model = os.getenv("VOLCANO_IMAGE_MODEL", DEFAULT_VOLCANO_IMAGE_MODEL).strip()
         model_name = (
             os.getenv("VOLCANO_EDIT_MODEL", generation_model).strip()
             if purpose == "image_edit"

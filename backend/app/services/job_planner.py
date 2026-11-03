@@ -448,8 +448,9 @@ async def plan_shot_image_jobs(
     policy = _run_policy(run)
     candidate_count = int(policy.get("candidate_count", 1))
     from app.providers.pricing import estimate_image_cost
+    from app.tools import volcano_image_generation as vig
 
-    unit_price = estimate_image_cost("volcano_image", "seedream-4.5", count=1)
+    unit_price = estimate_image_cost("volcano_image", vig.VOLCANO_IMAGE_MODEL, count=1)
     estimated = (unit_price or Decimal("0.20")) * candidate_count * len(shots)
     if not await _cost_quote_still_valid(session, run):
         step.status = "failed"

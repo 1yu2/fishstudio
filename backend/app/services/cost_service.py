@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BudgetAlert, StoryboardRevision, WorkflowRun, WorkflowStep
 from app.providers.pricing import (
+    DEFAULT_VOLCANO_IMAGE_MODEL,
     PRICE_TABLE_VERSION,
     TTS_PRICE_PER_10K_CHARS,
     estimate_image_cost,
@@ -53,13 +54,13 @@ def _resolve_image_provider_model() -> tuple[str, str]:
     providers = available_image_providers()
     if providers:
         p = providers[0]
-        model = "seedream-4.5"
+        model = DEFAULT_VOLCANO_IMAGE_MODEL
         if isinstance(p, VolcanoImageProvider):
             from app.tools import volcano_image_generation as vig
 
             model = vig.VOLCANO_IMAGE_MODEL
         return p.name, model
-    return "volcano_image", "seedream-4.5"
+    return "volcano_image", DEFAULT_VOLCANO_IMAGE_MODEL
 
 
 def _image_unit_price() -> Optional[Decimal]:
@@ -547,7 +548,7 @@ def estimate_job_retry_cost(job: Any) -> Decimal:
     if job.operation == "generate_image":
         return estimate_image_cost(
             job.provider or "volcano_image",
-            job.model or "seedream-4.5",
+            job.model or DEFAULT_VOLCANO_IMAGE_MODEL,
             count=int(params.get("candidate_count", 1)),
         ) or Decimal("0")
     if job.operation == "tts":
