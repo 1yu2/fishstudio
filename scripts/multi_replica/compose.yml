@@ -1,0 +1,46 @@
+# 0.1 multi-replica check: 2 API replicas (uvicorn --workers 2 each) + 2 workers, mock providers only.
+# Build: docker build -t fishstudio-backend:mr backend
+# Run:   docker compose -f scripts/multi_replica/compose.yml up -d
+#        python scripts/multi_replica/verify.py && python scripts/multi_replica/failover.py
+# Clean: docker compose -f scripts/multi_replica/compose.yml down -v
+name: fs-mr
+x-be: &be
+  image: fishstudio-backend:mr
+  environment: &env
+    DATABASE_URL: postgresql+asyncpg://postgres:postgres@pg:5432/fishstudio
+    REDIS_URL: redis://redis:6379/0
+    JWT_SECRET: mr-test-jwt-secret-0123456789
+    ADMIN_USERNAME: admin
+    ADMIN_PASSWORD: mr-admin-pass
+    CORS_ORIGINS: http://localhost
+    ENVIRONMENT: dev
+    EMBEDDED_WORKER: "false"
+    ALLOW_MOCK_PROVIDERS: "true"
+    LOG_LEVEL: INFO
+  volumes: [storage:/app/storage]
+  depends_on:
+    pg: {condition: service_healthy}
+    redis: {condition: service_healthy}
+services:
+  pg:
+    image: postgres:16-alpine
+    environment: {POSTGRES_PASSWORD: postgres, POSTGRES_DB: fishstudio}
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 2s, retries: 20}
+  redis:
+    image: redis:7-alpine
+    healthcheck: {test: ["CMD", "redis-cli", "ping"], interval: 2s, retries: 20}
+  api1:
+    <<: *be
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    ports: ["127.0.0.1:18101:8000"]
+  api2:
+    <<: *be
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    ports: ["127.0.0.1:18102:8000"]
+  worker:
+    <<: *be
+    command: ["python", "-m", "app.worker.generation_worker"]
+    healthcheck: {disable: true}
+    deploy: {replicas: 2}
+volumes:
+  storage:

@@ -5,11 +5,12 @@
 
 import json
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
 import asyncpg
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
@@ -22,6 +23,11 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 LEGACY_HISTORY = BACKEND_DIR / "storage" / "chat_history.json"
 LEGACY_SETTINGS = BACKEND_DIR / "storage" / "settings.json"
+
+# 启动初始化的 PG advisory lock key。多副本 / uvicorn --workers N 同时启动时，
+# 并发执行 alembic 建表会撞 pg_type 唯一约束、并发 upsert admin 会撞唯一键，
+# 失败的进程直接退出。持锁串行化：后到的进程拿到锁时 schema 已是 head，迁移空跑。
+STARTUP_LOCK_KEY = 7_310_000_000
 
 
 # ─────────────────────────────────────────
@@ -91,6 +97,25 @@ async def init_db() -> None:
     # 0) 保证库存在
     await _ensure_database_exists()
 
+    async with _startup_lock():
+        await _init_schema_and_data(settings)
+
+
+@asynccontextmanager
+async def _startup_lock():
+    """会话级 advisory lock：独占一条连接，退出时显式释放（连接断开也会自动释放）。"""
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": STARTUP_LOCK_KEY})
+        await conn.commit()
+        logger.info("🔒 startup lock acquired")
+        try:
+            yield
+        finally:
+            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": STARTUP_LOCK_KEY})
+            await conn.commit()
+
+
+async def _init_schema_and_data(settings) -> None:
     # 1) 通过 alembic 管理 schema（兼容老库自动 stamp）
     try:
         await bootstrap_and_upgrade()
