@@ -119,6 +119,9 @@ class ArkVideoProvider(VideoProvider):
             return False
         if req.reference_videos or req.reference_audios or req.source_video:
             return False
+        # 方舟不允许参考图与首/尾帧混用（400 InvalidParameter），路由阶段直接拒绝。
+        if req.reference_images and (req.first_frame or req.last_frame):
+            return False
         return len(req.reference_images) <= self.max_reference_images
 
     # ── 请求构造 ───────────────────────────────────────────────────────────

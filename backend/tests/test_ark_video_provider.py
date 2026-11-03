@@ -318,8 +318,8 @@ def test_ark_config_validation(config, capabilities, message):
 
 
 def test_token_pricing():
-    assert estimate_video_tokens("720p", 5) == 108000
-    assert estimate_video_tokens("480p", 5) == 48037
+    assert estimate_video_tokens("720p", 5) == 114345
+    assert estimate_video_tokens("480p", 5) == 50859
     assert estimate_video_tokens("768P", 5) is None
 
     entry = pricing_entry({"output_per_million_tokens": "15"})
@@ -373,6 +373,6 @@ def test_route_plan_prices_seedance_by_tokens_per_tier(monkeypatch):
     preview = _run(video_module.resolve_video_plan(None, duration=5, tier="preview"))
 
     assert (final["resolution"], final["protocol"]) == ("720p", "ark_v3")
-    assert final["estimated_total_cost"] == Decimal("1.620000")
+    assert final["estimated_total_cost"] == Decimal("1.715175")
     assert preview["resolution"] == "480p"
-    assert preview["estimated_total_cost"] == Decimal("0.720555")
+    assert preview["estimated_total_cost"] == Decimal("0.762885")

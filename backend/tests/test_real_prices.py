@@ -31,7 +31,9 @@ def _run(coro):
 
 def _expected(resolution: str, seconds: int) -> Decimal:
     pixels = {"480p": 854 * 480, "720p": 1280 * 720, "1080p": 1920 * 1080}[resolution]
-    tokens = int(pixels * 24 * seconds / 1024)
+    # 与 estimate_video_tokens 一致：(fps*秒 + 1) 帧，再乘 1.05 安全余量
+    tokens = estimate_video_tokens(resolution, seconds)
+    assert tokens == int(pixels * (24 * seconds + 1) / 1024 * 1.05)
     return (PER_MILLION * tokens / Decimal(1_000_000)).quantize(Decimal("0.000001"))
 
 
@@ -49,9 +51,9 @@ def test_fast_model_token_cost_matches_formula(resolution):
 
 def test_fast_model_per_second_reference_values():
     per_second = {r: _expected(r, 1) for r in ("480p", "720p", "1080p")}
-    assert round(per_second["480p"], 4) == Decimal("0.0403")
-    assert round(per_second["720p"], 4) == Decimal("0.0907")
-    assert round(per_second["1080p"], 4) == Decimal("0.2041")
+    assert round(per_second["480p"], 4) == Decimal("0.0441")
+    assert round(per_second["720p"], 4) == Decimal("0.0992")
+    assert round(per_second["1080p"], 4) == Decimal("0.2233")
 
 
 def test_unknown_resolution_falls_back_to_720p_for_token_pricing():
@@ -215,8 +217,72 @@ def test_estimate_job_retry_cost_for_token_priced_video():
 
 
 def test_seedream_price():
+    # 旧 4.5 条目保留供历史 Job 重估
     assert estimate_image_cost("volcano_image", "seedream-4.5", count=1) == Decimal("0.250000")
     assert estimate_image_cost("volcano_image", "seedream-4.5", count=4) == Decimal("1.000000")
+
+
+FLASH_IMAGE = "doubao-seedream-5-0-flash-260915"
+
+
+def test_default_image_model_constant_and_price():
+    assert pricing.DEFAULT_VOLCANO_IMAGE_MODEL == FLASH_IMAGE
+    assert estimate_image_cost("volcano_image", FLASH_IMAGE, count=3) == Decimal("0.360000")
+
+
+def test_image_default_model_used_everywhere(monkeypatch):
+    from app.providers.volcano_image import VolcanoImageProvider
+    from app.tools import volcano_image_generation as vig
+
+    monkeypatch.delenv("VOLCANO_IMAGE_MODEL", raising=False)
+    monkeypatch.setenv("VOLCANO_API_KEY", "test-key")
+    assert vig.VOLCANO_IMAGE_MODEL == FLASH_IMAGE
+    assert VolcanoImageProvider.from_legacy_env().model_name == FLASH_IMAGE
+    monkeypatch.setenv("VOLCANO_IMAGE_MODEL", "ep-custom")
+    assert VolcanoImageProvider.from_legacy_env().model_name == "ep-custom"
+
+
+def test_unknown_image_model_unavailable_without_env_price(monkeypatch):
+    monkeypatch.delenv("VOLCANO_IMAGE_PRICE_CNY", raising=False)
+    assert estimate_image_cost("volcano_image", "ep-20260101-abc", count=1) is None
+    monkeypatch.setenv("VOLCANO_IMAGE_PRICE_CNY", "not-a-number")
+    assert estimate_image_cost("volcano_image", "ep-20260101-abc", count=1) is None
+    monkeypatch.setenv("VOLCANO_IMAGE_PRICE_CNY", "0")
+    assert estimate_image_cost("volcano_image", "ep-20260101-abc", count=1) is None
+
+
+def test_env_image_price_is_fallback_only(monkeypatch):
+    monkeypatch.setenv("VOLCANO_IMAGE_PRICE_CNY", "0.30")
+    assert estimate_image_cost("volcano_image", "ep-20260101-abc", count=2) == Decimal("0.600000")
+    # 价格表中的模型仍用官方价，不被环境变量覆盖
+    assert estimate_image_cost("volcano_image", FLASH_IMAGE, count=1) == Decimal("0.120000")
+    # 不影响其它 provider
+    assert estimate_image_cost("mock_image", "x", count=1) is None
+
+
+def _bootstrap_image_pricing(monkeypatch, **env):
+    from app.services import model_deployment_bootstrap as bootstrap
+
+    for name in ("VOLCANO_IMAGE_MODEL", "VOLCANO_IMAGE_PRICE_CNY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("VOLCANO_API_KEY", "test-key")
+    monkeypatch.setattr(bootstrap, "mock_providers_enabled", lambda: False)
+    return next(i.payload for i in bootstrap.legacy_deployment_specs() if i.payload.slug == "volcano-image")
+
+
+def test_bootstrap_image_deployment_default_model_and_price(monkeypatch):
+    payload = _bootstrap_image_pricing(monkeypatch)
+    assert payload.model == FLASH_IMAGE
+    assert payload.pricing["output_per_image"] == "0.12"
+
+
+def test_bootstrap_image_deployment_endpoint_uses_env_price_or_empty(monkeypatch):
+    payload = _bootstrap_image_pricing(monkeypatch, VOLCANO_IMAGE_MODEL="ep-1")
+    assert payload.pricing == {}
+    payload = _bootstrap_image_pricing(monkeypatch, VOLCANO_IMAGE_MODEL="ep-1", VOLCANO_IMAGE_PRICE_CNY="0.3")
+    assert payload.pricing["output_per_image"] == "0.3"
 
 
 # ── TTS ──────────────────────────────────────────────────────────────────
@@ -382,8 +448,247 @@ def test_qwen_tts_bootstrap_deployment(monkeypatch):
     assert entry["source"] == "aliyun-bailian-2026-11"
 
 
-def test_seedance_estimate_tokens_unchanged():
-    assert estimate_video_tokens("720P", 5) == 108000
+def test_seedance_estimate_tokens_has_frame_and_safety_margin():
+    # (fps*秒 + 1) 帧 × 像素 / 1024 × 1.05
+    assert estimate_video_tokens("720P", 5) == int(1280 * 720 * 121 / 1024 * 1.05)
+    # 不低于 2026-11 方舟实测用量（480p 9:16）
+    assert estimate_video_tokens("480p", 2) >= 19_845
+    assert estimate_video_tokens("480p", 4) >= 40_594
+
+
+# ── Seedance 2.0 mini（参考图）部署 ───────────────────────────────────────
+
+MINI_MODEL = "doubao-seedance-2-0-mini-260615"
+
+
+def _bootstrap_specs(monkeypatch, **env):
+    from app.services import model_deployment_bootstrap as bootstrap
+
+    for name in ("VOLCANO_VIDEO_MODEL", "VOLCANO_USE_DMXAPI", "VOLCANO_REFERENCE_VIDEO_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("VOLCANO_API_KEY", "test-key")
+    monkeypatch.setenv("VOLCANO_BASE_URL", env.get("VOLCANO_BASE_URL", "https://ark.test/api/v3"))
+    monkeypatch.setattr(bootstrap, "mock_providers_enabled", lambda: False)
+    return {item.payload.slug: item.payload for item in bootstrap.legacy_deployment_specs()}
+
+
+def test_bootstrap_reference_deployment(monkeypatch):
+    specs = _bootstrap_specs(monkeypatch)
+    payload = specs["volcano-video-reference"]
+    assert (payload.driver, payload.model, payload.priority) == ("ark_video", MINI_MODEL, 125)
+    assert specs["volcano-video"].priority == 120
+    # 校验后会补齐 aspect_ratios 默认值，这里只断言显式声明的能力
+    assert {
+        key: payload.capabilities[key]
+        for key in ("modes", "min_duration", "max_duration", "resolutions", "max_reference_images")
+    } == {
+        "modes": ["text", "first_frame", "first_last_frame", "reference"],
+        "min_duration": 4,
+        "max_duration": 15,
+        "resolutions": ["480p", "720p"],
+        "max_reference_images": 9,
+    }
+    assert pricing.pricing_entry(payload.pricing)["output_per_million_tokens"] == Decimal("23")
+    assert payload.pricing["source"] == "volcengine-ark-2026-11"
+
+
+def test_bootstrap_reference_deployment_env_override_and_opt_out(monkeypatch):
+    specs = _bootstrap_specs(monkeypatch, VOLCANO_REFERENCE_VIDEO_MODEL="custom-mini")
+    assert specs["volcano-video-reference"].model == "custom-mini"
+    specs = _bootstrap_specs(monkeypatch, VOLCANO_REFERENCE_VIDEO_MODEL="")
+    assert "volcano-video-reference" not in specs
+    assert "volcano-video" in specs
+
+
+def test_bootstrap_reference_deployment_skipped_for_dmxapi_and_without_key(monkeypatch):
+    from app.services import model_deployment_bootstrap as bootstrap
+
+    specs = _bootstrap_specs(monkeypatch, VOLCANO_USE_DMXAPI="true")
+    assert "volcano-video-reference" not in specs
+    specs = _bootstrap_specs(monkeypatch, VOLCANO_BASE_URL="https://www.dmxapi.cn/v1")
+    assert "volcano-video-reference" not in specs
+    monkeypatch.delenv("VOLCANO_API_KEY")
+    assert "volcano-video-reference" not in {i.payload.slug for i in bootstrap.legacy_deployment_specs()}
+
+
+def test_mini_price_table_entry():
+    assert pricing.PRICE_TABLE[("volcano", MINI_MODEL, "*")] == {"output_per_million_tokens": Decimal("23")}
+    # 实测 4s/480p 40,594 Token -> 0.933662 元
+    cost = estimate_video_cost("volcano", MINI_MODEL, "480p", output_seconds=4)
+    assert cost == (Decimal(23) * estimate_video_tokens("480p", 4) / Decimal(1_000_000)).quantize(
+        Decimal("0.000001")
+    )
+
+
+def _mini_and_fast_providers(monkeypatch):
+    specs = _bootstrap_specs(monkeypatch)
+    providers = {}
+    for slug, payload in specs.items():
+        if slug in {"volcano-video", "volcano-video-reference"}:
+            providers[slug] = ArkVideoProvider(
+                api_key="k",
+                base_url="https://ark.test/api/v3",
+                model_name=payload.model,
+                deployment_name=slug,
+                capabilities=dict(payload.capabilities),
+            )
+    return specs, providers
+
+
+def test_reference_deployment_validates_against_ark_schemas(monkeypatch):
+    from app.model_runtime.deployment_config import ArkVideoCapabilities, ArkVideoConfig
+
+    payload = _bootstrap_specs(monkeypatch)["volcano-video-reference"]
+    ArkVideoCapabilities.model_validate(payload.capabilities)
+    ArkVideoConfig.model_validate(payload.config)
+
+
+def test_routing_between_fast_and_mini(monkeypatch):
+    from app.model_runtime import video as video_module
+    from app.model_runtime.catalog import CatalogDeployment, CatalogSnapshot
+    from app.services import model_route_service
+
+    specs, providers = _mini_and_fast_providers(monkeypatch)
+    items = {}
+    for slug, provider in providers.items():
+        payload = specs[slug]
+        items[slug] = CatalogDeployment(
+            id=slug,
+            slug=slug,
+            name=payload.name,
+            driver="ark_video",
+            modality="video",
+            model=payload.model,
+            base_url="https://ark.test/api/v3",
+            enabled=True,
+            priority=payload.priority,
+            capabilities=MappingProxyType(dict(payload.capabilities)),
+            pricing=MappingProxyType(dict(payload.pricing)),
+            revision=1,
+            config_hash="h",
+            instance=provider,
+        )
+    snapshot = CatalogSnapshot(MappingProxyType(items), "rev", datetime.now(timezone.utc))
+    monkeypatch.setattr(video_module, "get_catalog", lambda: SimpleNamespace(snapshot=snapshot))
+    route = SimpleNamespace(
+        purpose="shot_video",
+        tier="final",
+        modality="video",
+        primary_deployment="volcano-video",
+        fallback_deployments=["volcano-video-reference"],
+        enabled=True,
+        revision=1,
+    )
+
+    async def _effective(session, purpose, tier="final"):
+        return route
+
+    monkeypatch.setattr(model_route_service, "get_effective_route", _effective)
+
+    def pick(**kwargs):
+        return _run(video_module.resolve_video_plan(None, **kwargs))["deployment_name"]
+
+    assert pick(duration=5, mode="text") == "volcano-video"
+    assert pick(duration=5, mode="first_frame") == "volcano-video"
+    assert pick(duration=5, mode="reference", reference_count=2) == "volcano-video-reference"
+    assert pick(duration=5, mode="first_last_frame") == "volcano-video-reference"
+    # 参考图 + 首帧混用：两个部署都拒绝，路由阶段报错，不会走到 provider
+    with pytest.raises(video_module.VideoRoutingError):
+        pick(duration=5, mode="first_frame", reference_count=2)
+
+
+def test_ark_supports_rejects_reference_mixed_with_frames(monkeypatch):
+    _, providers = _mini_and_fast_providers(monkeypatch)
+    mini = providers["volcano-video-reference"]
+    ref = VideoGenerationRequest(mode="reference", prompt="x", reference_images=["a", "b"], duration=5)
+    mixed = VideoGenerationRequest(
+        mode="reference", prompt="x", reference_images=["a"], first_frame="f", duration=5
+    )
+    assert mini.supports(ref, model=MINI_MODEL)
+    assert not mini.supports(mixed, model=MINI_MODEL)
+
+
+class _FakeResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _RouteSession:
+    def __init__(self, route, slugs=()):
+        self.route = route
+        self.slugs = list(slugs)
+        self.added = []
+
+    async def execute(self, statement):
+        if "model_routes" in str(statement):
+            return _FakeResult(self.route)
+        # 已存在的 Deployment 视为管理员改过（revision 2），不触发旧行刷新
+        return _FakeResult(
+            [SimpleNamespace(slug=slug, revision=2, enabled=True, model="custom") for slug in self.slugs]
+        )
+
+    async def get(self, _model, _key):
+        return None
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def commit(self):
+        pass
+
+
+def _route(fallbacks):
+    return SimpleNamespace(
+        purpose="shot_video",
+        tier="final",
+        primary_deployment="volcano-video",
+        fallback_deployments=list(fallbacks),
+        revision=3,
+    )
+
+
+def test_new_video_deployment_is_appended_to_existing_route(monkeypatch):
+    from app.services import model_deployment_bootstrap as bootstrap
+
+    _bootstrap_specs(monkeypatch)
+    route = _route(["minimax-video"])
+    session = _RouteSession(route, slugs=["volcano-video", "volcano-chat", "volcano-image"])
+    inserted = _run(bootstrap.bootstrap_legacy_deployments(session))
+    assert inserted == 1
+    # 只追加，不删除/重排；revision 递增
+    assert route.fallback_deployments == ["minimax-video", "volcano-video-reference"]
+    assert route.revision == 4
+
+
+def test_existing_route_untouched_when_present_or_no_new_video(monkeypatch):
+    from app.services import model_deployment_bootstrap as bootstrap
+
+    _bootstrap_specs(monkeypatch)
+    existing = ["volcano-video", "volcano-chat", "volcano-image", "volcano-video-reference"]
+    route = _route(["volcano-video-reference"])
+    assert _run(bootstrap.bootstrap_legacy_deployments(_RouteSession(route, slugs=existing))) == 0
+    assert route.fallback_deployments == ["volcano-video-reference"]
+    assert route.revision == 3
+    # 部署缺失但 slug 已在 fallback 中：不重复追加
+    route = _route(["volcano-video-reference"])
+    session = _RouteSession(route, slugs=["volcano-video", "volcano-chat", "volcano-image"])
+    _run(bootstrap.bootstrap_legacy_deployments(session))
+    assert route.fallback_deployments == ["volcano-video-reference"]
+    assert route.revision == 3
+    # 没有现成 Route（新装）：不创建，交给 bootstrap_default_routes
+    session = _RouteSession(None, slugs=["volcano-video", "volcano-chat", "volcano-image"])
+    assert _run(bootstrap.bootstrap_legacy_deployments(session)) == 1
 
 
 async def test_execute_tts_records_actual_cost_by_characters(monkeypatch):

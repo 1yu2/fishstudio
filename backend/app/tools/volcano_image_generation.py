@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.providers.pricing import DEFAULT_VOLCANO_IMAGE_MODEL
+
 logger = logging.getLogger(__name__)
 
 # 可选：用于将下载图片统一转换到 sRGB，减少 <img> 与 canvas 渲染差异
@@ -41,7 +43,7 @@ if ENV_PATH.exists():
 # 从环境变量获取配置
 VOLCANO_API_KEY = os.getenv("VOLCANO_API_KEY", "").strip()
 VOLCANO_BASE_URL = os.getenv("VOLCANO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3").strip()
-VOLCANO_IMAGE_MODEL = os.getenv("VOLCANO_IMAGE_MODEL", "seedream-4.5").strip()
+VOLCANO_IMAGE_MODEL = os.getenv("VOLCANO_IMAGE_MODEL", DEFAULT_VOLCANO_IMAGE_MODEL).strip()
 # 若编辑模型不同，可单独配置；缺省复用生成模型
 VOLCANO_EDIT_MODEL = os.getenv("VOLCANO_EDIT_MODEL", VOLCANO_IMAGE_MODEL).strip()
 # Mock 模式配置
