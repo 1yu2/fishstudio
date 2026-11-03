@@ -1078,7 +1078,10 @@ class TestLogicalJobKey:
         class _PlanSession(_FakeSession):
             async def execute(self, stmt):
                 # _get_or_create_job 查 idempotency_key：一律不存在 → 新建
-                return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: None, all=lambda: []))
+                return SimpleNamespace(
+                    scalar_one_or_none=lambda: None,
+                    scalars=lambda: SimpleNamespace(first=lambda: None, all=lambda: []),
+                )
 
         from app.db.models import WorkflowRun, WorkflowStep
 

@@ -319,7 +319,7 @@ async def submit_video_job(
         "catalog_revision": plan.get("catalog_revision", ""),
         "route": plan.get("route", {}),
     }
-    for key in ("shot_id", "step_id", "run_id"):
+    for key in ("shot_id", "step_id", "run_id", "trace"):
         params.pop(key, None)
     estimate = (
         Decimal(str(plan["estimated_total_cost"]))
