@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
-from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -775,8 +774,8 @@ class GenerateVolcanoVideoInput(BaseModel):
     )
 
 
-@tool("generate_volcano_video", args_schema=GenerateVolcanoVideoInput)
-def generate_volcano_video_tool(
+# 旧的同步直连实现：不再注册为 Agent 工具（见 routed_video_generation.py），保留供手工调试
+def legacy_generate_volcano_video(
     prompt: str,
     duration: Optional[int] = None,
     ratio: str = "16:9",
@@ -944,8 +943,8 @@ if __name__ == "__main__":
     # 使用两张不同的图片作为首尾帧
     start_image = "/storage/images/volcano_20260316_184214_4fb190bf_马年泡泡玛特系列盲盒可爱的小马形象色彩鲜艳卡通风格立.jpg"
     end_image = "/storage/images/volcano_20260316_184214_4fb190bf_马年泡泡玛特系列盲盒可爱的小马形象色彩鲜艳卡通风格立.jpg"
-    result3 = generate_volcano_video_tool.invoke(
-        {
+    result3 = legacy_generate_volcano_video(
+        **{
             "prompt": "从城市走向北极",
             "duration": 5,
             "ratio": "16:9",
