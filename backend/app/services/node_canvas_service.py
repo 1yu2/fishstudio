@@ -114,7 +114,7 @@ async def get_canvas(session: AsyncSession, canvas_id: str, user: User) -> NodeC
 
 class GraphNode(BaseModel):
     id: str = Field(min_length=1, max_length=64)
-    type: Literal["text", "image", "video", "audio"]
+    type: Literal["text", "image", "video", "audio", "episode"]
     position: dict[str, float]
     data: dict[str, Any] = Field(default_factory=dict)
     width: Optional[float] = None
@@ -127,6 +127,43 @@ class GraphEdge(BaseModel):
     target: str
     sourceHandle: Optional[str] = None
     targetHandle: Optional[str] = None
+
+
+EPISODE_DEFAULTS: dict[str, Any] = {
+    "burn_subtitles": True,
+    "export_srt": True,
+    "bgm_artifact_id": None,
+    "bgm_volume_db": -18,
+    "ducking": True,
+    "fades": True,
+    "resolution": "720p",
+}
+EPISODE_RESOLUTIONS = ("720p", "1080p")
+
+
+def _validate_episode_data(data: dict[str, Any]) -> None:
+    """成片节点 data 的字段范围；缺省字段按默认值处理，其余字段原样保留。"""
+    for key in ("burn_subtitles", "export_srt", "ducking", "fades"):
+        if key in data and not isinstance(data[key], bool):
+            raise CanvasError(f"成片设置「{key}」必须是开关")
+    volume = data.get("bgm_volume_db", EPISODE_DEFAULTS["bgm_volume_db"])
+    if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not -40 <= volume <= 0:
+        raise CanvasError("背景音乐音量必须在 -40 到 0 dB 之间")
+    if data.get("resolution", "720p") not in EPISODE_RESOLUTIONS:
+        raise CanvasError("清晰度只支持 720p / 1080p")
+    bgm = data.get("bgm_artifact_id")
+    if bgm is not None and (not isinstance(bgm, str) or not bgm):
+        raise CanvasError("背景音乐素材不合法")
+
+
+def episode_settings(data: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """成片节点 data → 完整的成片设置（缺省字段补默认值）。"""
+    data = data or {}
+    settings = dict(EPISODE_DEFAULTS)
+    for key in settings:
+        if data.get(key) is not None:
+            settings[key] = data[key]
+    return settings
 
 
 class Graph(BaseModel):
@@ -163,6 +200,7 @@ async def save_graph(
     if len(ids) != len(normalized.nodes):
         raise CanvasError("节点 id 重复")
     normalized.edges = [edge for edge in normalized.edges if edge.source in ids and edge.target in ids]
+    await _check_episode_nodes(session, canvas, normalized)
     old_selected = _selected_map(canvas.graph)
     canvas.graph = normalized.model_dump(mode="json", exclude_none=True)
     canvas.revision += 1
@@ -172,6 +210,24 @@ async def save_graph(
         if old_selected.get(node_id) != artifact_id:
             await _safe_feedback(session, canvas, "selected", user_id=user_id, artifact_id=artifact_id)
     return canvas
+
+
+async def _check_episode_nodes(session: AsyncSession, canvas: NodeCanvas, graph: Graph) -> None:
+    """成片节点：每张画布最多一个、不接受任何连线、设置字段在范围内、背景音乐属于本画布。"""
+    episodes = [node for node in graph.nodes if node.type == "episode"]
+    if not episodes:
+        return
+    if len(episodes) > 1:
+        raise CanvasError("每张画布只能有一个成片节点")
+    episode = episodes[0]
+    if any(edge.source == episode.id or edge.target == episode.id for edge in graph.edges):
+        raise CanvasError("成片节点不接受连线：它会自动收集全部镜头")
+    _validate_episode_data(episode.data)
+    bgm = episode.data.get("bgm_artifact_id")
+    if bgm:
+        artifact = await session.get(Artifact, bgm)
+        if artifact is None or artifact.project_id != canvas.project_id or artifact.type != "audio":
+            raise CanvasError("背景音乐不属于这个画布")
 
 
 def _selected_map(graph: Optional[dict[str, Any]]) -> dict[str, str]:

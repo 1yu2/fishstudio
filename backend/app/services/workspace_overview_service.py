@@ -23,7 +23,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Artifact, GenerationJob, NodeCanvas, SeriesProject, UsageEvent, User
-from app.services import budget_service, canvas_script_service, character_library_service
+from app.services import (
+    budget_service,
+    canvas_render_service,
+    canvas_script_service,
+    character_library_service,
+)
 from app.services.cost_report_service import _effective_cost
 
 MAX_PROJECTS = 20
@@ -73,8 +78,9 @@ def _steps(
     has_script: bool,
     characters: Optional[list[dict[str, Any]]] = None,
     voice: Optional[tuple[int, int]] = None,
+    render: Optional[str] = None,
 ) -> list[dict[str, str]]:
-    """五步进度。characters 是各角色的 {name, final}；剧本看文本节点，分镜看镜头完成数，其余待后续任务补全。
+    """五步进度。render 是最新成片的状态：fresh（已渲染且素材没变）/ stale（渲染后素材变了）/ None（没渲染过）。characters 是各角色的 {name, final}；剧本看文本节点，分镜看镜头完成数，其余待后续任务补全。
 
     voice 是 (配音节点数, 已有结果的配音节点数)：有配音节点 → 全部有结果才完成；
     没有配音节点（0, 0）→ 分镜完成就算完成（配音可跳过）。不传表示不统计配音，配音永远不算完成（旧口径）。
@@ -89,7 +95,7 @@ def _steps(
         "characters": (not characters_pending) if characters else has_script,
         "storyboard": shots_total > 0 and shots_done >= shots_total,
         "voice": False,
-        "final": False,
+        "final": render == "fresh",
     }
     storyboard_done = done["storyboard"]
     if voice is not None:
@@ -104,6 +110,9 @@ def _steps(
     # 有未定稿的角色时，角色一定先于分镜 / 配音；剧本没写（直接做镜头）不强制回到剧本步骤
     if characters_pending:
         active = "characters"
+    # 剧本、角色、分镜、配音都完成后，成片是下一步（已有最新成片时它自己就是 done）
+    elif not done["final"] and all(done[key] for key in ("script", "characters", "storyboard", "voice")):
+        active = "final"
     steps: list[dict[str, str]] = []
     for key, label in STEP_LABELS:
         status = "done" if done[key] else "active" if key == active else "todo"
@@ -119,6 +128,7 @@ def _next_hint(
     shots_total: int,
     pending_characters: Optional[list[str]] = None,
     voice_pending: int = 0,
+    final_state: Optional[str] = None,
 ) -> str:
     if pending_characters:
         names = "、".join(pending_characters[:3])
@@ -133,6 +143,10 @@ def _next_hint(
         return "继续生成剩余镜头"
     if voice_pending:
         return f"还有 {voice_pending} 句台词没配音"
+    if final_state == "stale":
+        return "素材有变化，需要重新渲染"
+    if final_state in ("ready", "fresh"):
+        return "可以导出成片了"
     return "去配音"
 
 
@@ -332,14 +346,50 @@ async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
     return _Collected(jobs, costs, stats, review_by_project, failed_by_project)
 
 
-def _project_entry(canvas: Any, data: _Collected) -> dict[str, Any]:
+async def _render_states(session: AsyncSession, canvases: list[Any]) -> dict[str, str]:
+    """有成功渲染的项目 → fresh / stale（最新成功渲染的 input_hash 与当前素材算出的是否一致）。
+
+    只对渲染过成片的画布重算 EDL 哈希，其余画布不额外查询。
+    """
+    if not canvases:
+        return {}
+    rows = (
+        await session.execute(
+            select(GenerationJob.project_id, GenerationJob.params["input_hash"].astext)
+            .where(
+                GenerationJob.project_id.in_([canvas.project_id for canvas in canvases]),
+                GenerationJob.operation == "render_canvas",
+                GenerationJob.status == "succeeded",
+            )
+            .order_by(GenerationJob.created_at.desc())
+        )
+    ).all()
+    rendered: dict[str, Optional[str]] = {}
+    for project_id, input_hash in rows:
+        rendered.setdefault(project_id, input_hash)
+    states: dict[str, str] = {}
+    for canvas in canvases:
+        if canvas.project_id in rendered:
+            current = await canvas_render_service.current_input_hash(session, canvas)
+            states[canvas.project_id] = "fresh" if rendered[canvas.project_id] == current else "stale"
+    return states
+
+
+def _project_entry(canvas: Any, data: _Collected, render: Optional[str] = None) -> dict[str, Any]:
     """单个项目的概览条目（工作台列表与项目页顶栏共用）。"""
     info = data.stats[canvas.project_id]
     failed = len(data.failed_by_project.get(canvas.project_id, []))
     review = len(data.review_by_project.get(canvas.project_id, []))
     steps = _steps(
-        info["shots_done"], info["shots_total"], info["has_script"], info["characters"], info["voice"]
+        info["shots_done"],
+        info["shots_total"],
+        info["has_script"],
+        info["characters"],
+        voice=info["voice"],
+        render=render,
     )
+    final_step = next(step["status"] for step in steps if step["key"] == "final")
+    final_state = render if render == "stale" else "ready" if final_step == "active" else render
     characters_active = any(step["key"] == "characters" and step["status"] == "active" for step in steps)
     pending = [item["name"] for item in info["characters"] if not item["final"]] if characters_active else []
     return {
@@ -360,6 +410,7 @@ def _project_entry(canvas: Any, data: _Collected) -> dict[str, Any]:
             info["shots_total"],
             pending,
             info["voice"][0] - info["voice"][1],
+            final_state=final_state,
         ),
     }
 
@@ -384,7 +435,7 @@ async def project_summary(session: AsyncSession, user: User, canvas_id: str) -> 
     if canvas is None:
         return None
     data = await _collect(session, [canvas])
-    entry = _project_entry(canvas, data)
+    entry = _project_entry(canvas, data, (await _render_states(session, [canvas])).get(canvas.project_id))
     return {
         "canvas_id": entry["canvas_id"],
         "project_id": entry["project_id"],
@@ -432,7 +483,9 @@ async def overview(session: AsyncSession, user: User) -> dict[str, Any]:
         or 0
     )
 
-    projects = [_project_entry(canvas, data) for canvas in canvases[:MAX_PROJECTS]]
+    shown = list(canvases[:MAX_PROJECTS])
+    render_states = await _render_states(session, shown)
+    projects = [_project_entry(canvas, data, render_states.get(canvas.project_id)) for canvas in shown]
 
     running_jobs = [job for job in jobs if job.status in RUNNING_STATUSES]
     node_labels = {

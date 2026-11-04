@@ -26,6 +26,7 @@ from app.observability import (
 from app.routers import artifacts as artifacts_router
 from app.routers import assets as assets_router
 from app.routers import auth as auth_router
+from app.routers import canvas_render as canvas_render_router
 from app.routers import canvas_script as canvas_script_router
 from app.routers import character_library as character_library_router
 from app.routers import chat
@@ -246,6 +247,7 @@ app.include_router(workflow_router.router, prefix="/api", tags=["workflow"])
 app.include_router(workspace_router.router, prefix="/api", tags=["workspace"])
 app.include_router(character_library_router.router, prefix="/api", tags=["character-library"])
 app.include_router(canvas_script_router.router, prefix="/api", tags=["canvas-script"])
+app.include_router(canvas_render_router.router, prefix="/api", tags=["canvas-render"])
 app.include_router(model_runtime_router.router, prefix="/api", tags=["model-runtime"])
 app.include_router(eval_router.router, prefix="/api", tags=["eval"])
 

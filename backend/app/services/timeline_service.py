@@ -44,7 +44,11 @@ class AudioClip(BaseModel):
     source_out_ms: Optional[int] = Field(default=None, gt=0)
     timeline_start_ms: int = Field(ge=0)
     volume_keyframes: list[VolumeKeyframe] = Field(default_factory=list)
+    # 压低：{"enabled": true, "duck_db": 14}，在对白 / 旁白出现的区间压低该条音频（一般用于 BGM）
     ducking: dict[str, Any] = Field(default_factory=dict)
+    # BGM 首尾淡入淡出（毫秒，0 表示不淡）；BGM 比全片短时由渲染器循环、比全片长时截断
+    fade_in_ms: int = Field(default=0, ge=0)
+    fade_out_ms: int = Field(default=0, ge=0)
     edit: Literal["normal", "j_cut", "l_cut"] = "normal"
 
 
@@ -74,7 +78,7 @@ class OverlayClip(BaseModel):
 class TimelineSpec(BaseModel):
     schema_version: int = 1
     fps: int = Field(default=24, ge=1, le=120)
-    aspect_ratio: Literal["9:16", "16:9", "1:1"] = "9:16"
+    aspect_ratio: Literal["9:16", "16:9", "1:1", "4:3", "3:4", "21:9"] = "9:16"
     video_tracks: list[dict[str, Any]] = Field(default_factory=list)
     audio_tracks: list[dict[str, Any]] = Field(default_factory=list)
     subtitle_tracks: list[dict[str, Any]] = Field(default_factory=list)
