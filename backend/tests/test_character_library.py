@@ -321,6 +321,18 @@ def test_save_to_library_creates_then_updates_and_requires_final(pg):
                 canvas.id, router.SaveToLibrary(character="狐妖"), session=s, user=user
             )
             listed = await router.list_characters(canvas_id=None, session=s, user=user)
+            # 存库的来源画布：库角色视为已在本项目，不能再加入一份
+            here = await router.list_characters(canvas_id=canvas.id, session=s, user=user)
+            again = await _status(
+                router.add_from_library(
+                    canvas.id,
+                    router.FromLibrary(asset_id=second["id"], base_revision=canvas.revision),
+                    session=s,
+                    user=user,
+                )
+            )
+            assert [item["in_project"] for item in here] == [True]
+            assert again == (422, "这个角色已在本项目")
             foreign = await _status(
                 router.save_to_library(
                     canvas.id, router.SaveToLibrary(character="狐妖"), session=s, user=other

@@ -188,7 +188,15 @@ async def list_library(
             for node in (canvas.graph or {}).get("nodes", [])
             if (node.get("data") or {}).get("library_asset_id")
         }
+        in_project |= {card.id for card in cards if _saved_from_here(card, canvas)}
     return await _serialize(session, cards, user, in_project)
+
+
+def _saved_from_here(card: AssetCard, canvas: NodeCanvas) -> bool:
+    """库角色是从这个画布存进去的，且画布里还有同名角色：视为已在本项目，避免再加入一份。"""
+    if (card.profile or {}).get("source_canvas_id") != canvas.id:
+        return False
+    return card.name in character_groups(canvas.graph or {})
 
 
 async def _get_card(session: AsyncSession, asset_id: str, user: User) -> AssetCard:
@@ -361,7 +369,9 @@ async def add_from_library(
     graph = dict(canvas.graph or {})
     nodes = list(graph.get("nodes") or [])
     identity = {card.id, root_id(card)}
-    if any((node.get("data") or {}).get("library_asset_id") in identity for node in nodes):
+    if _saved_from_here(card, canvas) or any(
+        (node.get("data") or {}).get("library_asset_id") in identity for node in nodes
+    ):
         raise LibraryError("这个角色已在本项目")
     entries = _look_entries(card)
     usable = await _usable_artifacts(session, {look["artifact_id"] for look in entries}, user)
