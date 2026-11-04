@@ -262,7 +262,7 @@ async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
         graph_edges = (canvas.graph or {}).get("edges", [])
         # 角色图不是镜头，也不进“待选图”（角色定稿看角色步骤）
         character_ids = {
-            n["id"] for n in media if character_library_service.is_character_node(n, graph_edges)
+            n["id"] for n in media if character_library_service.is_character_node(n, graph_edges, nodes)
         }
         # 配音节点：台词为空的（自己没写、也没连文本节点）不计入配音步骤，也不是批量可运行的
         texts = {n["id"]: str((n.get("data") or {}).get("text") or "").strip() for n in nodes}
