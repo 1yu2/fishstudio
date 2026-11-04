@@ -38,6 +38,7 @@ from app.routers import series as series_router
 from app.routers import settings as settings_router
 from app.routers import traces as traces_router
 from app.routers import workflow as workflow_router
+from app.routers import workspace as workspace_router
 from app.services import workspace_service
 from app.services.connection_manager import manager
 from app.utils.logger import setup_logging
@@ -240,6 +241,7 @@ app.include_router(
 app.include_router(series_router.router, prefix="/api", tags=["series"])
 app.include_router(node_canvases_router.router, prefix="/api", tags=["node-canvases"])
 app.include_router(workflow_router.router, prefix="/api", tags=["workflow"])
+app.include_router(workspace_router.router, prefix="/api", tags=["workspace"])
 app.include_router(model_runtime_router.router, prefix="/api", tags=["model-runtime"])
 app.include_router(eval_router.router, prefix="/api", tags=["eval"])
 

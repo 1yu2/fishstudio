@@ -4,7 +4,7 @@ import { Avatar, AVATARS } from './ui/Avatar'
 import './PersonalizationPanel.css'
 
 const ACCENTS = [
-  { id: 'blue', label: '电光蓝', color: '#2563eb' },
+  { id: 'blue', label: '靛蓝', color: '#4f46e5' },
   { id: 'violet', label: '星云紫', color: '#7c3aed' },
   { id: 'green', label: '竹青绿', color: '#059669' },
   { id: 'orange', label: '落日橙', color: '#ea580c' },

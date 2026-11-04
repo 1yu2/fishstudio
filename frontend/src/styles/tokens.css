@@ -1,31 +1,48 @@
-/* FishStudio 设计令牌 —— B · 白昼工作室
+/* FishStudio 设计令牌 —— 浅色简洁风（#F7F7F8 底 / 白卡 / 靛蓝强调）
    浅色为默认主题；[data-theme="dark"] 为同语言的深色推导版。
    [data-accent] 主题色预设；[data-bg] 背景质感预设（body 背景在 index.css 接线）。
-   底部的旧变量别名让存量 CSS（ChatInterface/LoginPage）无需改动即可接入新主题。 */
+   底部的旧变量别名让存量 CSS（LoginPage / 节点画布 / 设置页）无需改动即可接入新主题。 */
 
 :root {
-  /* 语义色（浅色，默认） */
-  --bg: #fafaf9;
+  /* 语义色（浅色，默认；Notion / Linear 式浅色简洁风） */
+  --bg: #f7f7f8;
   --surface: #ffffff;
-  --surface-2: #f5f4f2;
-  --border: #e7e5e4;
+  --surface-2: #f1f1f3;
+  --border: #e6e6ea;
+  --border-subtle: #eeeef1;
+  --track: #eeeef1; /* 进度条底色 */
   --text-primary: #18181b;
-  --text-secondary: #78716c;
-  --text-tertiary: #a8a29e;
+  --text-secondary: #5b5b66; /* 白底 / 页面底上均满足 4.5:1 */
+  --text-tertiary: #8a8a94;
 
-  /* 点缀色（默认电光蓝；[data-accent] 覆写这三个变量） */
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: #eff6ff;
+  /* 点缀色（默认靛蓝；[data-accent] 覆写这三个变量） */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
 
-  --success: #059669;
-  --warning: #d97706;
-  --danger: #dc2626;
+  /* 主按钮：近黑底白字（与点缀色分开，点缀色只用于链接 / 选中态 / 进度） */
+  --fill-primary: #18181b;
+  --fill-primary-hover: #3f3f46;
+  --text-on-primary: #ffffff;
 
-  /* 圆角 */
+  /* 状态色：生成中 / 完成 / 失败 / 提醒，各带 soft 底色 */
+  --status-running: #2563eb;
+  --status-running-soft: #eff6ff;
+  --status-done: #15803d;
+  --status-done-soft: #f0fdf4;
+  --status-failed: #b91c1c;
+  --status-failed-soft: #fef2f2;
+  --status-warn: #92400e;
+  --status-warn-soft: #fffbeb;
+
+  --success: var(--status-done);
+  --warning: var(--status-warn);
+  --danger: var(--status-failed);
+
+  /* 圆角（卡片 12px） */
   --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 
   /* 阴影 */
   --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.05);
@@ -45,13 +62,28 @@
   --surface: #1c1d21;
   --surface-2: #26272c;
   --border: #2a2b30;
+  --border-subtle: #232428;
+  --track: #2f3036;
   --text-primary: #f4f4f5;
   --text-secondary: #a1a1aa;
   --text-tertiary: #71717a;
 
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-soft: rgba(59, 130, 246, 0.16);
+  --accent: #818cf8;
+  --accent-hover: #6366f1;
+  --accent-soft: rgba(129, 140, 248, 0.16);
+
+  --fill-primary: #f4f4f5;
+  --fill-primary-hover: #d4d4d8;
+  --text-on-primary: #18181b;
+
+  --status-running: #60a5fa;
+  --status-running-soft: rgba(96, 165, 250, 0.14);
+  --status-done: #4ade80;
+  --status-done-soft: rgba(74, 222, 128, 0.12);
+  --status-failed: #f87171;
+  --status-failed-soft: rgba(248, 113, 113, 0.14);
+  --status-warn: #fbbf24;
+  --status-warn-soft: rgba(251, 191, 36, 0.12);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
@@ -71,7 +103,7 @@
 [data-theme='dark'][data-accent='orange'] { --accent: #fb923c; --accent-hover: #f97316; --accent-soft: rgba(251, 146, 60, 0.16); }
 [data-theme='dark'][data-accent='pink']   { --accent: #f472b6; --accent-hover: #ec4899; --accent-soft: rgba(244, 114, 182, 0.16); }
 [data-theme='dark'][data-accent='cyan']   { --accent: #22d3ee; --accent-hover: #06b6d4; --accent-soft: rgba(34, 211, 238, 0.16); }
-/* blue 的深色取值已在 [data-theme='dark'] 主块中定义 */
+/* blue（默认）的取值已在主块中定义 */
 
 /* 背景质感预设（plain 为默认无图案，无需定义） */
 :root[data-bg='grid'] {

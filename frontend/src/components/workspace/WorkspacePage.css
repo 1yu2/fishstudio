@@ -1,0 +1,472 @@
+/* 工作台与“我的项目”共用的样式（ws- 前缀） */
+.ws {
+  max-width: 1280px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 28px 36px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.ws a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.ws-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ws-head h1 {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.ws-head > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ws-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.ws-muted {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.ws-head .ws-muted {
+  font-size: 13px;
+}
+
+.ws-muted-lg {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.ws-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.ws-pill b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ws-pill__bar {
+  width: 60px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+}
+
+.ws-pill__bar > span {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.ws-primary {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--fill-primary);
+  color: var(--text-on-primary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ws-primary:hover {
+  background: var(--fill-primary-hover);
+}
+
+.ws-primary:focus-visible,
+.ws-btn:focus-visible,
+.ws-btn-sm:focus-visible,
+.ws-project:focus-visible,
+.ws-item--link:focus-visible,
+.ws-grid__card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ws-btn,
+.ws-btn-sm {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ws-btn {
+  height: 32px;
+  padding: 0 14px;
+}
+
+.ws-btn-sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.ws-btn:hover,
+.ws-btn-sm:hover {
+  background: var(--surface-2);
+}
+
+.ws-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ws-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.ws-stat__value {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.ws-stat__value--running {
+  color: var(--status-running);
+}
+
+.ws-stat__value--failed {
+  color: var(--status-failed);
+}
+
+.ws-cols {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.ws-cols__main {
+  flex: 999 1 520px;
+  min-width: 0;
+}
+
+.ws-cols__side {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ws-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.ws-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ws-card__head h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ws-card__head a,
+.ws-link {
+  color: var(--accent-hover);
+  font-size: 13px;
+}
+
+.ws-card__head a:hover {
+  text-decoration: underline;
+}
+
+.ws-card__empty {
+  padding: 14px 18px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.ws-project {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ws-project:last-child,
+.ws-item:last-child {
+  border-bottom: 0;
+}
+
+.ws-project:hover,
+.ws-item--link:hover {
+  background: var(--surface-2);
+}
+
+.ws-project__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-project__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ws-project__row > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-project__title {
+  font-weight: 500;
+}
+
+.ws-cover {
+  position: relative;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 60px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.ws-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ws-cover .protected-media {
+  font-size: 0;
+}
+
+.ws-steps {
+  display: flex;
+  gap: 4px;
+}
+
+.ws-steps__seg {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.ws-steps__seg > span {
+  display: block;
+  height: 100%;
+}
+
+.ws-steps__seg--done > span {
+  background: var(--status-done);
+}
+
+.ws-steps__seg--active > span {
+  background: var(--accent);
+}
+
+.ws-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+
+.ws-item--col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 12px 18px;
+}
+
+.ws-item__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ws-item__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-failed {
+  color: var(--status-failed);
+}
+
+.ws-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+}
+
+.ws-bar > span {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--status-running);
+}
+
+.ws-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 56px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.ws-state h2 {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.ws-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ws-skeleton__row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ws-skeleton__block {
+  border-radius: var(--radius-lg);
+  background: var(--track);
+  animation: ws-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ws-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* 我的项目：卡片网格 */
+.ws-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.ws-grid__card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.ws-grid__card:hover {
+  border-color: var(--text-tertiary);
+}
+
+.ws-grid__top {
+  display: flex;
+  gap: 12px;
+}
+
+.ws-grid__top .ws-cover {
+  width: 56px;
+  height: 76px;
+}
+
+.ws-grid__meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ws-grid__meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-skeleton__block {
+    animation: none;
+  }
+}
+
+@media (max-width: 800px) {
+  .ws {
+    padding: 20px 16px;
+  }
+
+  .ws-stats,
+  .ws-skeleton__row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
