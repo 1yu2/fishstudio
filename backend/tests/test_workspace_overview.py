@@ -355,3 +355,79 @@ def test_counts_cover_all_canvases_beyond_fifty(pg):
     result = asyncio.run(_run())
     assert result["counts"]["failed"] == 1 and result["failed"][0]["project_title"] == "最旧"
     assert len(result["projects"]) == 20
+
+
+@requires_pg
+def test_project_summary_matches_overview_and_counts_running(pg):
+    async def _run():
+        async with pg() as s:
+            user = await _user(s, "u")
+            other = await _user(s, "other")
+            canvas = await _canvas(
+                s,
+                user,
+                "分镜",
+                [_node("t", "text", text="剧本"), _node("v1", "video"), _node("v2", "video")],
+            )
+            other_canvas = await _canvas(s, other, "别人的", [_node("x", "image")])
+            done = await _job(s, canvas, "v1", "succeeded", age=3, operation="generate_video")
+            await _artifact(s, canvas, done, age=3, kind="video")
+            await _job(s, canvas, "v2", "running", age=1, operation="generate_video", progress=30)
+            await _job(s, canvas, "v2", "queued", age=0, operation="generate_video")
+            await _job(s, other_canvas, "x", "running", age=1)
+            summary = await service.project_summary(s, user, canvas.id)
+            overview = await service.overview(s, user)
+            return (
+                summary,
+                overview,
+                canvas.id,
+                other_canvas.id,
+                await service.project_summary(s, user, other_canvas.id),
+                await service.project_summary(s, user, "no-such-canvas"),
+            )
+
+    summary, overview, canvas_id, _other_id, foreign, missing = asyncio.run(_run())
+    entry = overview["projects"][0]
+    assert entry["canvas_id"] == canvas_id
+    for key in (
+        "canvas_id",
+        "project_id",
+        "title",
+        "aspect_ratio",
+        "total_cost",
+        "shots_total",
+        "shots_done",
+        "steps",
+        "next_hint",
+    ):
+        assert summary[key] == entry[key]
+    assert summary["active_step"] == "storyboard"
+    # 只数本项目的在跑任务（别人的不算）
+    assert summary["running_count"] == 2
+    assert set(summary["budget"]) == {"cap", "spent_today", "in_flight", "remaining"}
+    assert foreign is None and missing is None
+
+
+@requires_pg
+def test_project_summary_endpoint_404_for_foreign_and_missing(pg):
+    from fastapi import HTTPException
+
+    from app.routers.workspace import workspace_project
+
+    async def _run():
+        async with pg() as s:
+            user = await _user(s, "u")
+            other = await _user(s, "other")
+            canvas = await _canvas(s, user, "我的", [])
+            ok = await workspace_project(canvas.id, session=s, user=user)
+            errors = []
+            for target in (canvas.id, "missing"):
+                try:
+                    await workspace_project(target, session=s, user=other)
+                except HTTPException as exc:
+                    errors.append(exc.status_code)
+            return ok, errors
+
+    ok, errors = asyncio.run(_run())
+    assert ok["title"] == "我的" and ok["active_step"] == "script"
+    assert errors == [404, 404]

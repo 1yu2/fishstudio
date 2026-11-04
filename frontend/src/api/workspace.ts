@@ -66,12 +66,48 @@ export interface WorkspaceOverview {
   failed: WorkspaceFailed[]
 }
 
+/** 项目页摘要：单个项目的进度（字段同 overview 的 project）+ 在跑任务数与预算。 */
+export interface ProjectSummary {
+  canvas_id: string
+  project_id: string
+  title: string
+  aspect_ratio: string
+  total_cost: string
+  shots_total: number
+  shots_done: number
+  steps: WorkspaceStep[]
+  active_step: StepKey | null
+  next_hint: string
+  running_count: number
+  budget: WorkspaceBudget
+}
+
+/** 带 HTTP 状态码的错误，调用方可据此区分 404（项目不存在或无权访问）。 */
+export class WorkspaceApiError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
 export const workspaceApi = {
   overview: async (): Promise<WorkspaceOverview> => {
     const response = await apiFetch('/api/workspace/overview')
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
       throw new Error(body?.error?.message || (typeof body?.detail === 'string' ? body.detail : '') || '工作台加载失败')
+    }
+    return response.json()
+  },
+  project: async (canvasId: string): Promise<ProjectSummary> => {
+    const response = await apiFetch(`/api/workspace/projects/${encodeURIComponent(canvasId)}`)
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}))
+      throw new WorkspaceApiError(
+        body?.error?.message || (typeof body?.detail === 'string' ? body.detail : '') || '项目加载失败',
+        response.status,
+      )
     }
     return response.json()
   },
