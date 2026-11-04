@@ -7,7 +7,7 @@ import '@xyflow/react/dist/style.css'
 import { ArrowLeft, Check, Film, ImageIcon, Loader2, Play, Sparkles, Type, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import {
-  ConflictError, nodeCanvasApi, type BatchQuote, type BatchRun, type BatchScope, type CanvasDetail, type DailyBudget, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
+  ConflictError, nodeCanvasApi, type BatchKind, type BatchQuote, type BatchRun, type BatchScope, type CanvasDetail, type DailyBudget, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
   type SplitResult, type StoredEdge, type StoredGraph, type StoredNode,
 } from '../../api/nodeCanvas'
 import { paths } from '../../routePaths'
@@ -78,7 +78,17 @@ function CopilotPanel({ canvasId, onPlace, onClose }: { canvasId: string; onPlac
   </aside>
 }
 
-interface BatchPlan { scope: BatchScope; nodeId?: string; requestId: string; quote: BatchQuote | null; error: string; notice: string; busy: boolean }
+interface BatchPlan { scope: BatchScope; nodeId?: string; kinds?: BatchKind[]; requestId: string; quote: BatchQuote | null; error: string; notice: string; busy: boolean }
+
+/** 分段批次的称呼：只含图片 = 画面批次，只含视频 = 视频批次，其余 = 批量 */
+const kindsLabel = (kinds?: BatchKind[] | null) => {
+  if (kinds?.length === 1) return kinds[0] === 'image' ? '画面批次' : '视频批次'
+  return '批量'
+}
+const dialogTitle = (plan: BatchPlan) => {
+  if (plan.kinds?.length === 1) return plan.kinds[0] === 'image' ? '生成全部画面' : '生成全部视频'
+  return plan.scope === 'all' ? '全部运行' : '运行此节点及下游'
+}
 
 const money = (value: number) => `¥${value.toFixed(value < 1 ? 3 : 2)}`
 
@@ -88,7 +98,7 @@ function BatchDialog({ plan, onConfirm, onClose }: { plan: BatchPlan; onConfirm:
   const pending = quote?.nodes.filter((item) => item.status === 'pending').length ?? 0
   const skipped = (quote?.nodes.length ?? 0) - pending
   return <aside className="nc-copilot nc-batch" aria-label="批量运行">
-    <header><Play size={15} /><strong>{plan.scope === 'all' ? '全部运行' : '运行此节点及下游'}</strong><button className="nc-icon" aria-label="关闭批量运行" onClick={onClose}><X size={14} /></button></header>
+    <header><Play size={15} /><strong>{dialogTitle(plan)}</strong><button className="nc-icon" aria-label="关闭批量运行" onClick={onClose}><X size={14} /></button></header>
     {!quote && !plan.error && <p className="nc-copilot__hint"><Loader2 size={13} className="nc-spin" /> 正在报价…</p>}
     {plan.notice && <p className="nc-batch__warn" role="status">{plan.notice}</p>}
     {plan.error && <div className="nc-error nc-copilot__error" role="alert">{plan.error}</div>}
@@ -97,7 +107,7 @@ function BatchDialog({ plan, onConfirm, onClose }: { plan: BatchPlan; onConfirm:
       {quote.budget.remaining !== null && <p className={quote.exceeds_budget ? 'nc-batch__warn' : 'nc-copilot__hint'}>
         今日剩余额度 {money(quote.budget.remaining)}{quote.exceeds_budget ? `，云端预计 ${money(quote.billable_total)}，超出额度无法运行` : ''}
       </p>}
-      {quote.unavailable_nodes.length > 0 && <section><h4>价格未知（未计入合计）</h4>
+      {quote.unavailable_nodes.length > 0 && <section><h4>{plan.kinds?.[0] === 'video' && plan.kinds.length === 1 ? '这些视频暂时无法运行（未计入合计）' : '价格未知（未计入合计）'}</h4>
         {quote.unavailable_nodes.map((item) => <div key={item.node_id} className="nc-copilot__item"><b>{item.label}</b>{item.reason}</div>)}
       </section>}
       <button className="nc-run nc-run--wide" disabled={plan.busy || quote.exceeds_budget || pending === 0} onClick={onConfirm}>
@@ -118,6 +128,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
   const [polling, setPolling] = useState(true)
   const [batch, setBatch] = useState<BatchRun | null>(null)
   const [plan, setPlan] = useState<BatchPlan | null>(null)
+  const [hintDismissed, setHintDismissed] = useState<string | null>(null)  // 已关闭提示的批次 id；新批次 id 不同，提示自然不再显示
   const revision = useRef(detail.revision)
   const latest = useRef({ nodes, edges })
   const pending = useRef<Promise<void> | null>(null)
@@ -194,7 +205,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     void (async () => {
       try {
         const [latest] = await nodeCanvasApi.batchList(detail.id)
-        if (latest?.status === 'running') setBatch(latest)
+        if (latest) setBatch(latest)  // 任何终态都恢复：画面批次完成的提示重开后还在；只有 running 才会轮询
       } catch { /* 没有也不影响使用 */ }
     })()
   }, [detail.id])
@@ -226,19 +237,19 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
   }, [save])
 
   // 报价：先保存画布再报价；notice 用于说明为什么重新报价。每次报价换一个 requestId（新的决定）
-  const loadQuote = useCallback(async (scope: BatchScope, nodeId?: string, notice = '') => {
-    const next: BatchPlan = { scope, nodeId, requestId: newRequestId(), quote: null, error: '', notice, busy: false }
+  const loadQuote = useCallback(async (scope: BatchScope, nodeId?: string, notice = '', kinds?: BatchKind[]) => {
+    const next: BatchPlan = { scope, nodeId, kinds, requestId: newRequestId(), quote: null, error: '', notice, busy: false }
     setPlan(next)
     const apply = (patch: Partial<BatchPlan>) => setPlan((current) => current?.requestId === next.requestId ? { ...current, ...patch } : current)
     try {
       await flushThen()
-      apply({ quote: await nodeCanvasApi.batchQuote(detail.id, { scope, node_id: nodeId }) })
+      apply({ quote: await nodeCanvasApi.batchQuote(detail.id, { scope, node_id: nodeId, ...(kinds ? { kinds } : {}) }) })
     } catch (error) {
       apply({ error: error instanceof Error ? error.message : '报价失败' })
     }
   }, [detail.id, flushThen])
 
-  const openBatch = useCallback((scope: BatchScope, nodeId?: string) => loadQuote(scope, nodeId), [loadQuote])
+  const openBatch = useCallback((scope: BatchScope, nodeId?: string, kinds?: BatchKind[]) => loadQuote(scope, nodeId, '', kinds), [loadQuote])
 
   const confirmBatch = async () => {
     if (!plan || plan.busy || !plan.quote) return
@@ -248,7 +259,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
       await flushThen()
       // 同一个确认窗口内重复点击 / 重试都复用 requestId，后端返回同一个批次
       const started = await nodeCanvasApi.batchRun(detail.id, {
-        scope: current.scope, node_id: current.nodeId, skip_succeeded: true,
+        scope: current.scope, node_id: current.nodeId, skip_succeeded: true, ...(current.kinds ? { kinds: current.kinds } : {}),
         client_request_id: current.requestId, quoted_revision: current.quote!.revision,
       })
       setBatch(started)
@@ -258,7 +269,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     } catch (error) {
       if (error instanceof ConflictError) {
         // 报价后画布又被改过：价格已不适用，按最新内容重新报价并再次确认
-        void loadQuote(current.scope, current.nodeId, '画布在报价后被修改，已按最新内容重新报价，请确认后再运行')
+        void loadQuote(current.scope, current.nodeId, '画布在报价后被修改，已按最新内容重新报价，请确认后再运行', current.kinds)
         return
       }
       setPlan((value) => value ? { ...value, busy: false, error: error instanceof Error ? error.message : '提交失败' } : value)
@@ -374,11 +385,19 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
             <button className="nc-tool" onClick={() => addNode('image')}><ImageIcon size={14} />图片</button>
             <button className="nc-tool" onClick={() => addNode('video')}><Film size={14} />视频</button>
             <span className="nc-divider" />
+            {(['image', 'video'] as const).map((kind) => <button key={kind} className="nc-tool" disabled={nodes.length === 0 || batch?.status === 'running'} onClick={() => void openBatch('all', undefined, [kind])}>
+              {kind === 'image' ? <ImageIcon size={14} /> : <Film size={14} />}{kind === 'image' ? '生成全部画面' : '生成全部视频'}
+            </button>)}
             <button className="nc-tool" disabled={nodes.length === 0 || batch?.status === 'running'} onClick={() => void openBatch('all')}><Play size={14} />全部运行</button>
             {batch && <span className={`nc-batch-status nc-batch-status--${batch.status}`} role="status">
               {batch.status === 'running' && <Loader2 size={12} className="nc-spin" />}
-              批量 {batch.completed}/{batch.total} 完成{batch.failed > 0 ? ` · ${batch.failed} 失败` : ''}{batch.status === 'canceled' ? ' · 已取消' : ''}
+              {kindsLabel(batch.kinds)} {batch.completed}/{batch.total} 完成{batch.failed > 0 ? ` · ${batch.failed} 失败` : ''}{batch.status === 'canceled' ? ' · 已取消' : ''}
               {batch.status === 'running' && <button className="nc-link" onClick={() => void cancelBatch()}>取消</button>}
+            </span>}
+            {batch && batch.id !== hintDismissed && batch.status !== 'running' && batch.status !== 'canceled' && batch.kinds?.length === 1 && batch.kinds[0] === 'image' && <span className="nc-batch-hint" role="status">
+              画面已完成：挑选满意的图，再点「生成全部视频」
+              <button className="nc-link" onClick={() => void openBatch('all', undefined, ['video'])}>生成全部视频</button>
+              <button className="nc-icon" aria-label="关闭提示" onClick={() => setHintDismissed(batch.id)}><X size={12} /></button>
             </span>}
             <span className="nc-divider" />
             <span className={`nc-save nc-save--${saveState}`}>{saveState === 'saved' ? <Check size={12} /> : saveState === 'saving' ? <Loader2 size={12} className="nc-spin" /> : null}{saveLabel}</span>

@@ -321,11 +321,17 @@ def selected_artifact(node: dict[str, Any], results: dict[str, list[str]]) -> Op
 
 
 def resolve_node_request(
-    graph: dict[str, Any], node_id: str, results: dict[str, list[str]], aspect_ratio: str
+    graph: dict[str, Any],
+    node_id: str,
+    results: dict[str, list[str]],
+    aspect_ratio: str,
+    missing_upstream: Optional[list[str]] = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """汇总一个图片 / 视频节点的全部输入，返回 (提交给 run 的请求字段, 不能生成的原因)。
 
     results：节点 id → 结果 artifact id 列表（最新在前，顺序同 node_runs）。
+    missing_upstream：可选的输出列表；每有一条“上游节点还没有图片”的 blocker，就追加该上游节点 id，
+    供批量运行结构化判断 blocker 的来源（blocker 文案不变）。
     字段与前端 resolveInputs 的 request 逐项一致，两边共用 tests/fixtures/node_canvas_resolve_cases.json 对照。
     """
     by_id = {node["id"]: node for node in graph.get("nodes", [])}
@@ -353,6 +359,8 @@ def resolve_node_request(
         artifact_id = selected_artifact(upstream[0], results)
         if not artifact_id:
             blockers.append(f"{HANDLE_LABELS[handle]}节点「{node_label(upstream[0])}」还没有图片")
+            if missing_upstream is not None:
+                missing_upstream.append(upstream[0]["id"])
         return artifact_id
 
     upstream_prompt = "\n".join(
@@ -369,6 +377,8 @@ def resolve_node_request(
             artifact_id = selected_artifact(item, results)
             if not artifact_id:
                 blockers.append(f"参考图节点「{node_label(item)}」还没有图片")
+                if missing_upstream is not None:
+                    missing_upstream.append(item["id"])
             else:
                 references.append(artifact_id)
         if not prompt:
