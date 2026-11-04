@@ -117,10 +117,14 @@ export interface Quote {
 
 export type BatchScope = 'all' | 'downstream'
 
+export type BatchKind = 'image' | 'video'
+
 export interface BatchScopeBody {
   scope: BatchScope
   node_id?: string
   skip_succeeded?: boolean
+  /** 只运行这些类型的节点（分段生成）；不传 = 全部 */
+  kinds?: BatchKind[]
 }
 
 export interface BatchQuoteNode {
@@ -154,6 +158,8 @@ export interface BatchNodeState {
 export interface BatchRun {
   id: string
   status: 'running' | 'succeeded' | 'failed' | 'canceled'
+  /** 批次限定的节点类型；null / 缺省 = 全部 */
+  kinds?: BatchKind[] | null
   node_ids: string[]
   nodes: Record<string, BatchNodeState>
   total: number

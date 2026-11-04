@@ -175,6 +175,60 @@ describe('NodeCanvasPage', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('批量 0/2 完成')
   })
 
+  it('offers staged entries that quote and submit with the right kinds', async () => {
+    withImageJob('succeeded')
+    api.batchQuote.mockResolvedValue(batchQuote)
+    api.batchRun.mockResolvedValue({ ...batchRun, kinds: ['image'] })
+    renderPage()
+    fireEvent.click(await screen.findByText('生成全部画面'))
+    await screen.findByText(/预计合计/)
+    expect(api.batchQuote).toHaveBeenLastCalledWith('c1', { scope: 'all', node_id: undefined, kinds: ['image'] })
+    await act(async () => { fireEvent.click(screen.getByText('确认运行')) })
+    await waitFor(() => expect(api.batchRun).toHaveBeenCalledTimes(1))
+    expect(api.batchRun.mock.calls[0][1]).toMatchObject({ scope: 'all', kinds: ['image'] })
+    expect(await screen.findByRole('status')).toHaveTextContent('画面批次 0/2 完成')
+  })
+
+  it('shows the video prompt after the image batch finishes and opens the video quote', async () => {
+    withImageJob('succeeded')
+    api.batchList.mockResolvedValue([{ ...batchRun, kinds: ['image'] }])
+    api.batchGet.mockResolvedValue({ ...batchRun, kinds: ['image'], status: 'succeeded', completed: 2 })
+    api.batchQuote.mockResolvedValue(batchQuote)
+    renderPage()
+    expect(screen.queryByText(/画面已完成/)).not.toBeInTheDocument()
+    expect(await screen.findByText(/画面已完成：挑选满意的图/, undefined, { timeout: 5000 })).toBeInTheDocument()
+    fireEvent.click(screen.getByText('生成全部视频', { selector: '.nc-batch-hint button' }))
+    await screen.findByText(/预计合计/)
+    expect(api.batchQuote).toHaveBeenLastCalledWith('c1', { scope: 'all', node_id: undefined, kinds: ['video'] })
+    expect(screen.getByText('这些视频暂时无法运行（未计入合计）')).toBeInTheDocument()
+  })
+
+  it('restores a finished image batch after reopening, keeps the hint until dismissed or replaced', async () => {
+    withImageJob('succeeded')
+    api.batchList.mockResolvedValue([{ ...batchRun, kinds: ['image'], status: 'failed', completed: 1, failed: 1 }])
+    api.batchQuote.mockResolvedValue(batchQuote)
+    api.batchRun.mockResolvedValue({ ...batchRun, id: 'b2', kinds: ['video'] })
+    renderPage()
+    expect(await screen.findByText(/画面已完成：挑选满意的图/)).toBeInTheDocument()
+    expect(screen.getByText(/1 失败/)).toBeInTheDocument()
+    expect(api.batchGet).not.toHaveBeenCalled()  // 终态不轮询
+    fireEvent.click(screen.getByLabelText('关闭提示'))
+    expect(screen.queryByText(/画面已完成/)).not.toBeInTheDocument()
+  })
+
+  it('hides the image-batch hint once a newer batch starts', async () => {
+    withImageJob('succeeded')
+    api.batchList.mockResolvedValue([{ ...batchRun, kinds: ['image'], status: 'succeeded', completed: 2 }])
+    api.batchQuote.mockResolvedValue(batchQuote)
+    api.batchRun.mockResolvedValue({ ...batchRun, id: 'b2', kinds: ['video'] })
+    renderPage()
+    fireEvent.click(await screen.findByText('生成全部视频', { selector: '.nc-batch-hint button' }))
+    await screen.findByText(/预计合计/)
+    await act(async () => { fireEvent.click(screen.getByText('确认运行')) })
+    await waitFor(() => expect(screen.queryByText(/画面已完成/)).not.toBeInTheDocument())
+    expect(await screen.findByText(/视频批次 0\/2 完成/)).toBeInTheDocument()
+  })
+
   it('does not submit when the quote exceeds the remaining budget', async () => {
     withImageJob('succeeded')
     api.batchQuote.mockResolvedValue({ ...batchQuote, exceeds_budget: true, budget: { cap: 20, remaining: 0.1 } })

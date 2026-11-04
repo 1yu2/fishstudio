@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 from collections import deque
@@ -32,18 +33,55 @@ RUNNABLE = ("image", "video")
 OPEN_NODE_STATES = ("waiting", "running")
 FAILED_NODE_STATES = ("failed", "blocked", "canceled")
 SWEEP_LIMIT = 50
+# 图快照里存放批次 kinds 的保留键（resolve / 提交只读 nodes、edges，不受影响）
+KINDS_KEY = "_batch_kinds"
 
 
 class BatchRequest(BaseModel):
     scope: Literal["all", "downstream"] = "all"
     node_id: Optional[str] = Field(default=None, max_length=64)
     skip_succeeded: bool = True
+    # 只运行这些类型的节点（分段生成：先画面、再视频）；None / 两种都选 = 全部
+    kinds: Optional[list[Literal["image", "video"]]] = None
 
 
 class BatchRunRequest(BatchRequest):
     client_request_id: str = Field(min_length=1, max_length=64)
     # 报价时的画布版本；与当前不一致说明确认前画布被改过，价格不再有效
     quoted_revision: Optional[int] = None
+
+
+def effective_kinds(request: BatchRequest) -> Optional[list[str]]:
+    """规范化 kinds：去重排序；空或覆盖全部类型时返回 None（等同不限制）。"""
+    chosen = sorted(set(request.kinds or []))
+    if not chosen or set(chosen) >= set(RUNNABLE):
+        return None
+    return chosen
+
+
+KEY_PREFIX = "v2:"
+
+
+def _idempotency_key(request: BatchRunRequest) -> str:
+    """幂等 key = "v2:" + sha1(规范 JSON [client_request_id, 排序后的 kinds 或 "all"])。
+
+    JSON 编码对这个二元组是单射，所以不同 (id, kinds) 只能靠 sha1 碰撞才会同 key，不会像字符串拼接那样
+    让 id 本身含分隔符的请求撞上别的批次。固定前缀 v2: 把新 key 与改动前的原始 id（旧批次直接存原始 id）区分开。
+    """
+    kinds = effective_kinds(request)
+    canonical = json.dumps([request.client_request_id, kinds or "all"], ensure_ascii=False)
+    return KEY_PREFIX + hashlib.sha1(canonical.encode()).hexdigest()
+
+
+def _lookup_keys(request: BatchRunRequest) -> list[str]:
+    """查已有批次用的 key：不限 kinds 时兼容改动前存的原始 id。
+    旧批次都是不限 kinds 的，且原始 id 不会以 v2: 开头（前端是 uuid）；以 v2: 开头的原始 id 不做旧值查找，
+    这样旧值查找永远撞不上任何新 key。
+    """
+    keys = [_idempotency_key(request)]
+    if effective_kinds(request) is None and not request.client_request_id.startswith(KEY_PREFIX):
+        keys.append(request.client_request_id)
+    return keys
 
 
 class BatchRevisionConflict(CanvasError):
@@ -144,6 +182,7 @@ def plan_batch(
     for edge in graph.get("edges", []):
         if edge.get("source") in kinds and edge.get("target") in kinds:
             children.setdefault(edge["source"], []).append(edge["target"])
+    runnable = set(effective_kinds(request) or RUNNABLE)
     if request.scope == "downstream":
         if request.node_id not in kinds:
             raise CanvasError("节点不存在，可能还没保存")
@@ -154,9 +193,9 @@ def plan_batch(
                 continue
             wanted.add(current)
             stack.extend(children.get(current, []))
-        members = {node_id for node_id in wanted if kinds[node_id] in RUNNABLE}
+        members = {node_id for node_id in wanted if kinds[node_id] in runnable}
     else:
-        members = {node_id for node_id, kind in kinds.items() if kind in RUNNABLE}
+        members = {node_id for node_id, kind in kinds.items() if kind in runnable}
     if not members:
         raise CanvasError("没有可运行的图片 / 视频节点")
 
@@ -215,6 +254,7 @@ async def _quote_plan(
         if node_id not in skipped:
             quote_results[node_id] = [f"{canvas_service.PENDING_PREFIX}{node_id}"]
     by_id = {node["id"]: node for node in graph.get("nodes", [])}
+    kinds_by_id = {node_id: node["type"] for node_id, node in by_id.items()}
     items: list[dict[str, Any]] = []
     total = Decimal(0)
     billable = Decimal(0)
@@ -229,16 +269,24 @@ async def _quote_plan(
             "unavailable": False,
             "reason": "",
             "blockers": [],
+            "upstream_missing_only": False,
         }
         items.append(item)
         if node_id in skipped:
             item["estimated_cost"] = 0.0
             continue
+        missing: list[str] = []
         fields, blockers = canvas_service.resolve_node_request(
-            graph, node_id, quote_results, canvas.aspect_ratio
+            graph, node_id, quote_results, canvas.aspect_ratio, missing
         )
         if blockers:
-            item.update(unavailable=True, reason="；".join(blockers), blockers=blockers)
+            # 结构化判断：每条 blocker 都来自“批次外、还没有结果的上游图片 / 视频节点”
+            outside = len(missing) == len(blockers) and all(
+                up not in order and kinds_by_id.get(up) in RUNNABLE for up in missing
+            )
+            item.update(
+                unavailable=True, reason="；".join(blockers), blockers=blockers, upstream_missing_only=outside
+            )
             continue
         try:
             quote, cloud = await canvas_service.quote_node_with_budget(
@@ -304,6 +352,11 @@ def _counts(batch: CanvasBatchRun) -> dict[str, int]:
     return counts
 
 
+def batch_kinds(batch: CanvasBatchRun) -> Optional[list[str]]:
+    """批次限定的节点类型；存在图快照的保留键里（不新增列 / 迁移），None = 全部。"""
+    return (batch.graph or {}).get(KINDS_KEY)
+
+
 def batch_detail(batch: CanvasBatchRun) -> dict[str, Any]:
     counts = _counts(batch)
     return {
@@ -311,6 +364,7 @@ def batch_detail(batch: CanvasBatchRun) -> dict[str, Any]:
         "canvas_id": batch.canvas_id,
         "status": batch.status,
         "scope": batch.scope,
+        "kinds": batch_kinds(batch),
         "root_node_id": batch.root_node_id,
         "client_request_id": batch.client_request_id,
         "node_ids": list(batch.node_ids),
@@ -344,15 +398,22 @@ async def list_batches(session: AsyncSession, canvas: NodeCanvas, limit: int = 1
 
 async def create_batch(session: AsyncSession, canvas: NodeCanvas, request: BatchRunRequest) -> CanvasBatchRun:
     """创建批次并立即提交输入已就绪的节点。同一 client_request_id 返回同一个批次。"""
-    await canvas_service.advisory_lock(session, f"canvas-batch:{canvas.id}:{request.client_request_id}")
+    key = _idempotency_key(request)
+    await canvas_service.advisory_lock(session, f"canvas-batch:{canvas.id}:{key}")
     existing = (
-        await session.execute(
-            select(CanvasBatchRun).where(
-                CanvasBatchRun.canvas_id == canvas.id,
-                CanvasBatchRun.client_request_id == request.client_request_id,
+        (
+            await session.execute(
+                select(CanvasBatchRun)
+                .where(
+                    CanvasBatchRun.canvas_id == canvas.id,
+                    CanvasBatchRun.client_request_id.in_(_lookup_keys(request)),
+                )
+                .order_by(CanvasBatchRun.created_at)
             )
         )
-    ).scalar_one_or_none()
+        .scalars()
+        .first()
+    )
     if existing is not None:
         return existing
 
@@ -361,7 +422,11 @@ async def create_batch(session: AsyncSession, canvas: NodeCanvas, request: Batch
     # 与 budget_service.reserve 同一把用户锁：汇总额度检查到首批任务创建之间不会被并发批次插入
     await budget_service.lock_user(session, canvas.owner_id)
     plan = await _quote_plan(session, canvas, request)
-    blocked = [item for item in plan["nodes"] if item["blockers"]]
+    kinds = effective_kinds(request)
+    # 分段运行时，blocker 全部来自批次外无结果上游的节点只是自己 blocked（由 advance 标记），不拒绝整个批次
+    blocked = [
+        item for item in plan["nodes"] if item["blockers"] and not (kinds and item["upstream_missing_only"])
+    ]
     if blocked:
         first = blocked[0]
         raise CanvasError(f"节点「{first['label']}」无法运行：{first['reason']}")
@@ -373,7 +438,7 @@ async def create_batch(session: AsyncSession, canvas: NodeCanvas, request: Batch
     batch = CanvasBatchRun(
         canvas_id=canvas.id,
         owner_id=canvas.owner_id,
-        client_request_id=request.client_request_id,
+        client_request_id=key,
         scope=request.scope,
         root_node_id=request.node_id if request.scope == "downstream" else None,
         skip_succeeded=request.skip_succeeded,
@@ -388,7 +453,7 @@ async def create_batch(session: AsyncSession, canvas: NodeCanvas, request: Batch
             for node_id in plan["order"]
         },
         estimated_total=plan["_total"],
-        graph=plan["graph"],
+        graph={**plan["graph"], KINDS_KEY: kinds} if kinds else plan["graph"],
         aspect_ratio=canvas.aspect_ratio,
     )
     session.add(batch)

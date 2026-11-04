@@ -80,6 +80,48 @@ def test_plan_rejects_cycles_and_unknown_root():
         )
 
 
+def test_plan_kinds_limits_members_without_blocking_other_kind():
+    graph = _graph(
+        [_node("a", "image"), _node("v", "video"), _node("w", "video"), _node("t")],
+        [_edge("a", "v", "first_frame"), _edge("t", "w", "prompt")],
+    )
+    order, _ = batches.plan_batch(graph, batches.BatchRequest(kinds=["image"]), {})
+    assert order == ["a"]
+    order, _ = batches.plan_batch(graph, batches.BatchRequest(kinds=["video"]), {})
+    assert sorted(order) == ["v", "w"]  # 上游图片不在批次里，不产生依赖
+    order, _ = batches.plan_batch(graph, batches.BatchRequest(kinds=["image", "video"]), {})
+    assert sorted(order) == ["a", "v", "w"]
+    # 与 downstream 组合：从 a 往下游只取视频
+    order, _ = batches.plan_batch(
+        graph, batches.BatchRequest(scope="downstream", node_id="a", kinds=["video"]), {}
+    )
+    assert order == ["v"]
+    order, _ = batches.plan_batch(
+        graph, batches.BatchRequest(scope="downstream", node_id="a", kinds=["image"]), {"a": ["x"]}
+    )
+    assert order == ["a"]
+    with pytest.raises(service.CanvasError, match="没有可运行"):
+        batches.plan_batch(_graph([_node("a", "image")], []), batches.BatchRequest(kinds=["video"]), {})
+
+
+def test_idempotency_key_is_unambiguous_per_id_and_kinds():
+    def key(client_id, kinds=None):
+        return batches._idempotency_key(batches.BatchRunRequest(client_request_id=client_id, kinds=kinds))
+
+    assert key("same") == key("same", ["image", "video"])  # 覆盖全部类型 = 不限
+    assert len({key("same"), key("same", ["image"]), key("same", ["video"])}) == 3
+    # 旧的 "id|kind" 拼接会让这两个撞上
+    assert key("abc", ["image"]) != key("abc|image")
+    assert all(len(key(c, k)) <= 64 for c in ("x" * 64, "a") for k in (None, ["video"]))
+    legacy = batches._lookup_keys(batches.BatchRunRequest(client_request_id="abc"))
+    assert legacy == [key("abc"), "abc"]
+    assert batches._lookup_keys(batches.BatchRunRequest(client_request_id="abc", kinds=["image"])) == [
+        key("abc", ["image"])
+    ]
+    # v2: 开头的原始 id 不做旧值查找，旧值查找撞不上任何新 key
+    assert len(batches._lookup_keys(batches.BatchRunRequest(client_request_id=key("abc")))) == 1
+
+
 # ── 真实 PostgreSQL ──────────────────────────────────────────────────────
 
 
@@ -262,6 +304,146 @@ def test_batch_runs_images_before_their_videos_without_duplicates(pg, monkeypatc
     finished = [r for r in caplog.records if r.getMessage().startswith("canvas_batch_finished")]
     assert len(finished) == 1 and finished[0].canvas_batch["node_count"] == 14
     assert finished[0].canvas_batch["succeeded"] == 14
+
+
+@requires_pg
+def test_staged_batches_images_first_then_videos(pg, monkeypatch):
+    from sqlalchemy import select
+
+    from app.db.models import GenerationJob
+
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", _plan(provider="local_h3"))
+
+    async def _jobs(s):
+        return {
+            job.params["canvas_node_id"]: job
+            for job in (await s.execute(select(GenerationJob))).scalars().all()
+        }
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await _batch_canvas(s, owner, videos=1)
+            images = batches.BatchRunRequest(client_request_id="same", kinds=["image"])
+            quote = await batches.batch_quote(s, canvas, images)
+            image_batch = await batches.create_batch(s, canvas, images)
+            only_images = await _jobs(s)
+            # 同一个 client_request_id、不同 kinds：是另一个批次；相同 kinds 仍幂等
+            again = await batches.create_batch(s, canvas, images)
+            video_request = batches.BatchRunRequest(client_request_id="same", kinds=["video"])
+            jobs = await _jobs(s)
+            await _succeed(s, canvas, jobs["img-a"])
+            jobs["img-b"].status = "failed"  # img-b 没有任何结果
+            await batches.advance_batch(s, image_batch.id)
+            video_quote = await batches.batch_quote(s, canvas, video_request)
+            video_batch = await batches.create_batch(s, canvas, video_request)
+            after = await _jobs(s)
+            await s.refresh(image_batch)
+            await s.refresh(video_batch)
+            image_detail = batches.batch_detail(image_batch)
+            video_detail = batches.batch_detail(video_batch)
+            return (
+                quote,
+                image_detail,
+                set(only_images),
+                again.id,
+                video_quote,
+                video_detail,
+                {k: j.params.get("first_frame") for k, j in after.items()},
+            )
+
+    quote, image_detail, only_images, again_id, video_quote, detail, after = asyncio.run(_run())
+
+    assert only_images == {"img-a", "img-b"}  # 下游视频不进批次，也没有被标 blocked
+    assert [n["kind"] for n in quote["nodes"]] == ["image", "image"]
+    assert set(image_detail["nodes"]) == {"img-a", "img-b"} and image_detail["kinds"] == ["image"]
+    assert again_id == image_detail["id"] and detail["id"] != image_detail["id"]
+    assert detail["kinds"] == ["video"] and set(detail["node_ids"]) == {"v0", "vid-a", "vid-b"}
+    # 上游图片没有结果的视频：报价不可用且不是 0 元；批次里 blocked，其余视频照常提交
+    unavailable = {item["node_id"]: item for item in video_quote["unavailable_nodes"]}
+    assert set(unavailable) == {"vid-b"} and "还没有图片" in unavailable["vid-b"]["reason"]
+    assert detail["nodes"]["vid-b"]["status"] == "blocked"
+    assert {"v0", "vid-a"} <= set(after) and "vid-b" not in after
+    assert after["vid-a"].startswith("img/")
+    assert detail["nodes"]["vid-a"]["status"] == "running" and detail["status"] == "running"
+
+
+@requires_pg
+def test_full_batch_detail_has_no_kinds(pg, monkeypatch):
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", _plan(provider="local_h3"))
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await _batch_canvas(s, owner, videos=1)
+            batch = await batches.create_batch(s, canvas, batches.BatchRunRequest(client_request_id="all"))
+            await s.refresh(batch)
+            return batches.batch_detail(batch)
+
+    detail = asyncio.run(_run())
+    assert detail["kinds"] is None and detail["client_request_id"].startswith("v2:")
+
+
+@requires_pg
+def test_kind_batch_key_cannot_collide_and_legacy_rows_are_found(pg, monkeypatch):
+    from sqlalchemy import select, update
+
+    from app.db.models import CanvasBatchRun
+
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", _plan(provider="local_h3"))
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await _batch_canvas(s, owner, videos=1)
+            image = await batches.create_batch(
+                s, canvas, batches.BatchRunRequest(client_request_id="abc", kinds=["image"])
+            )
+            image_id = image.id
+            # 原始 id 恰好是旧拼接格式：必须是另一个批次
+            full = await batches.create_batch(
+                s, canvas, batches.BatchRunRequest(client_request_id="abc|image")
+            )
+            full_id = full.id
+            # 模拟改动前创建的批次：存的是原始 id
+            await s.execute(
+                update(CanvasBatchRun)
+                .where(CanvasBatchRun.id == full_id)
+                .values(client_request_id="legacy-1")
+            )
+            await s.flush()
+            again = await batches.create_batch(
+                s, canvas, batches.BatchRunRequest(client_request_id="legacy-1")
+            )
+            count = len((await s.execute(select(CanvasBatchRun))).scalars().all())
+            return image_id, full_id, again.id, count
+
+    image_id, full_id, again_id, count = asyncio.run(_run())
+    assert image_id != full_id
+    assert again_id == full_id and count == 2
+
+
+@requires_pg
+def test_kinds_batch_with_other_blockers_is_still_rejected(pg, monkeypatch):
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", _plan(provider="local_h3"))
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            graph = {
+                "nodes": [_node("img", "image", prompt="x"), _node("vid", "video", prompt="动")],
+                "edges": [_edge("img", "vid", "last_frame")],  # 尾帧缺图 + 没有首帧
+            }
+            await service.save_graph(s, canvas, graph, revision=1)
+            request = batches.BatchRunRequest(client_request_id="r1", kinds=["video"])
+            quote = await batches.batch_quote(s, canvas, request)
+            with pytest.raises(service.CanvasError, match="首帧"):
+                await batches.create_batch(s, canvas, request)
+            return quote
+
+    quote = asyncio.run(_run())
+    assert len(quote["nodes"][0]["blockers"]) == 2 and not quote["nodes"][0]["upstream_missing_only"]
 
 
 @requires_pg
