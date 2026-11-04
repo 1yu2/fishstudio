@@ -804,3 +804,46 @@ describe('NodeCanvasPage audio node', () => {
   })
 })
 
+
+describe('NodeCanvasPage video reference images', () => {
+  const withReferences = () => {
+    api.get.mockResolvedValue({
+      id: 'c1', title: '雨夜', aspect_ratio: '9:16', node_count: 4, updated_at: null, created_at: null, revision: 3,
+      graph: {
+        nodes: [
+          { id: 'c-a', type: 'image', position: { x: 0, y: 0 }, data: { label: '角色 · 狐妖', role: 'character', character: '狐妖' } },
+          { id: 'c-b', type: 'image', position: { x: 0, y: 600 }, data: { label: '角色 · 书生', role: 'character', character: '书生' } },
+          { id: 'v1', type: 'video', position: { x: 600, y: 0 }, data: { label: '对视', prompt: '两人对视', duration: 5, tier: 'preview' } },
+        ],
+        edges: [
+          { id: 'e1', source: 'c-a', target: 'v1', sourceHandle: 'out', targetHandle: 'reference' },
+          { id: 'e2', source: 'c-b', target: 'v1', sourceHandle: 'out', targetHandle: 'reference' },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    })
+    const done = (id: string) => ({ jobs: [], results: [{ artifact_id: id, type: 'image', url: `/api/artifacts/${id}/download` }] })
+    api.runs.mockResolvedValue({ nodes: { 'c-a': done('ra'), 'c-b': done('rb') }, active_jobs: 0, spent: 0 })
+  }
+
+  it('shows how many character images the video refers to, with the price from the quote', async () => {
+    withReferences()
+    api.quote.mockResolvedValue({ kind: 'video', model: 'seedance-2-mini', mode: 'reference', estimated_cost: 0.93 })
+    renderPage()
+    expect(await screen.findByText('参考 2 张角色图')).toBeInTheDocument()
+    expect(await screen.findByText('预计 ¥0.930')).toBeInTheDocument()
+    const request = api.quote.mock.calls[api.quote.mock.calls.length - 1][1]
+    expect(request).toMatchObject({ kind: 'video', reference_artifact_ids: ['ra', 'rb'], first_frame_artifact_id: null })
+    // 视频节点多了一个「参考图」输入口
+    expect(screen.getAllByText('参考图').length).toBeGreaterThan(0)
+  })
+
+  it('blocks generating when a first frame is also connected', async () => {
+    withReferences()
+    const loaded = await api.get('c1')
+    loaded.graph.nodes!.push({ id: 'k', type: 'image', position: { x: 300, y: 0 }, data: { label: '关键帧' } })
+    loaded.graph.edges!.push({ id: 'e3', source: 'k', target: 'v1', sourceHandle: 'out', targetHandle: 'first_frame' })
+    renderPage()
+    expect(await screen.findByText('参考图和首帧不能同时使用：去掉首帧连线，或去掉参考图连线')).toBeInTheDocument()
+  })
+})

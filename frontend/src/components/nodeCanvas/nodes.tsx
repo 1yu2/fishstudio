@@ -158,8 +158,9 @@ export const ImageNode = memo(function ImageNode({ id, data, selected }: NodePro
 })
 
 export const VideoNode = memo(function VideoNode({ id, data, selected }: NodeProps) {
-  const { updateData, runs, models } = useCanvas()
+  const { updateData, runs, models, edges } = useCanvas()
   const value = data as VideoData
+  const referenceCount = edges.filter((edge) => edge.target === id && edge.targetHandle === 'reference').length
   const node: StoredNode = { id, type: 'video', position: { x: 0, y: 0 }, data: value as Record<string, unknown> }
   const result = selectedResult(node, runs)
   const tier = value.tier || 'preview'
@@ -168,6 +169,7 @@ export const VideoNode = memo(function VideoNode({ id, data, selected }: NodePro
     <div className="nc-preview nc-preview--video nodrag nowheel">{result ? <ProtectedVideo key={result.url} src={result.url} controls playsInline /> : <span>还没有视频</span>}</div>
     <History id={id} kind="video" selected={value.selected} onSelect={(artifactId) => updateData(id, { selected: artifactId })} />
     <Generator id={id} node={node} kind="video">
+      {referenceCount > 0 && <div className="nc-upstream" title="参考图不能和首帧同时使用">参考 {referenceCount} 张角色图</div>}
       <textarea className="nc-textarea nodrag nowheel" aria-label="提示词" rows={3} value={value.prompt || ''} placeholder="动作、运镜与氛围"
         onChange={(event) => updateData(id, { prompt: event.target.value })} />
       <div className="nc-row">

@@ -247,10 +247,11 @@ describe('StoryboardPage detail', () => {
     expect(savedData('v1').camera).toBe('从肩后绕到正面')
   })
 
-  it('greys out characters until the characters step ships, dialogue is editable', async () => {
+  it('has an editable cast picker instead of the placeholder, and dialogue is editable', async () => {
     renderPage()
     await screen.findByLabelText('画面描述')
-    expect(screen.getByText('第 4 步上线后可编辑')).toBeInTheDocument()
+    expect(screen.queryByText('第 4 步上线后可编辑')).not.toBeInTheDocument()
+    expect(screen.getByRole('group', { name: '出镜角色' })).toBeInTheDocument()
     expect(screen.queryByText('第 6 步上线后可编辑')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '添加台词' })).toBeInTheDocument()
   })
@@ -478,4 +479,179 @@ describe('StoryboardPage dialogue lines', () => {
     fireEvent.click(await screen.findByRole('button', { name: '添加台词' }))
     expect(await screen.findByLabelText('第 1 句说话人')).toHaveValue('旁白')
   })
+})
+
+describe('StoryboardPage video generation mode', () => {
+  const videoQuote = (_id: string, request: { reference_artifact_ids?: string[] }) => Promise.resolve({
+    kind: 'video' as const, model: 'seedance', mode: request.reference_artifact_ids?.length ? 'reference' : 'first_frame',
+    estimated_cost: request.reference_artifact_ids?.length ? 0.9 : 0.4,
+  })
+
+  it('switches to reference: character edges in, first frame edge out, image node kept, price follows the quote', async () => {
+    api.quote.mockImplementation(videoQuote)
+    renderPage()
+    expect(await screen.findByRole('button', { name: '生成视频 · ¥0.400' })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: /从首帧画面生成/ })).toBeChecked()
+    expect(screen.getByText('画面里的角色更像，但不能同时用首帧，价格更高')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('radio', { name: /直接参考角色图/ }))
+    expect(screen.getByRole('radio', { name: /直接参考角色图/ })).toBeChecked()
+    expect(await screen.findByRole('button', { name: '生成视频 · ¥0.900' })).toBeEnabled()
+    const request = api.quote.mock.calls[api.quote.mock.calls.length - 1][1]
+    expect(request).toMatchObject({ kind: 'video', reference_artifact_ids: ['c1'], first_frame_artifact_id: null })
+
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    const [, graph, revision] = lastSave()
+    expect(revision).toBe(3)
+    const intoVideo = graph.edges!.filter((item) => item.target === 'v1').map((item) => [item.source, item.targetHandle])
+    expect(intoVideo).toEqual([['char', 'reference']])
+    expect(graph.nodes!.some((item) => item.id === 'k1')).toBe(true)
+    expect(savedData('v1').parked_first_frame).toBe('k1')
+    // 仍是两个镜头：被摘掉连线的首帧图片没有变成新镜头
+    expect(screen.getByText('2 个镜头 · 约 9 秒 · 拖动可调整顺序')).toBeInTheDocument()
+  })
+
+  it('submits the reference request when generating, and switching back restores the first frame', async () => {
+    api.quote.mockImplementation(videoQuote)
+    renderPage()
+    fireEvent.click(await screen.findByRole('radio', { name: /直接参考角色图/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '生成视频 · ¥0.900' }))
+    await waitFor(() => expect(api.run).toHaveBeenCalledTimes(1))
+    expect(api.run.mock.calls[0][1]).toBe('v1')
+    expect(api.run.mock.calls[0][2]).toMatchObject({ kind: 'video', reference_artifact_ids: ['c1'], first_frame_artifact_id: null })
+
+    fireEvent.click(screen.getByRole('radio', { name: /从首帧画面生成/ }))
+    expect(await screen.findByRole('button', { name: '生成视频 · ¥0.400' })).toBeEnabled()
+    await waitFor(() => expect(api.save.mock.calls.length).toBeGreaterThan(0), { timeout: 3000 })
+    await waitFor(() => {
+      const intoVideo = lastSave()[1].edges!.filter((item) => item.target === 'v1').map((item) => [item.source, item.targetHandle])
+      expect(intoVideo).toEqual([['k1', 'first_frame']])
+    }, { timeout: 3000 })
+    expect(savedData('v1')).not.toHaveProperty('parked_first_frame')
+  })
+
+  it('disables the reference option when the shot has no cast, and says what to do', async () => {
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '镜头 2：未生成' }))
+    const option = await screen.findByRole('radio', { name: /直接参考角色图/ })
+    expect(option).toBeDisabled()
+    expect(screen.getByRole('radio', { name: /从首帧画面生成/ })).toBeChecked()
+    expect(screen.getByText('先在“出镜角色”里选角色')).toBeInTheDocument()
+  })
+
+  it('shows the reference mode when the canvas already feeds characters into the video', async () => {
+    const nodes = graphNodes()
+    nodes[2].data.parked_first_frame = 'k1'
+    setupApi({ nodes, edges: [link('char', 'k1', 'reference'), link('char', 'v1', 'reference'), link('k2', 'v2', 'first_frame')] })
+    renderPage()
+    expect(await screen.findByRole('radio', { name: /直接参考角色图/ })).toBeChecked()
+    expect(screen.getByText('2 个镜头 · 约 9 秒 · 拖动可调整顺序')).toBeInTheDocument()
+  })
+  it('after all reference edges are deleted it still shows reference mode, blocks generating, and can restore the first frame', async () => {
+    const nodes = graphNodes()
+    nodes[2].data.parked_first_frame = 'k1'
+    setupApi({ nodes, edges: [link('char', 'k1', 'reference'), link('k2', 'v2', 'first_frame')] })
+    renderPage()
+    expect(await screen.findByRole('radio', { name: /直接参考角色图/ })).toBeChecked()
+    expect(screen.getAllByText('还没有连角色参考图：连上角色，或改回「从首帧画面生成」').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /^生成视频/ })).toBeDisabled()
+    fireEvent.click(screen.getByRole('radio', { name: /从首帧画面生成/ }))
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect(lastSave()[1].edges!.filter((item) => item.target === 'v1').map((item) => [item.source, item.targetHandle])).toEqual([['k1', 'first_frame']])
+    expect(savedData('v1')).not.toHaveProperty('parked_first_frame')
+  })
+
+  it('names the characters that will not be used beyond nine', async () => {
+    const chars = Array.from({ length: 11 }, (_, index) => node(`c${index}`, 'image', { role: 'character', character: `角色${index}` }, -400 + index))
+    setupApi({
+      nodes: [...chars, ...graphNodes().slice(1)],
+      edges: [...chars.map((item) => link(item.id, 'k1', 'reference')), link('k1', 'v1', 'first_frame'), link('k2', 'v2', 'first_frame')],
+    })
+    renderPage()
+    expect(await screen.findByText('参考图最多 9 张，只会用前 9 个角色（未使用：角色9、角色10）')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: /直接参考角色图/ }))
+    expect(await screen.findByText('本镜头参考 9 张角色图')).toBeInTheDocument()
+    expect(screen.getByText('参考图最多 9 张，只会用前 9 个角色（未使用：角色9、角色10）')).toBeInTheDocument()
+  })
+
+  it('shows the duration reason from the quote instead of generating', async () => {
+    const reason = '直接参考角色图需要 4–15 秒的镜头（现在是 3 秒）：把镜头时长改到这个范围'
+    api.quote.mockRejectedValue(new Error(reason))
+    renderPage()
+    fireEvent.click(await screen.findByRole('radio', { name: /直接参考角色图/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^生成视频/ })).toBeDisabled())
+    expect(screen.getAllByText(reason).length).toBeGreaterThan(0)
+  })
+
+describe('StoryboardPage cast picker', () => {
+  const boy = () => node('boy', 'image', { role: 'character', character: '书生', label: '角色 · 书生' }, -300)
+  const savedEdges = () => lastSave()[1].edges!.map((item) => `${item.source}>${item.target}:${item.targetHandle}`)
+
+  it('lists the episode characters as toggle chips with the current shot selection', async () => {
+    setupApi({ nodes: [...graphNodes(), boy()] })
+    renderPage()
+    const fox = await screen.findByRole('button', { name: '狐妖' })
+    expect(fox).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '书生' })).toHaveAttribute('aria-pressed', 'false')
+    expect(fox.querySelector('img')).not.toBeNull()  // 基础造型缩略图
+  })
+
+  it('selects a character: base look gets a reference edge to the key frame, other shots untouched', async () => {
+    setupApi({ nodes: [...graphNodes(), boy()] })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '书生' }))
+    expect(screen.getByRole('button', { name: '书生' })).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect(lastSave()[2]).toBe(3)
+    expect(savedEdges()).toEqual(['char>k1:reference', 'k1>v1:first_frame', 'k2>v2:first_frame', 'boy>k1:reference'])
+  })
+
+  it('deselects a character: removes its reference edges to this shot only and keeps it a character', async () => {
+    const nodes = [...graphNodes(), boy()]
+    setupApi({ nodes, edges: [...graphEdges(), link('char', 'k2', 'reference')] })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '狐妖' }))
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect(savedEdges()).toEqual(['k1>v1:first_frame', 'k2>v2:first_frame', 'char>k2:reference'])
+    expect(savedData('char').role).toBe('character')
+  })
+
+  it('also wires the video in reference mode, and the quote follows', async () => {
+    const nodes = [...graphNodes(), boy()]
+    nodes[2].data.parked_first_frame = 'k1'
+    setupApi({ nodes, edges: [link('char', 'k1', 'reference'), link('char', 'v1', 'reference'), link('k2', 'v2', 'first_frame')] })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '书生' }))
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect(savedEdges()).toEqual(expect.arrayContaining(['boy>k1:reference', 'boy>v1:reference']))
+    expect(screen.getByText('本镜头参考 2 张角色图')).toBeInTheDocument()
+  })
+
+  it('refuses a fifth character on the key frame with a message and writes nothing', async () => {
+    const extra = ['a', 'b', 'c'].map((id) => node(id, 'image', { role: 'character', character: `甲${id}` }, -300))
+    setupApi({ nodes: [...graphNodes(), ...extra, boy()], edges: [...graphEdges(), ...extra.map((item) => link(item.id, 'k1', 'reference'))] })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '书生' }))
+    expect(await screen.findByText('这个镜头的画面最多参考 4 个角色')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '书生' })).toHaveAttribute('aria-pressed', 'false')
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    expect(api.save).not.toHaveBeenCalled()
+  })
+
+  it('shows the empty state with a link to the characters step', async () => {
+    setupApi({ nodes: graphNodes().filter((item) => item.id !== 'char'), edges: [link('k1', 'v1', 'first_frame'), link('k2', 'v2', 'first_frame')] })
+    renderPage()
+    expect(await screen.findByText(/还没有角色：/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '去「角色」步骤添加' })).toHaveAttribute('href', '/studio/c1/characters')
+  })
+
+  it('enables the reference option once a character is picked', async () => {
+    setupApi({ nodes: [...graphNodes(), boy()] })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '镜头 2：未生成' }))
+    expect(await screen.findByRole('radio', { name: /直接参考角色图/ })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '书生' }))
+    expect(screen.getByRole('radio', { name: /直接参考角色图/ })).toBeEnabled()
+  })
+})
 })

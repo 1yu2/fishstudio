@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasRuns, StoredEdge, StoredNode } from '../../api/nodeCanvas'
 import fixture from '../../../../backend/tests/fixtures/node_canvas_resolve_cases.json'
-import { canConnect, defaultData, dropTarget, label, layoutSplit, resolveInputs, speakerVoice, statusText } from './graph'
+import { MAX_VIDEO_REFERENCES, REFERENCE_MISSING, REFERENCE_WITH_FRAME, canConnect, defaultData, dropTarget, label, layoutSplit, resolveInputs, speakerVoice, statusText } from './graph'
 
 const node = (id: string, type: StoredNode['type'], data: Record<string, unknown> = {}): StoredNode => ({ id, type, position: { x: 0, y: 0 }, data })
 const edge = (source: string, target: string, targetHandle: string): StoredEdge => ({ id: `${source}-${target}-${targetHandle}`, source, target, sourceHandle: 'out', targetHandle })
@@ -27,6 +27,56 @@ describe('canConnect', () => {
     expect(canConnect(nodes, edges, { source: 'b', target: 'v', targetHandle: 'first_frame' })).toBe(false)
     expect(canConnect(nodes, edges, { source: 'b', target: 'v', targetHandle: 'last_frame' })).toBe(true)
     expect(canConnect(nodes, [edge('a', 'b', 'reference')], { source: 'a', target: 'b', targetHandle: 'reference' })).toBe(false)
+  })
+})
+
+describe('canConnect: character reference images into video', () => {
+  const chars = Array.from({ length: 10 }, (_, index) => node(`c${index}`, 'image', { role: 'character' }))
+  const nodes = [...chars, node('t', 'text'), node('v', 'video'), node('i', 'image')]
+
+  it('accepts several image -> video reference edges, up to the video limit', () => {
+    expect(canConnect(nodes, [], { source: 'c0', target: 'v', targetHandle: 'reference' })).toBe(true)
+    expect(canConnect(nodes, [edge('c0', 'v', 'reference')], { source: 'c1', target: 'v', targetHandle: 'reference' })).toBe(true)
+    const full = chars.slice(0, MAX_VIDEO_REFERENCES).map((item) => edge(item.id, 'v', 'reference'))
+    expect(canConnect(nodes, full, { source: 'c9', target: 'v', targetHandle: 'reference' })).toBe(false)
+    expect(MAX_VIDEO_REFERENCES).toBe(9)
+  })
+
+  it('keeps the image-node limit at 4 and rejects non-image sources', () => {
+    const four = chars.slice(0, 4).map((item) => edge(item.id, 'i', 'reference'))
+    expect(canConnect(nodes, four, { source: 'c5', target: 'i', targetHandle: 'reference' })).toBe(false)
+    expect(canConnect(nodes, [], { source: 't', target: 'v', targetHandle: 'reference' })).toBe(false)
+  })
+})
+
+describe('resolveInputs: video reference images', () => {
+  it('collects reference edges in order, deduplicates, and sends no frames', () => {
+    const nodes = [node('a', 'image', { role: 'character', selected: 'old' }), node('b', 'image', { role: 'character' }), node('c', 'image', { role: 'character' }), node('v', 'video', { prompt: '对视' })]
+    const edges = [edge('a', 'v', 'reference'), edge('b', 'v', 'reference'), edge('c', 'v', 'reference')]
+    const { request, blockers } = resolveInputs(nodes[3], nodes, edges, runs({ a: ['new', 'old'], b: ['old'], c: ['rc'] }), '9:16')
+    expect(blockers).toEqual([])
+    expect(request).toMatchObject({ kind: 'video', first_frame_artifact_id: null, last_frame_artifact_id: null, reference_artifact_ids: ['old', 'rc'] })
+  })
+
+  it('blocks a reference image with no result yet', () => {
+    const nodes = [node('a', 'image', { label: '角色 · 狐妖' }), node('v', 'video', { prompt: '对视' })]
+    const { blockers } = resolveInputs(nodes[1], nodes, [edge('a', 'v', 'reference')], runs({}), '9:16')
+    expect(blockers).toEqual(['参考图节点「角色 · 狐妖」还没有图片'])
+  })
+
+  it('blocks a parked first frame with no reference images and no first frame', () => {
+    const nodes = [node('k', 'image'), node('v', 'video', { prompt: '对视', parked_first_frame: 'k' })]
+    expect(resolveInputs(nodes[1], nodes, [], runs({ k: ['fk'] }), '9:16').blockers).toEqual([REFERENCE_MISSING])
+    // 恢复首帧或连上参考图后不再拦
+    expect(resolveInputs(nodes[1], nodes, [edge('k', 'v', 'first_frame')], runs({ k: ['fk'] }), '9:16').blockers).toEqual([])
+  })
+
+  it('intercepts references mixed with a first frame, with the backend wording', () => {
+    const nodes = [node('a', 'image', { role: 'character' }), node('k', 'image'), node('v', 'video', { prompt: '对视' })]
+    const edges = [edge('a', 'v', 'reference'), edge('k', 'v', 'first_frame')]
+    const { blockers } = resolveInputs(nodes[2], nodes, edges, runs({ a: ['ra'], k: ['fk'] }), '9:16')
+    expect(blockers).toEqual([REFERENCE_WITH_FRAME])
+    expect(REFERENCE_WITH_FRAME).toBe('参考图和首帧不能同时使用：去掉首帧连线，或去掉参考图连线')
   })
 })
 

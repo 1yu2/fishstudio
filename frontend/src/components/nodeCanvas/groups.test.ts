@@ -32,6 +32,31 @@ describe('buildGroups membership', () => {
     expect(groups[0].members).not.toContain('c')
   })
 
+  it('keeps characters referenced by a video out of every group, in both video modes', () => {
+    const a = shot(1, 0)
+    const b = shot(2, 600)
+    const chars = [node('c', 'image', { role: 'character', character: '狐妖' }, -400, 0), node('legacy', 'image', {}, -400, 300)]
+    // 镜头一：参考图模式（首帧摘掉，k1 记在视频节点里）；镜头二：首帧模式，角色仍连着关键帧
+    a.nodes[2].data.parked_first_frame = 'k1'
+    const edges = [
+      ...a.edges.filter((item) => item.targetHandle !== 'first_frame'), ...b.edges,
+      edge('c', 'v1', 'reference'), edge('legacy', 'v1', 'reference'), edge('c', 'k2', 'reference'),
+    ]
+    const groups = buildGroups([...a.nodes, ...b.nodes, ...chars], edges, null)
+    expect(groups.map((group) => group.shotId)).toEqual(['v1', 'v2'])
+    for (const group of groups) expect(group.members.filter((id) => id === 'c' || id === 'legacy')).toEqual([])
+    // 摘掉首帧连线后，原首帧图片仍留在本镜头的组里，也没有变成独立镜头
+    expect([...groups[0].members].sort()).toEqual(['k1', 't1', 'v1'])
+  })
+
+  it('does not turn a parked first frame reused as another shot reference into a character or a shot', () => {
+    const nodes = [node('A', 'image', {}, 400, 0), node('X', 'video', { parked_first_frame: 'A', order: 0 }, 800, 0), node('Y', 'video', { order: 1 }, 800, 600)]
+    const groups = buildGroups(nodes, [edge('A', 'Y', 'reference')], null)
+    expect(groups.map((group) => group.shotId)).toEqual(['X', 'Y'])
+    // A 还被镜头 Y 当参考图用着：折叠 X 组不该把它藏起来，所以它不是 X 组成员；但它既不是角色也不会变成独立镜头
+    expect(groups[0].members).toEqual(['X'])
+  })
+
   it('leaves out text feeding several shots, and text nodes with no outgoing edge', () => {
     const a = shot(1, 0)
     const b = shot(2, 600)

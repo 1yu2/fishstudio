@@ -12,7 +12,11 @@ export interface ImageData {
   /** 角色图片节点：role === 'character'；同名 character 的多个节点是同一角色的多套造型 */
   role?: 'character'; character?: string; look?: string; library_asset_id?: string
 }
-export interface VideoData { label?: string; prompt?: string; model?: string; duration?: number; tier?: VideoTier; selected?: string; camera?: string; order?: number }
+export interface VideoData {
+  label?: string; prompt?: string; model?: string; duration?: number; tier?: VideoTier; selected?: string; camera?: string; order?: number
+  /** 切到“直接参考角色图”时被摘掉的首帧 / 尾帧图片节点 id：图片节点保留且仍归本镜头，切回时据此恢复连线 */
+  parked_first_frame?: string; parked_last_frame?: string
+}
 /** 配音节点：text 台词，speaker 说话人（旁白写 NARRATOR），voice 预置音色 id（空 = 说话人默认音色），order 同一镜头里的先后 */
 export interface AudioData { label?: string; text?: string; speaker?: string; voice?: string; selected?: string; order?: number }
 
@@ -24,7 +28,7 @@ export const MAX_LINE_CHARS = 500
 export const INPUTS: Record<CanvasNodeType, Partial<Record<InputHandle, CanvasNodeType>>> = {
   text: {},
   image: { prompt: 'text', reference: 'image', voice: 'audio' },
-  video: { prompt: 'text', first_frame: 'image', last_frame: 'image', voice: 'audio' },
+  video: { prompt: 'text', reference: 'image', first_frame: 'image', last_frame: 'image', voice: 'audio' },
   audio: { prompt: 'text' },
   // 成片节点：自动收集全部镜头，没有输入输出
   episode: {},
@@ -40,7 +44,13 @@ export const HANDLE_LABELS: Record<InputHandle, string> = {
 
 /** 每个端口最多几条入线；提示词、参考图和台词（voice）可以多条，首尾帧各一条。 */
 const SINGLE_INPUT = new Set<InputHandle>(['first_frame', 'last_frame'])
-const MAX_REFERENCES = 4
+/** 图片节点的参考图上限 */
+export const MAX_REFERENCES = 4
+/** 视频节点的角色参考图上限（Seedance 2.0 mini 最多 9 张，与后端 MAX_REFERENCE_IMAGES 一致） */
+export const MAX_VIDEO_REFERENCES = 9
+/** 参考图与首帧 / 尾帧互斥（厂商会返回 400）；文案与后端一致 */
+export const REFERENCE_MISSING = '还没有连角色参考图：连上角色，或改回「从首帧画面生成」'
+export const REFERENCE_WITH_FRAME = '参考图和首帧不能同时使用：去掉首帧连线，或去掉参考图连线'
 
 export function canConnect(
   nodes: Pick<StoredNode, 'id' | 'type'>[],
@@ -57,8 +67,27 @@ export function canConnect(
   if (edges.some((edge) => edge.source === source && edge.target === target && edge.targetHandle === handle)) return false
   const incoming = edges.filter((edge) => edge.target === target && edge.targetHandle === handle).length
   if (SINGLE_INPUT.has(handle) && incoming >= 1) return false
-  if (handle === 'reference' && incoming >= MAX_REFERENCES) return false
+  if (handle === 'reference' && incoming >= (to.type === 'video' ? MAX_VIDEO_REFERENCES : MAX_REFERENCES)) return false
   return true
+}
+
+const parkedCache = new WeakMap<StoredNode[], Set<string>>()
+
+/**
+ * 被视频节点“停放”的首帧 / 尾帧图片 id：视频切到“直接参考角色图”时首帧连线被摘掉，图片节点保留且仍是镜头画面。
+ * 角色判定（characters.ts / speakerVoice / groups）都要排除它们——它们剩下的出边可能全是给别的镜头当参考图的 reference。
+ */
+export function parkedFrameIds(nodes: StoredNode[]): Set<string> {
+  const cached = parkedCache.get(nodes)
+  if (cached) return cached
+  const ids = new Set<string>()
+  for (const node of nodes) {
+    if (node.type !== 'video') continue
+    const data = node.data as VideoData
+    for (const id of [data.parked_first_frame, data.parked_last_frame]) if (typeof id === 'string' && id) ids.add(id)
+  }
+  parkedCache.set(nodes, ids)
+  return ids
 }
 
 /** 节点当前选中的结果：用户点选的那张，否则是最新一张。 */
@@ -84,8 +113,9 @@ export interface ResolvedInputs {
 export function speakerVoice(nodes: StoredNode[], edges: StoredEdge[], speaker: string): string {
   const wanted = speaker.trim()
   if (!wanted) return ''
+  const parked = parkedFrameIds(nodes)
   const characters = nodes.filter((node) => {
-    if (node.type !== 'image') return false
+    if (node.type !== 'image' || parked.has(node.id)) return false
     if ((node.data as ImageData).role === 'character') return true
     const out = edges.filter((edge) => edge.source === node.id)
     return out.length > 0 && out.every((edge) => edge.targetHandle === 'reference')
@@ -155,6 +185,16 @@ export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: Stor
   const hasFirst = incoming('first_frame').length > 0
   const first = frame('first_frame')
   const last = frame('last_frame')
+  // 角色参考图：去重、保持连线顺序；还没有结果的上游和图片节点一样给出 blocker
+  const references: string[] = []
+  for (const item of incoming('reference')) {
+    const result = selectedResult(item, runs)
+    if (!result) blockers.push(`参考图节点「${label(item)}」还没有图片`)
+    else if (!references.includes(result.artifact_id)) references.push(result.artifact_id)
+  }
+  if (incoming('reference').length && (hasFirst || incoming('last_frame').length)) blockers.push(REFERENCE_WITH_FRAME)
+  // 切到参考图模式（首帧被停放）后参考边又被删光：不能悄悄按文生视频提交
+  if ((data.parked_first_frame || data.parked_last_frame) && !incoming('reference').length && !hasFirst) blockers.push(REFERENCE_MISSING)
   if (incoming('last_frame').length && !hasFirst) blockers.push('有尾帧时也需要连入首帧')
   if (!prompt && !hasFirst) blockers.push('写提示词，或连入首帧图片')
   return {
@@ -162,7 +202,7 @@ export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: Stor
     blockers,
     request: {
       kind: 'video', prompt: withSuffix('运镜', data.camera), model: data.model || '', aspect_ratio: aspectRatio, duration: data.duration || 5, tier: data.tier || 'preview',
-      first_frame_artifact_id: first, last_frame_artifact_id: last,
+      first_frame_artifact_id: first, last_frame_artifact_id: last, reference_artifact_ids: references,
     },
   }
 }

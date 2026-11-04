@@ -19,7 +19,7 @@ export default function ShotLines({ shot, sb }: { shot: Shot; sb: Storyboard }) 
   const roles = useMemo(() => {
     const names: string[] = []
     for (const node of sb.nodes) {
-      if (!isCharacterNode(node, sb.edges)) continue
+      if (!isCharacterNode(node, sb.edges, sb.nodes)) continue
       const name = characterName(node)
       if (name && !names.includes(name)) names.push(name)
     }

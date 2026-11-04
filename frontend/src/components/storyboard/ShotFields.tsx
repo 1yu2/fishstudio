@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import type { Quote, RunRequest, StoredNode } from '../../api/nodeCanvas'
+import { buildCharacters } from '../characters/characters'
+import { ProtectedImage } from '../common/ProtectedMedia'
 import { paths } from '../../routePaths'
-import { resolveInputs } from '../nodeCanvas/graph'
-import { CAMERA_MOVES, DURATIONS, SHOT_SIZES, priceSuffix, type Shot } from './shots'
+import { MAX_VIDEO_REFERENCES, REFERENCE_MISSING, resolveInputs } from '../nodeCanvas/graph'
+import { CAMERA_MOVES, DURATIONS, SHOT_SIZES, applyVideoMode, isCharacterSelected, priceSuffix, toggleShotCharacter, shotReferenceUse, videoMode, type Shot, type VideoMode } from './shots'
 import ShotLines from './ShotLines'
 import type { Storyboard } from './useStoryboard'
 
@@ -46,6 +48,81 @@ function Generate({ node, label, primary, running, sb, extraBlocker }: {
       </button>
       {reasons.length > 0 && <ul className="sb-blockers">{reasons.map((text) => <li key={text}>{text}</li>)}</ul>}
     </>
+  )
+}
+
+const MODE_OPTIONS: { value: VideoMode; label: string; hint: string }[] = [
+  { value: 'frame', label: '从首帧画面生成', hint: '用本镜头的关键帧作为视频的第一帧（默认）' },
+  { value: 'reference', label: '直接参考角色图', hint: '画面里的角色更像，但不能同时用首帧，价格更高' },
+]
+
+/** 视频生成方式：切换时把角色参考边 / 首帧边写回画布（原首帧图片节点保留）。 */
+function VideoModePicker({ shot, sb }: { shot: Shot; sb: Storyboard }) {
+  const mode = videoMode(shot, sb.edges)
+  const { characters, used, unused } = shotReferenceUse(shot, sb.nodes, sb.edges)
+  const noCharacters = characters.length === 0
+  const choose = (next: VideoMode) => {
+    if (next === mode) return
+    sb.update((current) => applyVideoMode(shot, next, current.nodes, current.edges))
+  }
+  return (
+    <fieldset className="sb-field sb-modes">
+      <legend>视频生成方式</legend>
+      {MODE_OPTIONS.map((option) => {
+        const disabled = option.value === 'reference' && mode !== 'reference' && noCharacters
+        return (
+          <label key={option.value} className="sb-mode">
+            <input type="radio" name={`video-mode-${shot.id}`} checked={mode === option.value} disabled={disabled} onChange={() => choose(option.value)} />
+            <span>{option.label}</span>
+            <span className="sb-hint">{option.hint}</span>
+          </label>
+        )
+      })}
+      {mode !== 'reference' && noCharacters && <span className="sb-hint">先在“出镜角色”里选角色</span>}
+      {mode === 'reference' && used > 0 && <span className="sb-hint">本镜头参考 {used} 张角色图</span>}
+      {mode === 'reference' && used === 0 && <span className="sb-hint" role="alert">{REFERENCE_MISSING}</span>}
+      {characters.length > MAX_VIDEO_REFERENCES && unused.length > 0 && (
+        <span className="sb-hint" role="status">参考图最多 {MAX_VIDEO_REFERENCES} 张，只会用前 {MAX_VIDEO_REFERENCES} 个角色（未使用：{unused.join('、')}）</span>
+      )}
+    </fieldset>
+  )
+}
+
+/** 出镜角色：本集的角色做成可开关的小卡片，选中 = 角色图连到本镜头（写回画布）。 */
+function CastPicker({ shot, canvasId, sb }: { shot: Shot; canvasId: string; sb: Storyboard }) {
+  const [notice, setNotice] = useState('')
+  useEffect(() => { setNotice('') }, [shot.id])
+  const characters = buildCharacters(sb.nodes, sb.edges, sb.runs)
+  if (characters.length === 0) {
+    return (
+      <div className="sb-field">出镜角色
+        <span className="sb-hint">还没有角色：<Link className="sb-link" to={paths.projectStep(canvasId, 'characters')}>去「角色」步骤添加</Link></span>
+      </div>
+    )
+  }
+  const toggle = (name: string) => {
+    const character = characters.find((item) => item.name === name)
+    if (!character) return
+    const result = toggleShotCharacter(shot, character, sb.nodes, sb.edges)
+    setNotice(result.error || '')
+    if (!result.error) sb.update(() => ({ nodes: result.nodes, edges: result.edges }))
+  }
+  return (
+    <div className="sb-field" role="group" aria-label="出镜角色">出镜角色
+      <div className="sb-cast">
+        {characters.map((character) => {
+          const on = isCharacterSelected(shot, character, sb.edges)
+          const thumb = character.base.final ?? character.base.results[0]
+          return (
+            <button key={character.name} type="button" className={`sb-cast__chip${on ? ' sb-cast__chip--on' : ''}`} aria-pressed={on} onClick={() => toggle(character.name)}>
+              <span className="sb-cast__thumb">{thumb ? <ProtectedImage src={thumb.url} alt="" /> : null}</span>
+              {character.name}
+            </button>
+          )
+        })}
+      </div>
+      {notice && <span className="sb-problem" role="alert">{notice}</span>}
+    </div>
   )
 }
 
@@ -110,9 +187,8 @@ export default function ShotFields({ shot, total, canvasId, sb, onMove }: Props)
             onChange={(event) => sb.updateData(video.id, { camera: event.target.value })} />
         </label>
       )}
-      <div className="sb-field sb-field--muted" aria-disabled="true">出镜角色
-        <span className="sb-muted">第 4 步上线后可编辑</span>
-      </div>
+      <CastPicker shot={shot} canvasId={canvasId} sb={sb} />
+      {video && <VideoModePicker shot={shot} sb={sb} />}
       <ShotLines shot={shot} sb={sb} />
       <div className="sb-actions">
         {frame && <Generate node={frame} label="重新生成图片" running={shot.frameStatus.state === 'running'} sb={sb} extraBlocker={imageProblem} />}

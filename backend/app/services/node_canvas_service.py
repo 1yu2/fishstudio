@@ -398,6 +398,14 @@ def preset_voices() -> list[dict[str, Any]]:
     return [{**voice, "sample_url": None} for voice in PRESET_VOICES]
 
 
+MAX_REFERENCE_IMAGES = 9
+REFERENCE_WITH_FRAME = "参考图和首帧不能同时使用：去掉首帧连线，或去掉参考图连线"
+REFERENCE_MISSING = "还没有连角色参考图：连上角色，或改回「从首帧画面生成」"
+NO_REFERENCE_MODEL = (
+    "需要支持参考图的视频模型（例如 Seedance 2.0 mini）：在「设置 → 模型服务」启用，或去掉参考图连线"
+)
+
+
 class NodeRunRequest(BaseModel):
     kind: Literal["image", "video", "tts"]
     prompt: str = Field(default="", max_length=8_000)
@@ -406,7 +414,8 @@ class NodeRunRequest(BaseModel):
     duration: int = Field(default=5, ge=2, le=15)
     tier: Literal["preview", "final"] = "final"
     count: int = Field(default=1, ge=1, le=4)
-    reference_artifact_ids: list[str] = Field(default_factory=list, max_length=8)
+    # 图片节点：参考图（图片编辑用途）；视频节点：角色参考图（Seedance 参考图模式，不能与首帧 / 尾帧同时用）
+    reference_artifact_ids: list[str] = Field(default_factory=list, max_length=MAX_REFERENCE_IMAGES)
     first_frame_artifact_id: Optional[str] = None
     last_frame_artifact_id: Optional[str] = None
     # 幂等标识：前端每次点击生成一个，自动重试复用；不传则保持旧行为（每次都是新任务）
@@ -534,6 +543,24 @@ def resolve_node_request(
     has_first = bool(incoming("first_frame"))
     first = frame("first_frame")
     last = frame("last_frame")
+    references = []
+    for item in incoming("reference"):
+        artifact_id = selected_artifact(item, results)
+        if not artifact_id:
+            blockers.append(f"参考图节点「{node_label(item)}」还没有图片")
+            if missing_upstream is not None:
+                missing_upstream.append(item["id"])
+        elif artifact_id not in references:
+            references.append(artifact_id)
+    if incoming("reference") and (has_first or incoming("last_frame")):
+        blockers.append(REFERENCE_WITH_FRAME)
+    # 切到参考图模式（首帧被停放）后参考边又被删光：不能悄悄按文生视频提交
+    if (
+        (data.get("parked_first_frame") or data.get("parked_last_frame"))
+        and not incoming("reference")
+        and not has_first
+    ):
+        blockers.append(REFERENCE_MISSING)
     if incoming("last_frame") and not has_first:
         blockers.append("有尾帧时也需要连入首帧")
     if not prompt and not has_first:
@@ -547,6 +574,7 @@ def resolve_node_request(
         "tier": data.get("tier") or "preview",
         "first_frame_artifact_id": first,
         "last_frame_artifact_id": last,
+        "reference_artifact_ids": references,
     }, blockers
 
 
@@ -618,6 +646,13 @@ async def _video_plan(
         raise CanvasError("视频节点需要提示词或首帧图片")
     first = await _storage_key(session, canvas, req.first_frame_artifact_id, "image", quote_only=quote_only)
     last = await _storage_key(session, canvas, req.last_frame_artifact_id, "image", quote_only=quote_only)
+    reference_ids = list(dict.fromkeys(req.reference_artifact_ids))
+    if reference_ids and (req.first_frame_artifact_id or req.last_frame_artifact_id):
+        raise CanvasError(REFERENCE_WITH_FRAME)
+    references = [
+        await _storage_key(session, canvas, artifact_id, "image", quote_only=quote_only)
+        for artifact_id in reference_ids
+    ]
     ratio = req.aspect_ratio or canvas.aspect_ratio
     params = build_video_job_params(
         shot_id="",
@@ -632,20 +667,87 @@ async def _video_plan(
     if last and first:
         params["last_frame"] = last
         params["mode"] = "first_last_frame"
-    try:
-        plan = await resolve_video_plan(
+    if references:
+        # 与 job_planner 一致：参考图模式 mode="reference"，参考图以 storage_key 写入 params.reference_images
+        params["reference_images"] = references
+        params["mode"] = "reference"
+        params.pop("fallback_reason", None)
+
+    async def route(reference_count: int) -> dict[str, Any]:
+        return await resolve_video_plan(
             session,
             duration=req.duration,
             tier=req.tier,
             mode=params["mode"],
             aspect_ratio=ratio,
-            reference_count=0,
+            reference_count=reference_count,
             explicit_deployment=req.model,
         )
+
+    try:
+        plan = await route(len(references))
     except VideoRoutingError as error:
         logger.info(f"视频路由不可用: {error}")
+        if references and error.code == "no_candidate":
+            raise CanvasError(
+                await _reference_routing_message(session, req, len(references), ratio)
+            ) from error
         raise CanvasError(video_routing_message(error.code, req.duration)) from error
     return params, plan
+
+
+async def _reference_routing_message(
+    session: AsyncSession, req: NodeRunRequest, count: int, ratio: str
+) -> str:
+    """参考图请求路由失败时的原因：先看时长，再看数量，最后才是“没有支持参考图的模型”。
+
+    候选范围与真实路由一致：用户选了模型就只看它，否则看默认 Route 的主模型 + 备用模型，不扫描全局部署。
+    """
+    from app.model_runtime.catalog import get_catalog
+    from app.model_runtime.video import VIDEO_PURPOSE, _candidate_slugs
+    from app.providers.base import VideoGenerationRequest
+    from app.services import model_route_service
+
+    snapshot = get_catalog().snapshot
+    route = await model_route_service.get_effective_route(session, VIDEO_PURPOSE, req.tier)
+    if route is None:
+        return NO_REFERENCE_MODEL
+    capable = []
+    for slug in _candidate_slugs(route, req.model, snapshot.list("video")):
+        item = snapshot.get(slug)
+        instance = getattr(item, "instance", None)
+        if item is None or not item.enabled or "reference" not in (getattr(instance, "modes", None) or ()):
+            continue
+        available = getattr(instance, "is_available", None)
+        if available is None or available():
+            capable.append((item, instance))
+    if not capable:
+        return NO_REFERENCE_MODEL
+
+    def probe(instance: Any, model: str, duration: int) -> bool:
+        return instance.supports(
+            VideoGenerationRequest(
+                mode="reference",
+                prompt="routing-probe",
+                reference_images=["routing-probe"] * count,
+                duration=duration,
+                resolution="768P",
+                aspect_ratio=ratio,
+                quality="preview" if req.tier in {"draft", "preview"} else "standard",
+            ),
+            model=model,
+        )
+
+    for item, instance in capable:
+        low, high = getattr(instance, "min_duration", None), getattr(instance, "max_duration", None)
+        if low is None or high is None or low <= req.duration <= high:
+            continue
+        if probe(instance, item.model, min(max(req.duration, low), high)):
+            return f"直接参考角色图需要 {low}–{high} 秒的镜头（现在是 {req.duration} 秒）：把镜头时长改到这个范围"
+    limit = max(int(getattr(instance, "max_reference_images", 0) or 0) for _, instance in capable)
+    if count > limit:
+        return f"参考图最多 {limit} 张，现在连了 {count} 张：去掉几条参考图连线"
+    return NO_REFERENCE_MODEL
 
 
 NO_VIDEO_MODEL = "还没有设置视频模型：在「设置 → 模型服务 → 默认模型」里设置「镜头视频」"
@@ -950,7 +1052,7 @@ async def _create_node_job(
 
     params, plan = await _video_plan(session, canvas, req)
     params.update(base)
-    params["reference_images"] = []
+    params.setdefault("reference_images", [])
     params["resolution"] = plan["resolution"]
     params["video_tier"] = req.tier
     params["routing_snapshot"] = {

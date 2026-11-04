@@ -398,7 +398,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
   }
 
   const storedNodes = useMemo(() => stored(nodes), [nodes])
-  const characterIds = useMemo(() => new Set(storedNodes.filter((node) => isCharacterNode(node, flowEdges)).map((node) => node.id)), [storedNodes, flowEdges])
+  const characterIds = useMemo(() => new Set(storedNodes.filter((node) => isCharacterNode(node, flowEdges, storedNodes)).map((node) => node.id)), [storedNodes, flowEdges])
   const hasCharacterRefs = useMemo(() => flowEdges.some((edge) => edge.targetHandle === 'reference' && characterIds.has(edge.source)), [flowEdges, characterIds])
 
   const actions: CanvasActions = useMemo(() => ({

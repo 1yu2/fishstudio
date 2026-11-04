@@ -137,7 +137,7 @@ export interface Speaker {
 
 /** 角色的基础造型节点：look 为空 / “默认”的第一个，没有就取第一个。 */
 function baseOf(name: string, nodes: StoredNode[], edges: StoredEdge[]): StoredNode | undefined {
-  const looks = nodes.filter((node) => isCharacterNode(node, edges) && characterName(node) === name)
+  const looks = nodes.filter((node) => isCharacterNode(node, edges, nodes) && characterName(node) === name)
   return looks.find(isBaseLook) ?? looks[0]
 }
 
