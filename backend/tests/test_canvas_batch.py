@@ -362,6 +362,12 @@ def test_staged_batches_images_first_then_videos(pg, monkeypatch):
     # 上游图片没有结果的视频：报价不可用且不是 0 元；批次里 blocked，其余视频照常提交
     unavailable = {item["node_id"]: item for item in video_quote["unavailable_nodes"]}
     assert set(unavailable) == {"vid-b"} and "还没有图片" in unavailable["vid-b"]["reason"]
+    assert unavailable["vid-b"]["runs"] is False and unavailable["vid-b"]["blocks_batch"] is False
+    assert (video_quote["runnable_count"], video_quote["waiting_count"], video_quote["blocking_count"]) == (
+        2,
+        1,
+        0,
+    )
     assert detail["nodes"]["vid-b"]["status"] == "blocked"
     assert {"v0", "vid-a"} <= set(after) and "vid-b" not in after
     assert after["vid-a"].startswith("img/")
@@ -444,6 +450,114 @@ def test_kinds_batch_with_other_blockers_is_still_rejected(pg, monkeypatch):
 
     quote = asyncio.run(_run())
     assert len(quote["nodes"][0]["blockers"]) == 2 and not quote["nodes"][0]["upstream_missing_only"]
+    assert quote["blocking_count"] == 1 and quote["runnable_count"] == 0
+    assert quote["unavailable_nodes"][0]["blocks_batch"] is True
+
+
+@requires_pg
+def test_video_batch_with_every_image_missing_is_rejected(pg, monkeypatch):
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", _plan(provider="local_h3"))
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            graph = {
+                "nodes": [_node("img", "image", prompt="x"), _node("vid", "video", prompt="动")],
+                "edges": [_edge("img", "vid", "first_frame")],
+            }
+            await service.save_graph(s, canvas, graph, revision=1)
+            request = batches.BatchRunRequest(client_request_id="r1", kinds=["video"])
+            quote = await batches.batch_quote(s, canvas, request)
+            with pytest.raises(service.CanvasError, match="没有可以运行的节点"):
+                await batches.create_batch(s, canvas, request)
+            return quote
+
+    quote = asyncio.run(_run())
+    assert (quote["runnable_count"], quote["waiting_count"], quote["blocking_count"]) == (0, 1, 0)
+
+
+@requires_pg
+def test_quote_does_not_count_nodes_behind_a_stalled_upstream(pg, monkeypatch):
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", _plan(provider="local_h3"))
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            graph = {
+                "nodes": [
+                    _node("x", "image", prompt="x"),
+                    _node("a", "image", prompt="a"),
+                    _node("b", "image", prompt="b"),
+                ],
+                "edges": [_edge("x", "a", "reference"), _edge("a", "b", "reference")],
+            }
+            await service.save_graph(s, canvas, graph, revision=1)
+            # 只跑 a 及下游的画面：a 缺批次外的 x，b 依赖 a，两者都不会提交
+            request = batches.BatchRunRequest(
+                client_request_id="r1", scope="downstream", node_id="a", kinds=["image"]
+            )
+            quote = await batches.batch_quote(s, canvas, request)
+            with pytest.raises(service.CanvasError, match="没有可以运行的节点"):
+                await batches.create_batch(s, canvas, request)
+            return quote
+
+    quote = asyncio.run(_run())
+    assert (quote["runnable_count"], quote["waiting_count"], quote["blocking_count"]) == (0, 2, 0)
+    reasons = {item["node_id"]: item for item in quote["unavailable_nodes"]}
+    assert reasons["b"]["runs"] is False and "上游" in reasons["b"]["reason"]
+
+
+def test_legacy_video_routing_errors_become_routing_errors(monkeypatch):
+    from app.model_runtime import video
+    from app.model_runtime.video import VideoRoutingError
+
+    class _Empty:
+        def list(self, modality):
+            return []
+
+    async def no_route(session, purpose, tier):
+        return None
+
+    monkeypatch.setattr(video, "get_catalog", lambda: type("C", (), {"snapshot": _Empty()})())
+    monkeypatch.setattr("app.services.model_route_service.get_effective_route", no_route)
+    with pytest.raises(VideoRoutingError) as caught:
+        asyncio.run(video.resolve_video_plan(None, duration=99))
+    assert caught.value.code == "no_candidate"
+
+
+@requires_pg
+def test_video_routing_errors_reach_the_quote_in_plain_words(pg, monkeypatch):
+    from app.model_runtime.video import VideoRoutingError
+
+    async def no_route(session, **kwargs):
+        raise VideoRoutingError("已有视频 Deployment，但未配置用途 Route: shot_video", code="no_route")
+
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", no_route)
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            await service.save_graph(
+                s, canvas, {"nodes": [_node("vid", "video", prompt="动")], "edges": []}, revision=1
+            )
+            return await batches.batch_quote(
+                s, canvas, batches.BatchRunRequest(client_request_id="r1", kinds=["video"])
+            )
+
+    quote = asyncio.run(_run())
+    [item] = quote["unavailable_nodes"]
+    assert item["reason"] == service.NO_VIDEO_MODEL and "Route" not in item["reason"]
+    assert item["blocks_batch"] is True and quote["blocking_count"] == 1
+
+
+def test_video_routing_message_never_shows_internal_terms():
+    for code in ("no_route", "route_disabled", "no_candidate"):
+        message = service.video_routing_message(code, 5)
+        assert message and "Deployment" not in message and "Route" not in message
+    assert "5 秒" in service.video_routing_message("no_candidate", 5)
 
 
 @requires_pg

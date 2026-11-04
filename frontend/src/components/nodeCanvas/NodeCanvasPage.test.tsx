@@ -129,7 +129,8 @@ describe('NodeCanvasPage', () => {
       { node_id: 'img-1', label: '定妆', kind: 'image' as const, status: 'pending' as const, estimated_cost: 0.2, unavailable: false, reason: '' },
       { node_id: 'vid-1', label: '推门', kind: 'video' as const, status: 'pending' as const, estimated_cost: null, unavailable: true, reason: '未配置价格' },
     ],
-    estimated_total: 0.2, billable_total: 0.2, unavailable_nodes: [{ node_id: 'vid-1', label: '推门', reason: '未配置价格' }],
+    estimated_total: 0.2, billable_total: 0.2, runnable_count: 2, waiting_count: 0, blocking_count: 0,
+    unavailable_nodes: [{ node_id: 'vid-1', label: '推门', reason: '未配置价格', runs: true, blocks_batch: false }],
     budget: { cap: 20, remaining: 15 }, exceeds_budget: false,
   }
   const batchRun = { id: 'b1', status: 'running' as const, node_ids: ['img-1', 'vid-1'], nodes: {}, total: 2, completed: 0, failed: 0, estimated_total: 0.2 }
@@ -200,7 +201,52 @@ describe('NodeCanvasPage', () => {
     fireEvent.click(screen.getByText('生成全部视频', { selector: '.nc-batch-hint button' }))
     await screen.findByText(/预计合计/)
     expect(api.batchQuote).toHaveBeenLastCalledWith('c1', { scope: 'all', node_id: undefined, kinds: ['video'] })
-    expect(screen.getByText('这些视频暂时无法运行（未计入合计）')).toBeInTheDocument()
+  })
+
+  const videoNode = (reason: string, blocks: boolean) => ({ node_id: 'vid-1', label: '推门', reason, runs: false, blocks_batch: blocks })
+
+  it('says nothing can run and disables confirm when every video waits for its image', async () => {
+    withImageJob('succeeded')
+    api.batchQuote.mockResolvedValue({
+      ...batchQuote, estimated_total: 0, runnable_count: 0, waiting_count: 1,
+      unavailable_nodes: [videoNode('上游图片还没有结果', false)],
+    })
+    renderPage()
+    fireEvent.click(await screen.findByText('生成全部视频'))
+    expect(await screen.findByText('没有可以运行的节点（1 个缺上游图片，先跳过）')).toBeInTheDocument()
+    expect(screen.queryByText(/将运行/)).not.toBeInTheDocument()
+    expect(screen.getByText('这些节点暂时无法运行（未计入合计）')).toBeInTheDocument()
+    expect(screen.getByText('确认运行').closest('button')).toBeDisabled()
+  })
+
+  it('falls back to the old counting when the server sends an older quote shape', async () => {
+    withImageJob('succeeded')
+    const { runnable_count: _r, waiting_count: _w, blocking_count: _b, ...old } = batchQuote
+    api.batchQuote.mockResolvedValue({ ...old, unavailable_nodes: [{ node_id: 'vid-1', label: '推门', reason: '未配置价格' }] })
+    renderPage()
+    fireEvent.click(await screen.findByText('全部运行'))
+    expect(await screen.findByText(/将运行 2 个节点/)).toBeInTheDocument()
+    expect(screen.getByText('价格未知（未计入合计）')).toBeInTheDocument()
+    expect(screen.getByText('确认运行').closest('button')).not.toBeDisabled()
+  })
+
+  it('counts only runnable nodes and blocks confirm while a node must be fixed first', async () => {
+    withImageJob('succeeded')
+    api.batchQuote.mockResolvedValueOnce({ ...batchQuote, runnable_count: 1, waiting_count: 1 })
+    renderPage()
+    fireEvent.click(await screen.findByText('生成全部视频'))
+    expect(await screen.findByText(/将运行 1 个节点（1 个缺上游图片，先跳过）/)).toBeInTheDocument()
+    expect(screen.getByText('确认运行').closest('button')).not.toBeDisabled()
+
+    api.batchQuote.mockResolvedValueOnce({
+      ...batchQuote, runnable_count: 1, blocking_count: 1,
+      unavailable_nodes: [videoNode('还没有设置视频模型', true)],
+    })
+    fireEvent.click(screen.getByLabelText('关闭批量运行'))
+    fireEvent.click(screen.getByText('全部运行'))
+    expect(await screen.findByText('有 1 个节点需要先处理，处理后才能运行')).toBeInTheDocument()
+    expect(screen.getByText('还没有设置视频模型')).toBeInTheDocument()
+    expect(screen.getByText('确认运行').closest('button')).toBeDisabled()
   })
 
   it('restores a finished image batch after reopening, keeps the hint until dismissed or replaced', async () => {

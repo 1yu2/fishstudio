@@ -32,9 +32,13 @@ VIDEO_PURPOSE = "shot_video"
 class VideoRoutingError(ValueError):
     """没有可执行的视频 Deployment；message 列出每个候选被跳过的原因。"""
 
-    def __init__(self, message: str, skipped: Optional[list[dict[str, str]]] = None) -> None:
+    def __init__(
+        self, message: str, skipped: Optional[list[dict[str, str]]] = None, *, code: str = "no_candidate"
+    ) -> None:
         super().__init__(message)
         self.skipped = skipped or []
+        # no_route：有视频模型但没设默认；route_disabled：默认已停用；no_candidate：候选都不可用
+        self.code = code
 
 
 def _probe_request(
@@ -140,14 +144,22 @@ async def resolve_video_plan(
 
     if route is None:
         if video_deployments:
-            raise VideoRoutingError(f"已有视频 Deployment，但未配置用途 Route: {VIDEO_PURPOSE}")
+            raise VideoRoutingError(
+                f"已有视频 Deployment，但未配置用途 Route: {VIDEO_PURPOSE}", code="no_route"
+            )
         # 兼容期：Catalog 为空（尚未迁移到模型服务配置）时沿用旧的静态路由。
         policy = "explicit" if explicit_deployment else provider_policy
-        return resolve_video_routing(
-            policy, resolution, duration=duration, explicit_provider=explicit_deployment
-        )
+        try:
+            return resolve_video_routing(
+                policy, resolution, duration=duration, explicit_provider=explicit_deployment
+            )
+        except VideoRoutingError:
+            raise
+        except ValueError as error:
+            # 旧静态路由抛普通 ValueError：统一成 VideoRoutingError，调用方才能给出可读原因
+            raise VideoRoutingError(str(error)) from error
     if not route.enabled:
-        raise VideoRoutingError(f"视频用途 Route 已停用: {VIDEO_PURPOSE}/{route.tier}")
+        raise VideoRoutingError(f"视频用途 Route 已停用: {VIDEO_PURPOSE}/{route.tier}", code="route_disabled")
 
     req = _probe_request(
         duration=duration,
