@@ -129,6 +129,7 @@ def _next_hint(
     pending_characters: Optional[list[str]] = None,
     voice_pending: int = 0,
     final_state: Optional[str] = None,
+    qc_reason: Optional[str] = None,
 ) -> str:
     if pending_characters:
         names = "、".join(pending_characters[:3])
@@ -144,7 +145,11 @@ def _next_hint(
     if voice_pending:
         return f"还有 {voice_pending} 句台词没配音"
     if final_state == "stale":
+        if qc_reason:
+            return "出片检查没通过，素材也有变化，需要重新渲染"
         return "素材有变化，需要重新渲染"
+    if final_state == "qc_failed":
+        return f"出片检查没通过：{qc_reason or '请重新渲染'}"
     if final_state in ("ready", "fresh"):
         return "可以导出成片了"
     return "去配音"
@@ -346,16 +351,22 @@ async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
     return _Collected(jobs, costs, stats, review_by_project, failed_by_project)
 
 
-async def _render_states(session: AsyncSession, canvases: list[Any]) -> dict[str, str]:
-    """有成功渲染的项目 → fresh / stale（最新成功渲染的 input_hash 与当前素材算出的是否一致）。
+async def _render_states(session: AsyncSession, canvases: list[Any]) -> dict[str, tuple[str, Optional[str]]]:
+    """有成功渲染的项目 → (状态, 出片检查失败原因)。
 
-    只对渲染过成片的画布重算 EDL 哈希，其余画布不额外查询。
+    状态：fresh（最新成功渲染的 input_hash 与当前素材一致）/ stale（素材变了）/
+    qc_failed（素材没变但出片检查没通过，原因是第一条阻止项的中文说明）。
+    出片检查结果（job.result.qc）和 input_hash 一起批量取；只对渲染过成片的画布重算 EDL 哈希。
     """
     if not canvases:
         return {}
     rows = (
         await session.execute(
-            select(GenerationJob.project_id, GenerationJob.params["input_hash"].astext)
+            select(
+                GenerationJob.project_id,
+                GenerationJob.params["input_hash"].astext,
+                GenerationJob.result["qc"],
+            )
             .where(
                 GenerationJob.project_id.in_([canvas.project_id for canvas in canvases]),
                 GenerationJob.operation == "render_canvas",
@@ -364,18 +375,31 @@ async def _render_states(session: AsyncSession, canvases: list[Any]) -> dict[str
             .order_by(GenerationJob.created_at.desc())
         )
     ).all()
-    rendered: dict[str, Optional[str]] = {}
-    for project_id, input_hash in rows:
-        rendered.setdefault(project_id, input_hash)
-    states: dict[str, str] = {}
+    rendered: dict[str, tuple[Optional[str], Any]] = {}
+    for project_id, input_hash, qc in rows:
+        rendered.setdefault(project_id, (input_hash, qc))
+    states: dict[str, tuple[str, Optional[str]]] = {}
     for canvas in canvases:
         if canvas.project_id in rendered:
+            input_hash, qc = rendered[canvas.project_id]
             current = await canvas_render_service.current_input_hash(session, canvas)
-            states[canvas.project_id] = "fresh" if rendered[canvas.project_id] == current else "stale"
+            qc_reason: Optional[str] = None
+            if isinstance(qc, dict) and qc.get("status") == "failed":
+                blocking = [i for i in qc.get("issues") or [] if i.get("level") == "blocking"]
+                qc_reason = blocking[0]["message"] if blocking else "请重新渲染"
+            if input_hash != current:
+                # 素材变了：照样要重新渲染；检查没通过的原因一并带上，提示不能丢
+                states[canvas.project_id] = ("stale", qc_reason)
+            elif qc_reason is not None:
+                states[canvas.project_id] = ("qc_failed", qc_reason)
+            else:
+                states[canvas.project_id] = ("fresh", None)
     return states
 
 
-def _project_entry(canvas: Any, data: _Collected, render: Optional[str] = None) -> dict[str, Any]:
+def _project_entry(
+    canvas: Any, data: _Collected, render: Optional[str] = None, qc_reason: Optional[str] = None
+) -> dict[str, Any]:
     """单个项目的概览条目（工作台列表与项目页顶栏共用）。"""
     info = data.stats[canvas.project_id]
     failed = len(data.failed_by_project.get(canvas.project_id, []))
@@ -389,7 +413,9 @@ def _project_entry(canvas: Any, data: _Collected, render: Optional[str] = None) 
         render=render,
     )
     final_step = next(step["status"] for step in steps if step["key"] == "final")
-    final_state = render if render == "stale" else "ready" if final_step == "active" else render
+    final_state = (
+        render if render in ("stale", "qc_failed") else "ready" if final_step == "active" else render
+    )
     characters_active = any(step["key"] == "characters" and step["status"] == "active" for step in steps)
     pending = [item["name"] for item in info["characters"] if not item["final"]] if characters_active else []
     return {
@@ -411,6 +437,7 @@ def _project_entry(canvas: Any, data: _Collected, render: Optional[str] = None) 
             pending,
             info["voice"][0] - info["voice"][1],
             final_state=final_state,
+            qc_reason=qc_reason,
         ),
     }
 
@@ -435,7 +462,8 @@ async def project_summary(session: AsyncSession, user: User, canvas_id: str) -> 
     if canvas is None:
         return None
     data = await _collect(session, [canvas])
-    entry = _project_entry(canvas, data, (await _render_states(session, [canvas])).get(canvas.project_id))
+    render, qc_reason = (await _render_states(session, [canvas])).get(canvas.project_id, (None, None))
+    entry = _project_entry(canvas, data, render, qc_reason)
     return {
         "canvas_id": entry["canvas_id"],
         "project_id": entry["project_id"],
@@ -485,7 +513,9 @@ async def overview(session: AsyncSession, user: User) -> dict[str, Any]:
 
     shown = list(canvases[:MAX_PROJECTS])
     render_states = await _render_states(session, shown)
-    projects = [_project_entry(canvas, data, render_states.get(canvas.project_id)) for canvas in shown]
+    projects = [
+        _project_entry(canvas, data, *render_states.get(canvas.project_id, (None, None))) for canvas in shown
+    ]
 
     running_jobs = [job for job in jobs if job.status in RUNNING_STATUSES]
     node_labels = {

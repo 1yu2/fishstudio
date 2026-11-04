@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { forwardRef } from 'react'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { finalApi, RenderBlockedError, type FinalState, type RenderInfo } from '../../api/final'
+import { finalApi, RenderBlockedError, type FinalState, type RenderInfo, type RenderQc } from '../../api/final'
 import { ConflictError, nodeCanvasApi, type StoredNode } from '../../api/nodeCanvas'
 import { ConfirmHost } from '../ui/ConfirmDialog'
 import { toast } from '../ui/Toast'
@@ -19,7 +19,7 @@ vi.mock('../../api/final', async (importOriginal) => {
 vi.mock('../ui/Toast', () => ({ toast: vi.fn() }))
 vi.mock('../common/ProtectedMedia', () => ({
   ProtectedImage: ({ src }: { src: string }) => <img src={src} alt="" />,
-  ProtectedVideo: forwardRef<HTMLVideoElement, { src: string }>(({ src }, ref) => <video ref={ref} src={src} data-testid="player" />),
+  ProtectedVideo: forwardRef<HTMLVideoElement, { src: string; controlsList?: string; disablePictureInPicture?: boolean; onContextMenu?: React.MouseEventHandler }>(({ src, controlsList, disablePictureInPicture, onContextMenu }, ref) => <video ref={ref} src={src} data-testid="player" controlsList={controlsList} disablePictureInPicture={disablePictureInPicture} onContextMenu={onContextMenu} />),
 }))
 
 const nc = vi.mocked(nodeCanvasApi)
@@ -97,12 +97,14 @@ describe('FinalPage load', () => {
     expect(fa.ensureNode).not.toHaveBeenCalled()
   })
 
-  it('shows the placeholder when nothing was rendered and keeps AIGC / QC out of the UI as coming soon', async () => {
+  it('shows the placeholder when nothing was rendered; the AIGC label is always on and cannot be switched off', async () => {
     renderPage()
     expect(await screen.findByText('还没有渲染过')).toBeInTheDocument()
-    expect(screen.getByText(/自动加入“AI 生成”标识（即将上线）/)).toBeInTheDocument()
-    expect(screen.getByText('出片检查（即将上线）')).toBeInTheDocument()
-    expect(screen.getByRole('checkbox', { name: /AI 生成/ })).toBeDisabled()
+    const label = screen.getByRole('checkbox', { name: '自动加入“AI 生成”标识（平台要求）' })
+    expect(label).toBeChecked()
+    expect(label).toBeDisabled()
+    expect(screen.queryByText(/即将上线/)).toBeNull()
+    expect(within(screen.getByLabelText('出片检查')).getByText('渲染完成后自动检查')).toBeInTheDocument()
   })
 
   it('plays the latest successful render', async () => {
@@ -342,5 +344,173 @@ describe('FinalPage background music', () => {
     expect(nc.save.mock.calls[nc.save.mock.calls.length - 1][1].nodes!.find((n) => n.id === 'ep')!.data).toMatchObject({
       bgm_volume_db: -30, ducking: false, fades: false, resolution: '1080p', bgm_artifact_id: 'b1',
     })
+  })
+})
+
+const qcOf = (extra: Partial<RenderQc> = {}): RenderQc => ({ version: 1, status: 'passed', issues: [], notes: [], checks: {}, ...extra })
+const withQc = (qc: RenderQc | null | undefined, extra: Partial<FinalState> = {}) => finalState({ latest_render: render1({ qc }), last_success: render1({ qc }), ...extra })
+const BLACK = { code: 'black_segments', level: 'warning' as const, message: '黑屏 0.8 秒', start_ms: 5000, end_ms: 5800 }
+const FROZEN = { code: 'frozen_segments', level: 'warning' as const, message: '画面静止 2.5 秒', start_ms: 3000, end_ms: 5500 }
+const SILENT = { code: 'silent_segments', level: 'warning' as const, message: '静音 3.0 秒', start_ms: 6000, end_ms: 7000 }
+const AV_DIFF = { code: 'av_duration_diff_ms', level: 'blocking' as const, message: '声音比画面长 0.8 秒' }
+
+describe('FinalPage QC card', () => {
+  it('shows one passing line with the small print', async () => {
+    setup(withQc(qcOf()))
+    renderPage()
+    const card = await screen.findByLabelText('出片检查')
+    expect(within(card).getByText('出片检查已通过')).toBeInTheDocument()
+    expect(within(card).getByText('没有黑屏片段 · 没有静音片段 · 声音和画面时长一致')).toBeInTheDocument()
+  })
+
+  it('lists warnings with time points and seeks the player on click', async () => {
+    setup(withQc(qcOf({ status: 'warning', issues: [BLACK, SILENT] })))
+    renderPage()
+    const card = await screen.findByLabelText('出片检查')
+    expect(within(card).getByText('出片检查有 2 条提醒')).toBeInTheDocument()
+    expect(within(card).getByText('黑屏 0.8 秒')).toBeInTheDocument()
+    const player = await screen.findByTestId('player') as HTMLVideoElement
+    fireEvent.click(within(card).getByRole('button', { name: '跳到 0:05' }))
+    expect(player.currentTime).toBe(5)
+    expect(screen.getByTestId('playhead').getAttribute('data-fraction')).toBe('0.62500')
+    fireEvent.click(within(card).getByRole('button', { name: '跳到 0:06–0:07' }))
+    expect(player.currentTime).toBe(6)
+    expect(screen.getByTestId('playhead').getAttribute('data-fraction')).toBe('0.75000')
+  })
+
+  it('shows blocking reasons first with a re-render suggestion when failed', async () => {
+    setup(withQc(qcOf({ status: 'failed', issues: [BLACK, AV_DIFF] })))
+    renderPage()
+    const card = await screen.findByLabelText('出片检查')
+    expect(within(card).getByText('出片检查没通过')).toBeInTheDocument()
+    const items = within(card).getAllByRole('listitem')
+    expect(items[0]).toHaveTextContent('声音比画面长 0.8 秒')
+    expect(items[1]).toHaveTextContent(/0:05.*黑屏 0.8 秒/)
+    expect(within(card).getByText(/建议重新渲染/)).toBeInTheDocument()
+  })
+
+  it('tells the user old renders have no check and does not block export', async () => {
+    setup(withQc(undefined))
+    renderPage()
+    expect(await screen.findByText('这次渲染没有出片检查，重新渲染后可查看')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '导出成片' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '导出成片' }))
+    await waitFor(() => expect(fa.download).toHaveBeenCalled())
+  })
+
+  it('says the check runs after rendering while a render is in progress', async () => {
+    setup(finalState({ latest_render: render1({ status: 'running', progress: 30, artifact_id: null, url: null, srt_url: null }), last_success: render1({ qc: qcOf({ status: 'failed', issues: [AV_DIFF] }) }) }))
+    renderPage()
+    expect(within(await screen.findByLabelText('出片检查')).getByText('渲染完成后自动检查')).toBeInTheDocument()
+    expect(screen.queryByText('出片检查没通过')).toBeNull()
+  })
+
+  it('shows a check error as a soft note that does not block', async () => {
+    setup(withQc(qcOf({ status: 'error', error: '出片检查没有跑完：TimeoutExpired' })))
+    renderPage()
+    expect(await screen.findByText(/出片检查没有跑完：TimeoutExpired（不影响导出）/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '导出成片' })).toBeEnabled()
+  })
+
+  it('shows notes such as a silent timeline', async () => {
+    setup(withQc(qcOf({ notes: ['时间线上没有配音和背景音乐，成片是静音的'] })))
+    renderPage()
+    expect(await screen.findByText('时间线上没有配音和背景音乐，成片是静音的')).toBeInTheDocument()
+  })
+})
+
+describe('FinalPage QC export gate', () => {
+  it('disables export when the check failed, shows the reason in the page and the footer', async () => {
+    setup(withQc(qcOf({ status: 'failed', issues: [AV_DIFF] })))
+    renderPage()
+    expect(await screen.findByRole('button', { name: '导出成片' })).toBeDisabled()
+    expect(screen.getByText('出片检查没通过：声音比画面长 0.8 秒，建议重新渲染')).toBeInTheDocument()
+    expect(lastFooter()).toMatchObject({ disabled: true, note: '出片检查没通过：声音比画面长 0.8 秒' })
+    expect(screen.getByRole('button', { name: '重新渲染预览' })).toBeEnabled()
+  })
+
+  it('blocks an export even if the fresh state turns out failed after the click', async () => {
+    setup(withQc(qcOf()))
+    renderPage()
+    const button = await screen.findByRole('button', { name: '导出成片' })
+    fa.get.mockResolvedValue(withQc(qcOf({ status: 'failed', issues: [AV_DIFF] })))
+    fireEvent.click(button)
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('出片检查没通过：声音比画面长 0.8 秒', 'error'))
+    expect(fa.download).not.toHaveBeenCalled()
+  })
+
+  it('asks once and lists the warnings before exporting', async () => {
+    setup(withQc(qcOf({ status: 'warning', issues: [BLACK, FROZEN] })))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '导出成片' }))
+    expect(await screen.findByText('出片检查有 2 条提醒，仍要导出吗？')).toBeInTheDocument()
+    expect(screen.getByText(/0:05 黑屏 0.8 秒；0:03–0:05 画面静止 2.5 秒/)).toBeInTheDocument()
+    expect(fa.download).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    await act(async () => undefined)
+    expect(fa.download).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '导出成片' }))
+    fireEvent.click(await screen.findByRole('button', { name: '仍要导出' }))
+    await waitFor(() => expect(fa.download).toHaveBeenCalledTimes(1))
+  })
+
+  it('exports straight away when the check passed', async () => {
+    setup(withQc(qcOf()))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '导出成片' }))
+    await waitFor(() => expect(fa.download).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText(/仍要导出吗/)).toBeNull()
+  })
+})
+
+describe('FinalPage QC timeline markers', () => {
+  it('marks black, frozen and silent segments proportionally on a read-only lane', async () => {
+    setup(withQc(qcOf({ status: 'warning', issues: [FROZEN, SILENT, { ...BLACK, start_ms: 7000, end_ms: 8000 }] })))
+    renderPage()
+    const lane = await screen.findByRole('group', { name: '检查轨道' })
+    const markers = within(lane).getAllByTestId('qc-marker')
+    expect(markers).toHaveLength(3)
+    expect(markers[0].className).toContain('fn-marker--frozen')
+    expect(markers[0].style.left).toBe('37.5%')
+    expect(markers[0].style.width).toBe('31.25%')
+    expect(markers[1].className).toContain('fn-marker--silent')
+    expect(markers[2].className).toContain('fn-marker--black')
+    expect(markers[2].style.left).toBe('87.5%')
+    expect(markers[0].getAttribute('title')).toBe('画面静止 · 画面静止 2.5 秒')
+  })
+
+  it('has no marker lane when the check found nothing or the render is old', async () => {
+    setup(withQc(qcOf()))
+    renderPage()
+    await screen.findByLabelText('出片检查')
+    expect(screen.queryByRole('group', { name: '检查轨道' })).toBeNull()
+  })
+})
+
+describe('FinalPage player download guard', () => {
+  it('removes native download, speed and PiP for a failed check, blocks the context menu, and stays playable', async () => {
+    setup(withQc(qcOf({ status: 'failed', issues: [AV_DIFF] })))
+    renderPage()
+    const player = await screen.findByTestId('player') as HTMLVideoElement
+    expect(player.getAttribute('controlsList')).toBe('nodownload noplaybackrate')
+    expect(player.hasAttribute('disablepictureinpicture')).toBe(true)
+    expect(fireEvent.contextMenu(player)).toBe(false)  // preventDefault 被调用
+    expect(player.getAttribute('src')).toBe('/api/artifacts/a1/download')
+  })
+
+  it('removes native download for warnings so export always goes through the confirm', async () => {
+    setup(withQc(qcOf({ status: 'warning', issues: [BLACK] })))
+    renderPage()
+    const player = await screen.findByTestId('player') as HTMLVideoElement
+    expect(player.getAttribute('controlsList')).toBe('nodownload')
+    expect(fireEvent.contextMenu(player)).toBe(false)
+  })
+
+  it('leaves the player untouched when the check passed', async () => {
+    setup(withQc(qcOf()))
+    renderPage()
+    const player = await screen.findByTestId('player') as HTMLVideoElement
+    expect(player.getAttribute('controlsList')).toBeNull()
+    expect(fireEvent.contextMenu(player)).toBe(true)
   })
 })

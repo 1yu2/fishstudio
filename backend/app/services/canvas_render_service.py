@@ -370,6 +370,8 @@ def _render_entry(job: GenerationJob) -> dict[str, Any]:
         "srt_url": f"/api/artifacts/{srt_id}/download" if srt_id else None,
         "input_hash": (job.params or {}).get("input_hash"),
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        # 出片检查结果；本功能上线前渲染的成片没有（None），前端提示重新渲染后可查看
+        "qc": result.get("qc") if job.status == "succeeded" else None,
     }
 
 
