@@ -35,6 +35,8 @@ class EvalRunRequest(BaseModel):
     model: str
     project_id: Optional[str] = None
     samples: list[dict[str, Any]]
+    # 局部运行：只评测了前 N 个镜头（N < 基准镜头数）；不传则必须提交完整基准的全部镜头样本
+    partial_shots: Optional[int] = Field(default=None, ge=1)
 
 
 class PriceEntryRequest(BaseModel):
@@ -119,6 +121,7 @@ async def create_eval_run(
             samples=body.samples,
             project_id=body.project_id,
             created_by=user.id,
+            partial_shots=body.partial_shots,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -232,6 +235,20 @@ async def drilldown_usage(
         }
         for usage, job, invocation, step in rows
     ]
+
+
+@router.get("/eval/price-consistency")
+async def get_price_consistency(
+    image_model: str = "",
+    video_model: str = "",
+    tier: str = "preview",
+    duration: int = 4,
+    _: User = Depends(require_admin),
+):
+    """报价口径与 worker 落账口径的单价对照（管理员只读）；基准脚本真实跑前用它拒绝价格不一致的模型。"""
+    return eval_service.price_consistency(
+        image_model=image_model, video_model=video_model, tier=tier, duration=duration
+    )
 
 
 @router.get("/eval/prices")

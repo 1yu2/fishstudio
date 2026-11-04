@@ -191,19 +191,30 @@ async def create_eval_run(
     samples: list[dict[str, Any]],
     project_id: Optional[str] = None,
     created_by: Optional[int] = None,
+    partial_shots: Optional[int] = None,
 ) -> EvalRun:
     if dataset.status != "active":
         raise ValueError(f"benchmark {dataset.key} v{dataset.version} 已停用")
-    if len(samples) != dataset.shot_count:
-        raise ValueError(f"benchmark 需要 {dataset.shot_count} 个镜头样本")
+    input_hash = dataset.content_hash
+    if partial_shots is None:
+        if len(samples) != dataset.shot_count:
+            raise ValueError(f"benchmark 需要 {dataset.shot_count} 个镜头样本")
+    else:
+        # 局部运行（基准脚本 --max-shots 只跑前 N 个镜头）：必须明确声明 N 且样本数等于 N；
+        # input_hash 带上 N，metrics 里标记 partial，routing_stats 不统计，避免与完整基准混比
+        if not 1 <= partial_shots < dataset.shot_count or len(samples) != partial_shots:
+            raise ValueError(f"局部运行需要 1 到 {dataset.shot_count - 1} 个镜头，且样本数与之相等")
+        input_hash = f"{dataset.content_hash}:partial-{partial_shots}"
     metrics, reasons, score, explanation = aggregate_samples(samples)
+    if partial_shots is not None:
+        metrics = {**metrics, "partial": {"shots": partial_shots, "of": dataset.shot_count}}
     row = EvalRun(
         dataset_id=dataset.id,
         project_id=project_id,
         provider=provider,
         deployment=deployment,
         model=model,
-        input_hash=dataset.content_hash,
+        input_hash=input_hash,
         metrics=metrics,
         failure_reasons=reasons,
         score=score,
@@ -217,7 +228,12 @@ async def create_eval_run(
 
 
 async def routing_stats(session: AsyncSession) -> list[dict[str, Any]]:
-    rows = list((await session.execute(select(EvalRun).where(EvalRun.status == "completed"))).scalars())
+    rows = [
+        row
+        for row in (await session.execute(select(EvalRun).where(EvalRun.status == "completed"))).scalars()
+        # 局部运行（只跑了前 N 个镜头）与完整基准不可比，不进入路由统计
+        if "partial" not in (row.metrics or {})
+    ]
     grouped: dict[str, list[EvalRun]] = {}
     for row in rows:
         grouped.setdefault(row.deployment, []).append(row)
@@ -325,3 +341,99 @@ async def record_publication_metrics(
     await session.commit()
     await session.refresh(row)
     return row
+
+
+# ── 报价与落账口径一致性（基准脚本真实跑前的价格体检）─────────────────────
+
+PRICE_TOLERANCE = Decimal("1.05")
+
+
+def _image_slugs(snapshot: Any, image_model: str) -> list[tuple[str, str]]:
+    """要检查的图片部署：显式指定的，或默认路由（生成 + 编辑，含备用）里的全部候选。"""
+    if image_model:
+        return [("指定", image_model)]
+    out: list[tuple[str, str]] = []
+    for purpose in ("image_generation", "image_edit"):
+        for slug in dict.fromkeys(snapshot.route_candidates(purpose, "final")):
+            out.append((purpose, slug))
+    return out
+
+
+def price_consistency(
+    *, image_model: str = "", video_model: str = "", tier: str = "preview", duration: int = 4
+) -> dict[str, Any]:
+    """比较“报价口径”与“worker 落账口径”的单价。
+
+    - 图片：报价用 Catalog 部署的 pricing.output_per_image；落账用 estimate_image_cost(provider, model) 的静态价目。
+      任一缺失，或落账价 > 报价 × 1.05 都算不一致（低估会让预算与每日上限按偏低价格放行，缺落账价会漏记）。
+    - 视频：报价与落账（estimated_cost）都来自同一份 Catalog 价格快照；这里核对价格条目存在且能算出该时长的价格。
+    """
+    from app.model_runtime.catalog import get_catalog
+    from app.providers.pricing import (
+        estimate_image_cost,
+        estimate_video_cost_from_entry,
+        estimate_video_tokens,
+        pricing_entry,
+    )
+
+    snapshot = get_catalog().snapshot
+    problems: list[str] = []
+    images: list[dict[str, Any]] = []
+    for purpose, slug in _image_slugs(snapshot, image_model):
+        item = snapshot.get(slug)
+        row: dict[str, Any] = {"purpose": purpose, "slug": slug, "quote": None, "booked": None, "ok": False}
+        images.append(row)
+        if item is None or item.modality != "image":
+            problems.append(f"图片部署 {slug} 不存在")
+            continue
+        raw = (item.pricing or {}).get("output_per_image")
+        try:
+            quote = Decimal(str(raw)) if raw not in (None, "") else None
+        except ArithmeticError:
+            quote = None
+        provider = getattr(item.instance, "name", "") or item.driver
+        booked = estimate_image_cost(provider, item.model, count=1)
+        row.update(provider=provider, model=item.model, quote=str(quote) if quote is not None else None)
+        row["booked"] = str(booked) if booked is not None else None
+        if quote is None or booked is None:
+            problems.append(
+                f"图片部署 {slug}：{'Catalog 报价' if quote is None else '落账静态价目'}缺失"
+                f"（报价 {row['quote']}，落账 {row['booked']}）"
+            )
+        elif booked > quote * PRICE_TOLERANCE:
+            problems.append(f"图片部署 {slug}：落账价 {booked} 高于报价 {quote} 的 1.05 倍")
+        else:
+            row["ok"] = True
+    videos: list[dict[str, Any]] = []
+    if video_model:
+        video_slugs = [video_model]
+    else:
+        video_slugs = list(dict.fromkeys(snapshot.route_candidates("shot_video", tier)))
+    for slug in video_slugs:
+        item = snapshot.get(slug)
+        row = {"slug": slug, "quote": None, "booked": None, "ok": False}
+        videos.append(row)
+        if item is None or item.modality != "video":
+            problems.append(f"视频部署 {slug} 不存在")
+            continue
+        entry = pricing_entry(item.pricing)
+        cost = (
+            estimate_video_cost_from_entry(
+                entry,
+                output_seconds=duration,
+                video_tokens=estimate_video_tokens("480p" if tier == "preview" else "720p", duration),
+            )
+            if entry
+            else None
+        )
+        # 落账用同一份价格快照（job.params.price_snapshot）还原，必须与报价一致
+        row["quote"] = row["booked"] = str(cost) if cost is not None else None
+        if cost is None:
+            problems.append(f"视频部署 {slug}：价格条目缺失，或算不出 {duration} 秒镜头的价格")
+        else:
+            row["ok"] = True
+    if not videos:
+        problems.append("没有可检查的视频部署（未配置默认路由）")
+    if not images:
+        problems.append("没有可检查的图片部署（未配置默认路由）")
+    return {"image": images, "video": videos, "ok": not problems, "problems": problems}

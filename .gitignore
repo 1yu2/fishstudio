@@ -56,3 +56,6 @@ tasks/
 
 
 
+
+# 画布端到端基准脚本的输出（backend/scripts/bench_canvas_e2e.py）
+bench-results/
