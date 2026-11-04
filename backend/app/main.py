@@ -44,6 +44,7 @@ from app.routers import workflow as workflow_router
 from app.routers import workspace as workspace_router
 from app.services import workspace_service
 from app.services.connection_manager import manager
+from app.upload_limit import UploadLimitMiddleware
 from app.utils.logger import setup_logging
 
 _settings = get_settings()
@@ -92,6 +93,8 @@ app = FastAPI(title="FishStudio API", version="1.0.0", lifespan=lifespan)
 
 # 注意：中间件按"添加倒序"执行；最后 add 的最先执行
 # request_id 必须最先（这样后续日志/异常都能拿到 rid），CORS 最后处理浏览器预检
+# 上传体积限制必须在 multipart 解析之前生效（先于路由，位于 CORS / RequestId 内层）
+app.add_middleware(UploadLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings.cors_origins,
@@ -150,17 +153,46 @@ else:
 
     _STORAGE_ROOT = STORAGE_DIR.resolve()
 
-    def _safe_storage_file(path: str) -> Path | None:
-        """resolve 后必须仍在 storage 根下，防目录穿越。"""
-        full = (_STORAGE_ROOT / path).resolve()
-        if not full.is_relative_to(_STORAGE_ROOT) or not full.is_file():
+    def _normalize_storage_path(path: str) -> list[str] | None:
+        """规范化 /storage 子路径 → 路径段列表；任何可疑形态返回 None（调用方统一 404）。
+
+        先反复 URL 解码（防 %2e%2e、双重编码），再逐段检查：拒绝 ..、.、空段、反斜杠、NUL。
+        后续「是否 public」「属于谁」都只基于这个规范化结果判断，不再看原始字符串。
+        """
+        from urllib.parse import unquote
+
+        current = path
+        for _ in range(4):
+            decoded = unquote(current)
+            if decoded == current:
+                break
+            current = decoded
+        else:
+            return None  # 解码超过 4 层，视为恶意
+        if "\\" in current or "\x00" in current:
+            return None
+        segments = current.split("/")
+        if any(seg in ("", ".", "..") for seg in segments):
+            return None
+        return segments
+
+    def _safe_storage_file(segments: list[str], base: Path | None = None) -> Path | None:
+        """resolve 后必须仍在 storage 根（public 请求为 public 目录）下，防目录穿越与符号链接逃逸。"""
+        root = base or _STORAGE_ROOT
+        full = (_STORAGE_ROOT / "/".join(segments)).resolve()
+        if not full.is_relative_to(root) or not full.is_file():
             return None
         return full
 
     @app.get("/storage/{path:path}")
     async def serve_storage(path: str, request: Request):
-        if path.startswith("public/"):
-            full = _safe_storage_file(path)
+        segments = _normalize_storage_path(path)
+        if segments is None:
+            return JSONResponse(status_code=404, content={"detail": "not found"})
+        path = "/".join(segments)
+
+        if segments[0] == "public":
+            full = _safe_storage_file(segments, (_STORAGE_ROOT / "public").resolve())
             if full is None:
                 return JSONResponse(status_code=404, content={"detail": "not found"})
             return FileResponse(str(full))
@@ -190,6 +222,16 @@ else:
             if user is None:
                 return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
+            # 聊天上传：uploads/<user_id>/... 只按用户判定——本人或 admin 放行，其余一律 404；
+            # 绝不回落到 Artifact 反查或 STORAGE_LEGACY_AUTHENTICATED_READ（否则 legacy 开关会让别人读到）
+            if len(segments) > 2 and segments[0] == "uploads" and segments[1].isdigit():
+                if segments[1] != str(user.id) and not user.is_admin:
+                    return _404()
+                full = _safe_storage_file(segments)
+                if full is None:
+                    return _404()
+                return FileResponse(str(full))
+
             artifact = (
                 await session.execute(select(Artifact).where(Artifact.storage_key == path).limit(1))
             ).scalar_one_or_none()
@@ -212,7 +254,7 @@ else:
                     except PermissionError:
                         return _404()
 
-        full = _safe_storage_file(path)
+        full = _safe_storage_file(segments)
         if full is None:
             return JSONResponse(status_code=404, content={"detail": "not found"})
         return FileResponse(str(full))

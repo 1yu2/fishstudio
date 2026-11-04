@@ -93,3 +93,57 @@ def _auto_app_overrides_for_existing_tests(monkeypatch, request):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "no_bypass_auth: skip the autouse auth bypass for this test")
+
+
+@pytest.fixture(scope="session")
+def real_media(tmp_path_factory):
+    """真实可解码的媒体样本（Pillow / ffmpeg 现场生成），上传校验的成功样本必须用它。"""
+    import io
+    import subprocess
+    import wave
+
+    from PIL import Image
+
+    from app.services.timeline_renderer import _ffmpeg_exe
+
+    out: dict[str, bytes] = {}
+    for ext, fmt in (("png", "PNG"), ("jpg", "JPEG"), ("webp", "WEBP"), ("gif", "GIF")):
+        buffer = io.BytesIO()
+        Image.new("RGB", (16, 16), (200, 30, 30)).save(buffer, fmt)
+        out[ext] = buffer.getvalue()
+    frames = [Image.new("RGB", (8, 8), (i * 40, 0, 0)) for i in range(3)]
+    buffer = io.BytesIO()
+    frames[0].save(buffer, "GIF", save_all=True, append_images=frames[1:], duration=100, loop=0)
+    out["anim_gif"] = buffer.getvalue()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x01" * 8000)
+    out["wav"] = buffer.getvalue()
+    tmp = tmp_path_factory.mktemp("media")
+    ffmpeg = _ffmpeg_exe()
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(tmp / "a.mp3")],
+        capture_output=True,
+        check=True,
+    )
+    out["mp3"] = (tmp / "a.mp3").read_bytes()
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=64x64:d=1",
+            "-pix_fmt",
+            "yuv420p",
+            str(tmp / "v.mp4"),
+        ],
+        capture_output=True,
+        check=True,
+    )
+    out["mp4"] = (tmp / "v.mp4").read_bytes()
+    return out

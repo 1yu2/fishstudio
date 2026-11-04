@@ -18,6 +18,8 @@ import requests
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+from app.services import safe_fetch
+
 logger = logging.getLogger(__name__)
 
 # 优先加载 backend/.env（避免直接运行工具脚本时环境未加载）
@@ -85,9 +87,6 @@ def download_and_save_video(video_url: str, prompt: str = "") -> str:
         logger.info(f"📥 开始下载视频: {video_url}")
 
         # 下载视频
-        response = requests.get(video_url, timeout=300, stream=True)
-        response.raise_for_status()
-
         # 从URL获取文件扩展名，如果没有则默认为mp4
         parsed_url = urlparse(video_url)
         path = parsed_url.path
@@ -110,10 +109,10 @@ def download_and_save_video(video_url: str, prompt: str = "") -> str:
         file_path = VIDEOS_DIR / filename
 
         # 保存文件
-        with open(file_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+        # 视频 URL 来自厂商响应：走 safe_fetch 防 SSRF，流式落盘并限制大小
+        safe_fetch.fetch_to_file(
+            video_url, file_path, timeout=60, total_timeout=900, max_bytes=safe_fetch.MAX_VIDEO_BYTES
+        )
 
         # 返回HTTP访问路径（以/storage/开头，前端可以直接使用）
         http_path = f"/storage/videos/{filename}"

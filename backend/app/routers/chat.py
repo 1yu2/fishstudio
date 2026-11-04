@@ -3,9 +3,6 @@
 """
 
 import json
-import os
-import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_user
 from app.db.database import get_session
 from app.db.models import SeriesProject, User
+from app.services import upload_guard
 from app.services.agent_service import process_chat_stream
 from app.services.connection_manager import manager
 from app.services.execution_context import (
@@ -79,163 +77,80 @@ async def delete_canvas(
     return {"success": True}
 
 
+# 聊天侧上传统一走 upload_guard：登录由路由器级依赖保证；大小边读边限；
+# 类型按内容嗅探；落盘文件名与扩展名完全由服务端决定（防路径穿越 / 伪造类型）。
+_STORAGE_DIR = Path(__file__).parent.parent.parent / "storage"
+
+
+def _user_dir(user: User, kind: str) -> Path:
+    """按用户分目录：uploads/<user_id>/<kind>/。/storage 鉴权据此放行上传者本人与 admin。"""
+    return _STORAGE_DIR / "uploads" / str(user.id) / kind
+
+
 @router.post("/upload-image")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(file: UploadFile = File(...), user: User = Depends(get_current_user)):
     """
-    上传图片到 storage/images 目录
+    上传图片到 storage/uploads/<user_id>/images 目录（≤15MB；仅 png / jpeg / webp / gif，按内容识别）
 
     Returns:
-        上传后的图片URL（相对路径，如 /storage/images/xxx.jpg）
+        上传后的图片URL（相对路径，如 /storage/uploads/1/images/xxx.png）
     """
     try:
-        # 确保上传目录存在
-        BASE_DIR = Path(__file__).parent.parent.parent
-        IMAGES_DIR = BASE_DIR / "storage" / "images"
-        IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-
-        # 验证文件类型
-        content_type = file.content_type or ""
-        if not content_type.startswith("image/"):
-            raise HTTPException(status_code=400, detail="只支持图片文件")
-
-        # 生成唯一文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-
-        # 获取文件扩展名
-        original_filename = file.filename or "image"
-        ext = os.path.splitext(original_filename)[1] or ".jpg"
-        if not ext.startswith("."):
-            ext = ".jpg"
-
-        filename = f"upload_{timestamp}_{unique_id}{ext}"
-        file_path = IMAGES_DIR / filename
-
-        # 保存文件
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-
-        # 返回相对路径
-        image_url = f"/storage/images/{filename}"
-        return {"url": image_url, "filename": filename}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+        path, _mime, _size = await upload_guard.save_upload(
+            file,
+            _user_dir(user, "images"),
+            sniff=upload_guard.sniff_image,
+            max_bytes=upload_guard.IMAGE_MAX_BYTES,
+            kind_label="图片",
+            validate=upload_guard.validate_image,
+        )
+    finally:
+        await file.close()
+    return {"url": f"/storage/uploads/{user.id}/images/{path.name}", "filename": path.name}
 
 
 @router.post("/upload-audio")
-async def upload_audio(file: UploadFile = File(...)):
+async def upload_audio(file: UploadFile = File(...), user: User = Depends(get_current_user)):
     """
-    上传音频到 storage/audios 目录
-    支持的格式：mp3, wav, m4a, aac, ogg, flac, wma
+    上传音频到 storage/uploads/<user_id>/audios 目录（≤20MB；mp3 / wav / m4a / aac / ogg / flac，按内容识别）
 
     Returns:
-        上传后的音频URL（相对路径，如 /storage/audios/xxx.mp3 或 /storage/audios/xxx.wav）
+        上传后的音频URL（相对路径，如 /storage/uploads/1/audios/xxx.mp3）
     """
     try:
-        # 确保上传目录存在
-        BASE_DIR = Path(__file__).parent.parent.parent
-        AUDIOS_DIR = BASE_DIR / "storage" / "audios"
-        AUDIOS_DIR.mkdir(parents=True, exist_ok=True)
-
-        # 验证文件类型
-        content_type = file.content_type or ""
-        # 支持的音频 MIME 类型
-        allowed_audio_types = [
-            "audio/",  # 通用音频类型（audio/mpeg, audio/wav, audio/mp4 等）
-            "audio/wav",
-            "audio/x-wav",
-            "audio/wave",
-            "audio/mpeg",  # mp3
-            "audio/mp4",  # m4a
-            "audio/aac",
-            "audio/ogg",
-            "audio/flac",
-            "application/octet-stream",  # 有些浏览器可能不识别音频类型
-        ]
-        is_audio = any(content_type.startswith(t) for t in allowed_audio_types)
-
-        # 也检查文件扩展名
-        original_filename = file.filename or "audio"
-        ext = os.path.splitext(original_filename)[1].lower()
-        allowed_extensions = [".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".wma"]
-
-        if not is_audio and ext not in allowed_extensions:
-            raise HTTPException(
-                status_code=400, detail=f"只支持音频文件，支持的格式：{', '.join(allowed_extensions)}"
-            )
-
-        # 生成唯一文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-
-        # 获取文件扩展名，如果没有则默认使用 .mp3
-        if not ext or ext not in allowed_extensions:
-            ext = ".mp3"
-
-        filename = f"upload_{timestamp}_{unique_id}{ext}"
-        file_path = AUDIOS_DIR / filename
-
-        # 保存文件
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-
-        # 返回相对路径
-        audio_url = f"/storage/audios/{filename}"
-        return {"url": audio_url, "filename": filename}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+        path, _mime, _size = await upload_guard.save_upload(
+            file,
+            _user_dir(user, "audios"),
+            sniff=upload_guard.sniff_audio,
+            max_bytes=upload_guard.AUDIO_MAX_BYTES,
+            kind_label="音频",
+            validate=upload_guard.validate_audio,
+        )
+    finally:
+        await file.close()
+    return {"url": f"/storage/uploads/{user.id}/audios/{path.name}", "filename": path.name}
 
 
 @router.post("/upload-video")
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(file: UploadFile = File(...), user: User = Depends(get_current_user)):
     """
-    上传视频到 storage/videos 目录
-    支持的格式：mp4, mov, avi, mkv, webm
+    上传视频到 storage/uploads/<user_id>/videos 目录（≤200MB；mp4 / mov / webm / mkv / avi，按内容识别）
 
     Returns:
-        上传后的视频URL（相对路径，如 /storage/videos/xxx.mp4）
+        上传后的视频URL（相对路径，如 /storage/uploads/1/videos/xxx.mp4）
     """
     try:
-        BASE_DIR = Path(__file__).parent.parent.parent
-        VIDEOS_DIR = BASE_DIR / "storage" / "videos"
-        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-
-        content_type = file.content_type or ""
-        original_filename = file.filename or "video"
-        ext = os.path.splitext(original_filename)[1].lower()
-        allowed_extensions = [".mp4", ".mov", ".avi", ".mkv", ".webm"]
-
-        is_video = content_type.startswith("video/") or content_type == "application/octet-stream"
-        if not is_video and ext not in allowed_extensions:
-            raise HTTPException(
-                status_code=400, detail=f"只支持视频文件，支持的格式：{', '.join(allowed_extensions)}"
-            )
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-        if not ext or ext not in allowed_extensions:
-            ext = ".mp4"
-
-        filename = f"upload_{timestamp}_{unique_id}{ext}"
-        file_path = VIDEOS_DIR / filename
-
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-
-        video_url = f"/storage/videos/{filename}"
-        return {"url": video_url, "filename": filename}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+        path, _mime, _size = await upload_guard.save_upload(
+            file,
+            _user_dir(user, "videos"),
+            sniff=upload_guard.sniff_video,
+            max_bytes=upload_guard.VIDEO_MAX_BYTES,
+            kind_label="视频",
+            validate=upload_guard.validate_video,
+        )
+    finally:
+        await file.close()
+    return {"url": f"/storage/uploads/{user.id}/videos/{path.name}", "filename": path.name}
 
 
 @router.post("/chat")

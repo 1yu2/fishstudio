@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.services import safe_fetch
+
 logger = logging.getLogger(__name__)
 
 # 优先加载 backend/.env
@@ -383,8 +385,8 @@ def download_3d_model(model_url: str, output_path: Path) -> None:
     """
     logger.info(f"📥 开始下载3D模型: {model_url}")
 
-    response = requests.get(model_url, timeout=120)
-    response.raise_for_status()
+    # 模型文件 URL 来自厂商响应：走 safe_fetch 防 SSRF
+    response = safe_fetch.fetch(model_url, timeout=120, max_bytes=safe_fetch.MAX_MODEL_BYTES)
 
     with open(output_path, "wb") as f:
         f.write(response.content)
@@ -688,8 +690,9 @@ def generate_3d_model_tool(
                 preview_filename = f"preview{preview_ext}"
                 preview_dest = model_folder / preview_filename
 
-                preview_response = requests.get(preview_image_url, timeout=30)
-                preview_response.raise_for_status()
+                preview_response = safe_fetch.fetch(
+                    preview_image_url, timeout=30, max_bytes=safe_fetch.MAX_IMAGE_BYTES
+                )
 
                 with open(preview_dest, "wb") as f:
                     f.write(preview_response.content)

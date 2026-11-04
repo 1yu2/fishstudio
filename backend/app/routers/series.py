@@ -72,6 +72,7 @@ from app.services import (
     series_service,
     storyboard_service,
     timeline_service,
+    upload_guard,
     workflow_service,
 )
 
@@ -1840,29 +1841,22 @@ async def upload_reference_video(
     user: User = Depends(get_current_user),
 ):
     project = await _owned_project(session, project_id, user)
-    original_name = Path(file.filename or "reference.mp4").name
-    extension = Path(original_name).suffix.lower()
-    if extension not in {".mp4", ".mov", ".webm", ".mkv", ".m4v"}:
-        raise HTTPException(status_code=400, detail="仅支持 mp4/mov/webm/mkv/m4v 视频")
-    content_type = (file.content_type or "").lower()
-    if content_type and not content_type.startswith("video/") and content_type != "application/octet-stream":
-        raise HTTPException(status_code=400, detail="上传文件不是视频类型")
+    original_name = Path(file.filename or "reference.mp4").name[:200]
     import uuid
 
     video_dir = asset_service.STORAGE_DIR / "reference_videos"
-    video_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"reference_{uuid.uuid4().hex}{extension}"
-    output_path = video_dir / filename
-    total_bytes = 0
+    # 类型按内容嗅探、大小边读边限；落盘名与扩展名由服务端决定，不信任文件名 / Content-Type
+    output_path, content_type, total_bytes = await upload_guard.save_upload(
+        file,
+        video_dir,
+        sniff=upload_guard.sniff_video,
+        max_bytes=upload_guard.VIDEO_MAX_BYTES,
+        kind_label="参考视频",
+        validate=upload_guard.validate_video,
+        filename=lambda ext: f"reference_{uuid.uuid4().hex}.{ext}",
+    )
+    filename = output_path.name
     try:
-        with output_path.open("wb") as output:
-            while chunk := await file.read(1024 * 1024):
-                total_bytes += len(chunk)
-                if total_bytes > 200 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="参考视频不能超过 200MB")
-                output.write(chunk)
-        if total_bytes == 0:
-            raise HTTPException(status_code=400, detail="参考视频不能为空")
         detected_duration_ms = None
         scene_boundaries_ms: list[int] = []
         try:
@@ -2108,32 +2102,21 @@ async def upload_project_audio(
 ):
     """上传项目级参考音频并创建受保护 Artifact，供 clone_voice 报价使用。"""
     project = await _owned_project(session, project_id, user)
-    original_name = Path(file.filename or "reference.wav").name
-    extension = Path(original_name).suffix.lower()
-    allowed_extensions = {".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac", ".wma"}
-    content_type = (file.content_type or "").lower()
-    if extension not in allowed_extensions:
-        raise HTTPException(status_code=400, detail="仅支持 wav/mp3/m4a/aac/ogg/flac/wma 音频")
-    if content_type and not content_type.startswith("audio/") and content_type != "application/octet-stream":
-        raise HTTPException(status_code=400, detail="上传文件不是音频类型")
-
+    original_name = Path(file.filename or "reference.wav").name[:200]
     import uuid
 
     audio_dir = asset_service.STORAGE_DIR / "audios"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"reference_{uuid.uuid4().hex}{extension}"
-    output_path = audio_dir / filename
-    max_bytes = 25 * 1024 * 1024
-    total_bytes = 0
+    output_path, content_type, total_bytes = await upload_guard.save_upload(
+        file,
+        audio_dir,
+        sniff=upload_guard.sniff_audio,
+        max_bytes=upload_guard.AUDIO_MAX_BYTES,
+        kind_label="参考音频",
+        validate=upload_guard.validate_audio,
+        filename=lambda ext: f"reference_{uuid.uuid4().hex}.{ext}",
+    )
+    filename = output_path.name
     try:
-        with output_path.open("wb") as output:
-            while chunk := await file.read(1024 * 1024):
-                total_bytes += len(chunk)
-                if total_bytes > max_bytes:
-                    raise HTTPException(status_code=413, detail="参考音频不能超过 25MB")
-                output.write(chunk)
-        if total_bytes == 0:
-            raise HTTPException(status_code=400, detail="参考音频不能为空")
         artifact = await asset_service.create_artifact(
             session,
             project_id=project.id,

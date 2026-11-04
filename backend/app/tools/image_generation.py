@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.services import safe_fetch
+
 logger = logging.getLogger(__name__)
 
 # 可选：用于将下载图片统一转换到 sRGB，减少 <img> 与 canvas 渲染差异
@@ -68,8 +70,8 @@ def download_and_save_image(image_url: str, prompt: str = "") -> str:
         logger.info(f"📥 开始下载图片: {image_url}")
 
         # 下载图片
-        response = requests.get(image_url, timeout=60)
-        response.raise_for_status()
+        # 图片 URL 来自厂商响应：走 safe_fetch 防 SSRF（拒绝内网 / 元数据地址，限制大小）
+        response = safe_fetch.fetch(image_url, timeout=60, max_bytes=safe_fetch.MAX_IMAGE_BYTES)
 
         # 从URL获取文件扩展名，如果没有则默认为png
         parsed_url = urlparse(image_url)

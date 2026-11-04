@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { apiFetch } from '../api'
+import { apiFetch, getStoredUser } from '../api'
 import {
   Server,
   FileCode2,
@@ -262,8 +262,38 @@ function ToolDetailPanel({ tool }: { tool: ToolItem }) {
   )
 }
 
+// ─── 全局设置的管理员权限 ────────────────────────────────────────────────
+// 工具开关 / 已安装 Skill / MCP / 工作区文件是全局共享配置，后端只允许管理员修改。
+const ADMIN_ONLY_MSG = '只有管理员可以修改这些全局设置'
+
+class ForbiddenError extends Error {}
+
+/** 响应不 ok 时抛错；403 单独区分，用来显示“仅管理员”而不是“失败，请重试”。 */
+function assertOk(res: Response) {
+  if (res.status === 403) throw new ForbiddenError()
+  if (!res.ok) throw new Error()
+}
+
+function failMsg(error: unknown, fallback: string) {
+  return error instanceof ForbiddenError ? ADMIN_ONLY_MSG : fallback
+}
+
+function useIsAdmin(): boolean {
+  return getStoredUser()?.is_admin === true
+}
+
+function AdminOnlyNote() {
+  return (
+    <div className="settings-toast settings-toast--error" style={{ marginBottom: 12 }} data-testid="admin-only-note">
+      <AlertCircle size={14} />
+      {ADMIN_ONLY_MSG}
+    </div>
+  )
+}
+
 // ─── ToolsPanel ───────────────────────────────────────────────────────
 function ToolsPanel() {
+  const isAdmin = useIsAdmin()
   const [tools, setTools] = useState<ToolItem[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -281,6 +311,7 @@ function ToolsPanel() {
 
   const toggle = (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
+    if (!isAdmin) return
     setTools((prev) => prev.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)))
   }
 
@@ -293,11 +324,11 @@ function ToolsPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ skills: tools }),
       })
-      if (!res.ok) throw new Error()
+      assertOk(res)
       setToast({ type: 'success', msg: '已保存' })
       setTimeout(() => setToast(null), 2500)
-    } catch {
-      setToast({ type: 'error', msg: '保存失败，请重试' })
+    } catch (error) {
+      setToast({ type: 'error', msg: failMsg(error, '保存失败，请重试') })
     } finally {
       setSaving(false)
     }
@@ -324,6 +355,7 @@ function ToolsPanel() {
         <div className="settings-panel__desc">
           控制各模态工具是否在会话中启用。点击卡片查看详情，右侧开关可快速启用/关闭。
         </div>
+        {!isAdmin && <AdminOnlyNote />}
 
         {orderedCats.map((cat) => (
           <div key={cat}>
@@ -356,6 +388,7 @@ function ToolsPanel() {
                     <input
                       type="checkbox"
                       checked={tool.enabled}
+                      disabled={!isAdmin}
                       onChange={(e) => { e.stopPropagation(); toggle(tool.id, e as any) }}
                     />
                     <span className="toggle-switch__track" />
@@ -367,7 +400,7 @@ function ToolsPanel() {
         ))}
 
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-          <button className="settings-save-btn" onClick={save} disabled={saving}>
+          <button className="settings-save-btn" onClick={save} disabled={saving || !isAdmin}>
             {saving ? '保存中…' : <><Save size={15} />保存</>}
           </button>
           {toast && (
@@ -457,6 +490,7 @@ const WORKSPACE_FILE_ICONS: Record<string, { emoji: string; bg: string }> = {
 }
 
 function WorkspacePanel() {
+  const isAdmin = useIsAdmin()
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -488,7 +522,7 @@ function WorkspacePanel() {
   }
 
   const handleSave = async () => {
-    if (!selectedId) return
+    if (!selectedId || !isAdmin) return
     setSaving(true)
     setToast(null)
     try {
@@ -497,12 +531,12 @@ function WorkspacePanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editContent }),
       })
-      if (!res.ok) throw new Error()
+      assertOk(res)
       setFiles((prev) => prev.map((f) => f.id === selectedId ? { ...f, content: editContent } : f))
       setToast({ type: 'success', msg: '已保存' })
       setTimeout(() => setToast(null), 2500)
-    } catch {
-      setToast({ type: 'error', msg: '保存失败，请重试' })
+    } catch (error) {
+      setToast({ type: 'error', msg: failMsg(error, '保存失败，请重试') })
     } finally {
       setSaving(false)
     }
@@ -520,6 +554,7 @@ function WorkspacePanel() {
         <div className="settings-panel__desc">
           Agent 每次对话会自动读取这些文件，作为身份记忆注入 System Prompt。
         </div>
+        {!isAdmin && <AdminOnlyNote />}
 
         {toast && (
           <span className={`settings-toast settings-toast--${toast.type}`} style={{ marginBottom: 10, display: 'flex' }}>
@@ -592,13 +627,14 @@ function WorkspacePanel() {
               className="workspace-editor__textarea"
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
+              readOnly={!isAdmin}
               placeholder={`在此编辑 ${selectedFile.id}…`}
               spellCheck={false}
             />
           )}
 
           <div className="workspace-editor__footer">
-            <button className="settings-save-btn" onClick={handleSave} disabled={saving}>
+            <button className="settings-save-btn" onClick={handleSave} disabled={saving || !isAdmin}>
               {saving ? '保存中…' : <><Save size={15} />保存</>}
             </button>
           </div>
@@ -610,6 +646,7 @@ function WorkspacePanel() {
 
 // ─── SkillsPanel ──────────────────────────────────────────────────────
 function SkillsPanel() {
+  const isAdmin = useIsAdmin()
   const [skills, setSkills] = useState<InstalledSkill[]>([])
   const [loading, setLoading] = useState(true)
   const [togglingId, setTogglingId] = useState<string | null>(null)
@@ -627,7 +664,7 @@ function SkillsPanel() {
 
   const handleToggle = async (skill: InstalledSkill, e: React.MouseEvent) => {
     e.stopPropagation()
-    if (togglingId === skill.id) return
+    if (!isAdmin || togglingId === skill.id) return
     const newEnabled = !skill.enabled
     setSkills((prev) => prev.map((s) => s.id === skill.id ? { ...s, enabled: newEnabled } : s))
     setTogglingId(skill.id)
@@ -637,10 +674,10 @@ function SkillsPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: newEnabled }),
       })
-      if (!res.ok) throw new Error()
-    } catch {
+      assertOk(res)
+    } catch (error) {
       setSkills((prev) => prev.map((s) => s.id === skill.id ? { ...s, enabled: skill.enabled } : s))
-      setToast({ type: 'error', msg: '操作失败，请重试' })
+      setToast({ type: 'error', msg: failMsg(error, '操作失败，请重试') })
       setTimeout(() => setToast(null), 2500)
     } finally {
       setTogglingId(null)
@@ -659,6 +696,7 @@ function SkillsPanel() {
         <div className="settings-panel__desc">
           已安装的 Skill 文件（SKILL.md）。启用后，Agent 对话时会自动读取对应的领域知识。点击卡片可预览文件内容。
         </div>
+        {!isAdmin && <AdminOnlyNote />}
 
         {toast && (
           <span className={`settings-toast settings-toast--${toast.type}`} style={{ marginBottom: 10, display: 'flex' }}>
@@ -726,7 +764,7 @@ function SkillsPanel() {
                     type="checkbox"
                     checked={skill.enabled}
                     onChange={() => {}}
-                    disabled={togglingId === skill.id}
+                    disabled={!isAdmin || togglingId === skill.id}
                   />
                   <span className="toggle-switch__track" />
                 </label>
@@ -775,6 +813,7 @@ function fromFormList(forms: MCPServerForm[]): Record<string, any> {
 }
 
 function MCPPanel() {
+  const isAdmin = useIsAdmin()
   const [view, setView] = useState<MCPView>('form')
   const [forms, setForms] = useState<MCPServerForm[]>([])
   const [jsonText, setJsonText] = useState('{}')
@@ -842,10 +881,10 @@ function MCPPanel() {
     } else { payload = { mcpServers: fromFormList(forms) } }
     try {
       const res = await apiFetch('/api/settings/mcp', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      if (!res.ok) throw new Error()
+      assertOk(res)
       setToast({ type: 'success', msg: '已保存' })
       setTimeout(() => setToast(null), 2500)
-    } catch { setToast({ type: 'error', msg: '保存失败，请重试' }) }
+    } catch (error) { setToast({ type: 'error', msg: failMsg(error, '保存失败，请重试') }) }
     finally { setSaving(false) }
   }
 
@@ -855,6 +894,7 @@ function MCPPanel() {
     <div>
       <div className="settings-panel__title">MCP 服务器配置</div>
       <div className="settings-panel__desc">配置 Model Context Protocol 服务器。支持表单编辑或直接修改原始 JSON。</div>
+      {!isAdmin && <AdminOnlyNote />}
 
       <div className="mcp-view-toggle">
         <button className={`mcp-view-toggle__btn${view === 'form' ? ' mcp-view-toggle__btn--active' : ''}`} onClick={view === 'json' ? switchToForm : undefined}>表单视图</button>
@@ -863,6 +903,7 @@ function MCPPanel() {
 
       {jsonError && view === 'form' && <div className="settings-toast settings-toast--error" style={{ marginBottom: 12 }}><AlertCircle size={14} />{jsonError}</div>}
 
+      <fieldset disabled={!isAdmin} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       {view === 'form' ? (
         <>
           {forms.length === 0 && <div style={{ color: 'rgba(229,231,235,0.45)', fontSize: 14, marginBottom: 12 }}>尚未配置任何 MCP 服务器</div>}
@@ -909,9 +950,10 @@ function MCPPanel() {
           {jsonError && <div className="settings-toast settings-toast--error" style={{ marginTop: 6 }}><AlertCircle size={14} />{jsonError}</div>}
         </>
       )}
+      </fieldset>
 
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-        <button className="settings-save-btn" onClick={save} disabled={saving || (view === 'json' && !!jsonError)}>
+        <button className="settings-save-btn" onClick={save} disabled={!isAdmin || saving || (view === 'json' && !!jsonError)}>
           {saving ? '保存中…' : <><Save size={15} />保存</>}
         </button>
         {toast && <span className={`settings-toast settings-toast--${toast.type}`}>{toast.type === 'success' ? <Check size={14} /> : <AlertCircle size={14} />}{toast.msg}</span>}

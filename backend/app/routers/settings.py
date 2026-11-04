@@ -137,7 +137,11 @@ async def get_skills(session: AsyncSession = Depends(get_session)):
 
 
 @router.put("/settings/skills")
-async def put_skills(payload: SkillsPayload, session: AsyncSession = Depends(get_session)):
+async def put_skills(
+    payload: SkillsPayload,
+    session: AsyncSession = Depends(get_session),
+    _admin: User = Depends(require_admin),
+):
     """保存 skills 启用状态"""
     await _set_setting(session, "skills", {s.id: s.enabled for s in payload.skills})
     return {"ok": True}
@@ -177,7 +181,9 @@ async def get_installed_skills():
 
 
 @router.put("/settings/skills/installed/{skill_id}")
-async def toggle_installed_skill(skill_id: str, payload: SkillToggleRequest):
+async def toggle_installed_skill(
+    skill_id: str, payload: SkillToggleRequest, _admin: User = Depends(require_admin)
+):
     """启用或禁用指定的 installed skill"""
     # 验证 skill 存在
     skills = skill_service.get_skills_with_state()
@@ -221,7 +227,11 @@ async def get_mcp(session: AsyncSession = Depends(get_session)):
 
 
 @router.put("/settings/mcp")
-async def put_mcp(payload: dict[str, Any], session: AsyncSession = Depends(get_session)):
+async def put_mcp(
+    payload: dict[str, Any],
+    session: AsyncSession = Depends(get_session),
+    _admin: User = Depends(require_admin),
+):
     """保存 MCP servers 配置"""
     await _set_setting(session, "mcpServers", payload.get("mcpServers", {}))
     return {"ok": True}
@@ -421,7 +431,9 @@ async def get_workspace_file(filename: str):
 
 
 @router.put("/settings/workspace/{filename}")
-async def put_workspace_file(filename: str, payload: WorkspaceFileUpdatePayload):
+async def put_workspace_file(
+    filename: str, payload: WorkspaceFileUpdatePayload, _admin: User = Depends(require_admin)
+):
     """保存指定工作空间文件内容"""
     if filename not in workspace_service.WORKSPACE_FILES:
         raise HTTPException(status_code=404, detail=f"Unknown workspace file: {filename}")

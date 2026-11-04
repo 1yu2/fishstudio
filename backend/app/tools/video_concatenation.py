@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.services import safe_fetch
+
 logger = logging.getLogger(__name__)
 
 # 优先加载 backend/.env（避免直接运行工具脚本时环境未加载）
@@ -96,21 +98,24 @@ def prepare_video_path(video_url: str) -> Path:
     # 如果是公网 URL，需要下载
     logger.info(f"📥 下载视频: {video_url}")
     try:
-        response = requests.get(video_url, timeout=300, stream=True)
-        response.raise_for_status()
-
-        # 生成临时文件名
+        # URL 由用户 / 模型提供，最容易被拿来探测内网：走 safe_fetch（拒绝内网、元数据地址，限制大小，
+        # 重定向逐跳校验）；扩展名只接受白名单，临时文件名不含任何用户输入
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = str(uuid.uuid4())[:8]
-        ext = os.path.splitext(urlparse(video_url).path)[1] or ".mp4"
+        ext = os.path.splitext(urlparse(video_url).path)[1].lower()
+        if ext not in {".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"}:
+            ext = ".mp4"
         filename = f"temp_{timestamp}_{unique_id}{ext}"
         temp_path = VIDEOS_DIR / filename
 
-        # 保存到临时文件
-        with open(temp_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+        safe_fetch.fetch_to_file(
+            video_url,
+            temp_path,
+            timeout=60,
+            total_timeout=900,
+            max_bytes=safe_fetch.MAX_VIDEO_BYTES,
+            allowed_mime=safe_fetch.VIDEO_MIME,
+        )
 
         logger.info(f"✅ 视频已下载到: {temp_path}")
         return temp_path
