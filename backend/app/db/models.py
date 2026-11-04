@@ -105,6 +105,44 @@ class NodeCanvas(Base):
     )
 
 
+class CanvasBatchRun(Base):
+    """画布批量运行：服务端按依赖顺序推进一张图（或某节点及其下游）的生成。
+
+    nodes 形如 {node_id: {"status": waiting|running|succeeded|failed|blocked|canceled|skipped,
+    "job_id": ..., "reason": ...}}；node_ids 是拓扑顺序。同一画布内 client_request_id 唯一，重复提交返回同一批次。
+    """
+
+    __tablename__ = "canvas_batch_runs"
+    __table_args__ = (
+        UniqueConstraint("canvas_id", "client_request_id", name="uq_canvas_batch_client_request"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    canvas_id: Mapped[str] = mapped_column(
+        ForeignKey("node_canvases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    client_request_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="all")
+    root_node_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    skip_succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running", index=True)
+    node_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    nodes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    estimated_total: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal(0))
+    # 创建时的画布快照：推进只按它解析依赖与请求，之后编辑画布不影响已报价的批次
+    graph: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    aspect_ratio: Mapped[str] = mapped_column(String(16), nullable=False, default="9:16")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ModelProvider(Base):
     """供应商账号：接口协议 + Base URL + 密钥环境变量（只存引用）。其下模型继承地址与密钥引用。"""
 

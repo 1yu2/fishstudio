@@ -4,16 +4,16 @@ import {
   useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node, type OnConnectEnd,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { ArrowLeft, Check, Film, ImageIcon, Loader2, Sparkles, Type, X } from 'lucide-react'
+import { ArrowLeft, Check, Film, ImageIcon, Loader2, Play, Sparkles, Type, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import {
-  ConflictError, nodeCanvasApi, type CanvasDetail, type DailyBudget, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
+  ConflictError, nodeCanvasApi, type BatchQuote, type BatchRun, type BatchScope, type CanvasDetail, type DailyBudget, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
   type SplitResult, type StoredEdge, type StoredGraph, type StoredNode,
 } from '../../api/nodeCanvas'
 import { paths } from '../../routePaths'
 import { toast } from '../ui/Toast'
 import { CanvasContext, type CanvasActions } from './context'
-import { canConnect, defaultData, dropTarget, edgeId, layoutSplit, newId } from './graph'
+import { canConnect, defaultData, dropTarget, edgeId, layoutSplit, newId, newRequestId } from './graph'
 import { nodeTypes } from './nodes'
 import './nodeCanvas.css'
 
@@ -78,6 +78,35 @@ function CopilotPanel({ canvasId, onPlace, onClose }: { canvasId: string; onPlac
   </aside>
 }
 
+interface BatchPlan { scope: BatchScope; nodeId?: string; requestId: string; quote: BatchQuote | null; error: string; notice: string; busy: boolean }
+
+const money = (value: number) => `¥${value.toFixed(value < 1 ? 3 : 2)}`
+
+/** 批量运行确认：先看合计报价和未知价格的节点，确认后才提交。 */
+function BatchDialog({ plan, onConfirm, onClose }: { plan: BatchPlan; onConfirm: () => void; onClose: () => void }) {
+  const { quote } = plan
+  const pending = quote?.nodes.filter((item) => item.status === 'pending').length ?? 0
+  const skipped = (quote?.nodes.length ?? 0) - pending
+  return <aside className="nc-copilot nc-batch" aria-label="批量运行">
+    <header><Play size={15} /><strong>{plan.scope === 'all' ? '全部运行' : '运行此节点及下游'}</strong><button className="nc-icon" aria-label="关闭批量运行" onClick={onClose}><X size={14} /></button></header>
+    {!quote && !plan.error && <p className="nc-copilot__hint"><Loader2 size={13} className="nc-spin" /> 正在报价…</p>}
+    {plan.notice && <p className="nc-batch__warn" role="status">{plan.notice}</p>}
+    {plan.error && <div className="nc-error nc-copilot__error" role="alert">{plan.error}</div>}
+    {quote && <div className="nc-copilot__result">
+      <p className="nc-batch__total">将运行 {pending} 个节点{skipped > 0 ? `（${skipped} 个已有结果，跳过）` : ''}，预计合计 <b>{money(quote.estimated_total)}</b></p>
+      {quote.budget.remaining !== null && <p className={quote.exceeds_budget ? 'nc-batch__warn' : 'nc-copilot__hint'}>
+        今日剩余额度 {money(quote.budget.remaining)}{quote.exceeds_budget ? `，云端预计 ${money(quote.billable_total)}，超出额度无法运行` : ''}
+      </p>}
+      {quote.unavailable_nodes.length > 0 && <section><h4>价格未知（未计入合计）</h4>
+        {quote.unavailable_nodes.map((item) => <div key={item.node_id} className="nc-copilot__item"><b>{item.label}</b>{item.reason}</div>)}
+      </section>}
+      <button className="nc-run nc-run--wide" disabled={plan.busy || quote.exceeds_budget || pending === 0} onClick={onConfirm}>
+        {plan.busy ? <Loader2 size={13} className="nc-spin" /> : <Play size={13} />}确认运行
+      </button>
+    </div>}
+  </aside>
+}
+
 function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels | null }) {
   const initial = useMemo(() => toFlow(detail.graph), [detail])
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(initial.nodes)
@@ -87,10 +116,13 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [copilot, setCopilot] = useState(false)
   const [polling, setPolling] = useState(true)
+  const [batch, setBatch] = useState<BatchRun | null>(null)
+  const [plan, setPlan] = useState<BatchPlan | null>(null)
   const revision = useRef(detail.revision)
   const latest = useRef({ nodes, edges })
   const pending = useRef<Promise<void> | null>(null)
   const dirty = useRef(false)
+  const saveFailed = useRef(false)
   const loaded = useRef(false)
   const flow = useReactFlow()
   latest.current = { nodes, edges }
@@ -99,11 +131,13 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     if (pending.current) await pending.current
     if (!dirty.current) return
     dirty.current = false
+    saveFailed.current = false
     setSaveState('saving')
     const graph: StoredGraph = { nodes: stored(latest.current.nodes), edges: storedEdges(latest.current.edges), viewport: flow.getViewport() }
     pending.current = nodeCanvasApi.save(detail.id, graph, revision.current)
       .then((result) => { revision.current = result.revision; setSaveState(dirty.current ? 'dirty' : 'saved') })
       .catch(async (error) => {
+        saveFailed.current = true
         setSaveState('error')
         if (error instanceof ConflictError) {
           toast('画布在别处被修改，已加载最新版本', 'error')
@@ -155,13 +189,89 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     return () => window.clearInterval(timer)
   }, [polling, refreshRuns])
 
+  // 打开画布时接上还在跑的批量运行（服务端推进，不依赖浏览器开着）
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [latest] = await nodeCanvasApi.batchList(detail.id)
+        if (latest?.status === 'running') setBatch(latest)
+      } catch { /* 没有也不影响使用 */ }
+    })()
+  }, [detail.id])
+
+  const batchId = batch?.status === 'running' ? batch.id : null
+  useEffect(() => {
+    if (!batchId) return
+    const controller = new AbortController()
+    const timer = window.setInterval(() => {
+      void nodeCanvasApi.batchGet(detail.id, batchId, controller.signal).then((value) => {
+        // 慢响应可能晚于取消 / 新批次到达：只接受仍是当前批次的结果
+        if (controller.signal.aborted) return
+        setBatch((current) => current && current.id === value.id ? value : current)
+        void refreshRuns()
+      }).catch(() => undefined)
+    }, POLL_INTERVAL)
+    return () => { controller.abort(); window.clearInterval(timer) }
+  }, [batchId, detail.id, refreshRuns])
+
   const updateData = useCallback((nodeId: string, patch: Record<string, unknown>) => {
     setNodes((items) => items.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node))
   }, [setNodes])
 
+  // 先把未保存的改动写到服务端；保存失败（含版本冲突）就抛错，调用方据此中止，避免按旧图运行或报价
   const flushThen = useCallback(async () => {
-    if (dirty.current || pending.current) await save()
+    if (!dirty.current && !pending.current) return
+    await save()
+    if (saveFailed.current || dirty.current) throw new Error('画布保存失败，已取消操作，请稍后重试')
   }, [save])
+
+  // 报价：先保存画布再报价；notice 用于说明为什么重新报价。每次报价换一个 requestId（新的决定）
+  const loadQuote = useCallback(async (scope: BatchScope, nodeId?: string, notice = '') => {
+    const next: BatchPlan = { scope, nodeId, requestId: newRequestId(), quote: null, error: '', notice, busy: false }
+    setPlan(next)
+    const apply = (patch: Partial<BatchPlan>) => setPlan((current) => current?.requestId === next.requestId ? { ...current, ...patch } : current)
+    try {
+      await flushThen()
+      apply({ quote: await nodeCanvasApi.batchQuote(detail.id, { scope, node_id: nodeId }) })
+    } catch (error) {
+      apply({ error: error instanceof Error ? error.message : '报价失败' })
+    }
+  }, [detail.id, flushThen])
+
+  const openBatch = useCallback((scope: BatchScope, nodeId?: string) => loadQuote(scope, nodeId), [loadQuote])
+
+  const confirmBatch = async () => {
+    if (!plan || plan.busy || !plan.quote) return
+    const current = plan
+    setPlan({ ...current, busy: true, error: '' })
+    try {
+      await flushThen()
+      // 同一个确认窗口内重复点击 / 重试都复用 requestId，后端返回同一个批次
+      const started = await nodeCanvasApi.batchRun(detail.id, {
+        scope: current.scope, node_id: current.nodeId, skip_succeeded: true,
+        client_request_id: current.requestId, quoted_revision: current.quote!.revision,
+      })
+      setBatch(started)
+      setPlan(null)
+      await refreshRuns()
+      setPolling(true)
+    } catch (error) {
+      if (error instanceof ConflictError) {
+        // 报价后画布又被改过：价格已不适用，按最新内容重新报价并再次确认
+        void loadQuote(current.scope, current.nodeId, '画布在报价后被修改，已按最新内容重新报价，请确认后再运行')
+        return
+      }
+      setPlan((value) => value ? { ...value, busy: false, error: error instanceof Error ? error.message : '提交失败' } : value)
+    }
+  }
+
+  const cancelBatch = async () => {
+    if (!batch) return
+    try {
+      setBatch(await nodeCanvasApi.batchCancel(detail.id, batch.id))
+      await refreshRuns()
+    } catch (error) { toast(error instanceof Error ? error.message : '取消失败', 'error') }
+  }
 
   const actions: CanvasActions = useMemo(() => ({
     canvasId: detail.id,
@@ -172,10 +282,17 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     edges: storedEdges(edges),
     updateData,
     quote: (request: RunRequest) => nodeCanvasApi.quote(detail.id, request),
+    runBatch: (scope: BatchScope, nodeId?: string) => { void openBatch(scope, nodeId) },
     run: async (nodeId: string, request: RunRequest) => {
       try {
         await flushThen()
-        await nodeCanvasApi.run(detail.id, nodeId, request)
+        // 每次点击一个新的 client_request_id；网络层失败的自动重试复用它，后端不会重复建任务
+        const body = { ...request, client_request_id: newRequestId() }
+        try { await nodeCanvasApi.run(detail.id, nodeId, body) }
+        catch (error) {
+          if (!(error instanceof TypeError)) throw error
+          await nodeCanvasApi.run(detail.id, nodeId, body)
+        }
         await refreshRuns()
         setPolling(true)
       } catch (error) { toast(error instanceof Error ? error.message : '提交失败', 'error') }
@@ -194,7 +311,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
         await refreshRuns()
       } catch (error) { toast(error instanceof Error ? error.message : '上传失败', 'error') }
     },
-  }), [detail.id, detail.aspect_ratio, models, runs, nodes, edges, updateData, flushThen, refreshRuns])
+  }), [detail.id, detail.aspect_ratio, models, runs, nodes, edges, updateData, flushThen, refreshRuns, openBatch])
 
   const isValidConnection = useCallback((connection: Connection | Edge) => canConnect(stored(latest.current.nodes), storedEdges(latest.current.edges), connection), [])
 
@@ -257,6 +374,13 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
             <button className="nc-tool" onClick={() => addNode('image')}><ImageIcon size={14} />图片</button>
             <button className="nc-tool" onClick={() => addNode('video')}><Film size={14} />视频</button>
             <span className="nc-divider" />
+            <button className="nc-tool" disabled={nodes.length === 0 || batch?.status === 'running'} onClick={() => void openBatch('all')}><Play size={14} />全部运行</button>
+            {batch && <span className={`nc-batch-status nc-batch-status--${batch.status}`} role="status">
+              {batch.status === 'running' && <Loader2 size={12} className="nc-spin" />}
+              批量 {batch.completed}/{batch.total} 完成{batch.failed > 0 ? ` · ${batch.failed} 失败` : ''}{batch.status === 'canceled' ? ' · 已取消' : ''}
+              {batch.status === 'running' && <button className="nc-link" onClick={() => void cancelBatch()}>取消</button>}
+            </span>}
+            <span className="nc-divider" />
             <span className={`nc-save nc-save--${saveState}`}>{saveState === 'saved' ? <Check size={12} /> : saveState === 'saving' ? <Loader2 size={12} className="nc-spin" /> : null}{saveLabel}</span>
             <span className="nc-spent" title="本画布累计花费">已花费 ¥{Number(runs?.spent || 0).toFixed(2)}</span>
             {runs?.budget?.cap != null && <BudgetBadge budget={runs.budget} />}
@@ -267,6 +391,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
           </Panel>}
         </ReactFlow>
       </div>
+      {plan && <BatchDialog plan={plan} onConfirm={() => void confirmBatch()} onClose={() => setPlan(null)} />}
       {copilot && <CopilotPanel canvasId={detail.id} onPlace={placeSplit} onClose={() => setCopilot(false)} />}
     </div>
   </CanvasContext.Provider>

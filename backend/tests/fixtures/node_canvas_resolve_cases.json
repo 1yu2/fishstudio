@@ -1,0 +1,121 @@
+{
+  "_comment": "前后端共用：后端 resolve_node_request 与前端 graph.ts resolveInputs 必须对同一图 / 结果给出相同的请求与 blockers。results 为 节点 id -> 结果 artifact id（最新在前）。",
+  "cases": [
+    {
+      "name": "image merges upstream text and own prompt, uses selected reference",
+      "nodes": [
+        {"id": "t", "type": "text", "data": {"text": "赛博朋克风格"}},
+        {"id": "ref", "type": "image", "data": {"selected": "old"}},
+        {"id": "img", "type": "image", "data": {"prompt": "林夏站在雨里", "count": 2, "model": "seedream"}}
+      ],
+      "edges": [
+        {"source": "t", "target": "img", "targetHandle": "prompt"},
+        {"source": "ref", "target": "img", "targetHandle": "reference"}
+      ],
+      "results": {"ref": ["new", "old"]},
+      "aspect_ratio": "9:16",
+      "node_id": "img",
+      "expected": {
+        "request": {"kind": "image", "prompt": "赛博朋克风格\n林夏站在雨里", "model": "seedream", "aspect_ratio": "9:16", "count": 2, "reference_artifact_ids": ["old"]},
+        "blockers": []
+      }
+    },
+    {
+      "name": "image reference without result is a blocker",
+      "nodes": [
+        {"id": "ref", "type": "image", "data": {"label": "定妆"}},
+        {"id": "img", "type": "image", "data": {"prompt": "走路"}}
+      ],
+      "edges": [{"source": "ref", "target": "img", "targetHandle": "reference"}],
+      "results": {},
+      "aspect_ratio": "16:9",
+      "node_id": "img",
+      "expected": {
+        "request": {"kind": "image", "prompt": "走路", "model": "", "aspect_ratio": "16:9", "count": 1, "reference_artifact_ids": []},
+        "blockers": ["参考图节点「定妆」还没有图片"]
+      }
+    },
+    {
+      "name": "image needs a prompt",
+      "nodes": [{"id": "i", "type": "image", "data": {}}],
+      "edges": [],
+      "results": {},
+      "aspect_ratio": "9:16",
+      "node_id": "i",
+      "expected": {
+        "request": {"kind": "image", "prompt": "", "model": "", "aspect_ratio": "9:16", "count": 1, "reference_artifact_ids": []},
+        "blockers": ["写提示词，或连入一个文本节点"]
+      }
+    },
+    {
+      "name": "video blocks when first frame has no result",
+      "nodes": [
+        {"id": "k", "type": "image", "data": {"label": "关键帧"}},
+        {"id": "v", "type": "video", "data": {"prompt": "推门", "tier": "final", "duration": 6}}
+      ],
+      "edges": [{"source": "k", "target": "v", "targetHandle": "first_frame"}],
+      "results": {},
+      "aspect_ratio": "16:9",
+      "node_id": "v",
+      "expected": {
+        "request": {"kind": "video", "prompt": "推门", "model": "", "aspect_ratio": "16:9", "duration": 6, "tier": "final", "first_frame_artifact_id": null, "last_frame_artifact_id": null},
+        "blockers": ["首帧节点「关键帧」还没有图片"]
+      }
+    },
+    {
+      "name": "video passes first and last frames with defaults",
+      "nodes": [
+        {"id": "a", "type": "image", "data": {}},
+        {"id": "b", "type": "image", "data": {}},
+        {"id": "v", "type": "video", "data": {}}
+      ],
+      "edges": [
+        {"source": "a", "target": "v", "targetHandle": "first_frame"},
+        {"source": "b", "target": "v", "targetHandle": "last_frame"}
+      ],
+      "results": {"a": ["fa"], "b": ["fb"]},
+      "aspect_ratio": "9:16",
+      "node_id": "v",
+      "expected": {
+        "request": {"kind": "video", "prompt": "", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": "fa", "last_frame_artifact_id": "fb"},
+        "blockers": []
+      }
+    },
+    {
+      "name": "video last frame without first frame",
+      "nodes": [
+        {"id": "b", "type": "image", "data": {}},
+        {"id": "v", "type": "video", "data": {"prompt": "x"}}
+      ],
+      "edges": [{"source": "b", "target": "v", "targetHandle": "last_frame"}],
+      "results": {"b": ["fb"]},
+      "aspect_ratio": "9:16",
+      "node_id": "v",
+      "expected": {
+        "request": {"kind": "video", "prompt": "x", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": "fb"},
+        "blockers": ["有尾帧时也需要连入首帧"]
+      }
+    },
+    {
+      "name": "video text prompts from several text nodes, blank ones dropped",
+      "nodes": [
+        {"id": "t1", "type": "text", "data": {"text": " 雨夜 "}},
+        {"id": "t2", "type": "text", "data": {"text": "  "}},
+        {"id": "t3", "type": "text", "data": {"text": "慢推镜头"}},
+        {"id": "v", "type": "video", "data": {"prompt": "女店员", "duration": 0, "model": "seedance"}}
+      ],
+      "edges": [
+        {"source": "t1", "target": "v", "targetHandle": "prompt"},
+        {"source": "t2", "target": "v", "targetHandle": "prompt"},
+        {"source": "t3", "target": "v", "targetHandle": "prompt"}
+      ],
+      "results": {},
+      "aspect_ratio": "9:16",
+      "node_id": "v",
+      "expected": {
+        "request": {"kind": "video", "prompt": "雨夜\n慢推镜头\n女店员", "model": "seedance", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": null},
+        "blockers": []
+      }
+    }
+  ]
+}

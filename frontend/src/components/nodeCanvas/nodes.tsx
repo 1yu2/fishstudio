@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { Film, ImageIcon, Loader2, Play, RotateCcw, Square, Type, Upload } from 'lucide-react'
+import { Film, ImageIcon, ListEnd, Loader2, Play, RotateCcw, Square, Type, Upload } from 'lucide-react'
 import type { CanvasModel, CanvasNodeType, Quote, StoredNode } from '../../api/nodeCanvas'
 import { ProtectedImage, ProtectedVideo } from '../common/ProtectedMedia'
 import { useCanvas } from './context'
@@ -79,7 +79,7 @@ function ModelSelect({ kind, value, fallback, onChange }: { kind: 'image' | 'vid
 }
 
 function Generator({ id, node, kind, children }: { id: string; node: StoredNode; kind: 'image' | 'video'; children: ReactNode }) {
-  const { nodes, edges, runs, aspectRatio, run, upload, cancel, models } = useCanvas()
+  const { nodes, edges, runs, aspectRatio, run, upload, cancel, runBatch, models } = useCanvas()
   const resolved = useMemo(() => resolveInputs(node, nodes, edges, runs, aspectRatio), [node, nodes, edges, runs, aspectRatio])
   const { request, upstreamPrompt } = resolved
   // 没有选具体模型、默认图片模型又不可用时，提前提示，不让任务排进队列再失败
@@ -103,6 +103,7 @@ function Generator({ id, node, kind, children }: { id: string; node: StoredNode;
       <input ref={fileRef} type="file" hidden accept={kind === 'image' ? 'image/png,image/jpeg,image/webp' : 'video/mp4,video/quicktime,video/webm'}
         onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void upload(id, file) }} />
       <button className="nc-icon nodrag" aria-label="上传" title={kind === 'image' ? '上传图片' : '上传视频'} onClick={() => fileRef.current?.click()}><Upload size={14} /></button>
+      <button className="nc-icon nodrag" aria-label="运行此节点及下游" title="运行此节点及下游" onClick={() => runBatch('downstream', id)}><ListEnd size={14} /></button>
       <span className="nc-quote">{quote ? `预计 ${money(quote.estimated_cost)}` : ''}</span>
       {running && job
         ? <button className="nc-run nc-run--stop nodrag" onClick={() => void cancel(job.id)}><Square size={11} />取消</button>

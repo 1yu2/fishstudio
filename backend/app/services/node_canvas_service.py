@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Artifact, GenerationJob, ModelRoute, NodeCanvas, SeriesProject, User
@@ -283,13 +284,135 @@ class NodeRunRequest(BaseModel):
     reference_artifact_ids: list[str] = Field(default_factory=list, max_length=8)
     first_frame_artifact_id: Optional[str] = None
     last_frame_artifact_id: Optional[str] = None
+    # 幂等标识：前端每次点击生成一个，自动重试复用；不传则保持旧行为（每次都是新任务）
+    client_request_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+
+# 批量报价时，尚未生成的上游节点用 “pending:节点id” 占位（只用于估价，不会写进任务）
+PENDING_PREFIX = "pending:"
+
+
+# ── 服务端输入解析（与前端 graph.ts 的 resolveInputs 等价）─────────────────
+
+# 每种节点的输入端口 → 该端口接受的上游节点类型（与前端 INPUTS 一致）
+HANDLE_LABELS = {"prompt": "提示词", "reference": "参考图", "first_frame": "首帧", "last_frame": "尾帧"}
+_KIND_LABEL = {"text": "文本", "image": "图片", "video": "视频"}
+
+
+def node_label(node: dict[str, Any]) -> str:
+    text_value = str((node.get("data") or {}).get("label") or "").strip()
+    return text_value or _KIND_LABEL.get(node.get("type"), "")
+
+
+def _num(value: Any, default: int) -> int:
+    """对应前端的 `value || default`：0 / 空 / 非数字都取默认值。"""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number or default
+
+
+def selected_artifact(node: dict[str, Any], results: dict[str, list[str]]) -> Optional[str]:
+    """节点当前选中的结果：用户点选的那张（仍在结果里），否则是最新一张。"""
+    items = results.get(node.get("id"), [])
+    chosen = (node.get("data") or {}).get("selected")
+    return chosen if chosen in items else (items[0] if items else None)
+
+
+def resolve_node_request(
+    graph: dict[str, Any], node_id: str, results: dict[str, list[str]], aspect_ratio: str
+) -> tuple[dict[str, Any], list[str]]:
+    """汇总一个图片 / 视频节点的全部输入，返回 (提交给 run 的请求字段, 不能生成的原因)。
+
+    results：节点 id → 结果 artifact id 列表（最新在前，顺序同 node_runs）。
+    字段与前端 resolveInputs 的 request 逐项一致，两边共用 tests/fixtures/node_canvas_resolve_cases.json 对照。
+    """
+    by_id = {node["id"]: node for node in graph.get("nodes", [])}
+    node = by_id.get(node_id)
+    if node is None or node.get("type") not in ("image", "video"):
+        raise CanvasError("节点不存在或不是图片 / 视频节点")
+    edges = graph.get("edges", [])
+    data = node.get("data") or {}
+
+    def incoming(handle: str) -> list[dict[str, Any]]:
+        return [
+            by_id[edge["source"]]
+            for edge in edges
+            if edge.get("target") == node_id
+            and edge.get("targetHandle") == handle
+            and edge.get("source") in by_id
+        ]
+
+    blockers: list[str] = []
+
+    def frame(handle: str) -> Optional[str]:
+        upstream = incoming(handle)
+        if not upstream:
+            return None
+        artifact_id = selected_artifact(upstream[0], results)
+        if not artifact_id:
+            blockers.append(f"{HANDLE_LABELS[handle]}节点「{node_label(upstream[0])}」还没有图片")
+        return artifact_id
+
+    upstream_prompt = "\n".join(
+        part
+        for part in (str((item.get("data") or {}).get("text") or "").strip() for item in incoming("prompt"))
+        if part
+    )
+    own = str(data.get("prompt") or "").strip()
+    prompt = "\n".join(part for part in (upstream_prompt, own) if part)
+
+    if node["type"] == "image":
+        references: list[str] = []
+        for item in incoming("reference"):
+            artifact_id = selected_artifact(item, results)
+            if not artifact_id:
+                blockers.append(f"参考图节点「{node_label(item)}」还没有图片")
+            else:
+                references.append(artifact_id)
+        if not prompt:
+            blockers.append("写提示词，或连入一个文本节点")
+        return {
+            "kind": "image",
+            "prompt": prompt,
+            "model": data.get("model") or "",
+            "aspect_ratio": aspect_ratio,
+            "count": _num(data.get("count"), 1),
+            "reference_artifact_ids": references,
+        }, blockers
+
+    has_first = bool(incoming("first_frame"))
+    first = frame("first_frame")
+    last = frame("last_frame")
+    if incoming("last_frame") and not has_first:
+        blockers.append("有尾帧时也需要连入首帧")
+    if not prompt and not has_first:
+        blockers.append("写提示词，或连入首帧图片")
+    return {
+        "kind": "video",
+        "prompt": prompt,
+        "model": data.get("model") or "",
+        "aspect_ratio": aspect_ratio,
+        "duration": _num(data.get("duration"), 5),
+        "tier": data.get("tier") or "preview",
+        "first_frame_artifact_id": first,
+        "last_frame_artifact_id": last,
+    }, blockers
 
 
 async def _storage_key(
-    session: AsyncSession, canvas: NodeCanvas, artifact_id: Optional[str], expected: str
+    session: AsyncSession,
+    canvas: NodeCanvas,
+    artifact_id: Optional[str],
+    expected: str,
+    *,
+    quote_only: bool = False,
 ) -> Optional[str]:
     if not artifact_id:
         return None
+    if quote_only and artifact_id.startswith(PENDING_PREFIX):
+        return artifact_id
     artifact = await session.get(Artifact, artifact_id)
     if artifact is None or artifact.project_id != canvas.project_id:
         raise CanvasError("引用的素材不属于这个画布")
@@ -299,15 +422,15 @@ async def _storage_key(
 
 
 async def _video_plan(
-    session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequest
+    session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequest, *, quote_only: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     from app.model_runtime.video import VideoRoutingError, resolve_video_plan
     from app.services.job_planner import build_video_job_params
 
     if not req.prompt.strip() and not req.first_frame_artifact_id:
         raise CanvasError("视频节点需要提示词或首帧图片")
-    first = await _storage_key(session, canvas, req.first_frame_artifact_id, "image")
-    last = await _storage_key(session, canvas, req.last_frame_artifact_id, "image")
+    first = await _storage_key(session, canvas, req.first_frame_artifact_id, "image", quote_only=quote_only)
+    last = await _storage_key(session, canvas, req.last_frame_artifact_id, "image", quote_only=quote_only)
     ratio = req.aspect_ratio or canvas.aspect_ratio
     params = build_video_job_params(
         shot_id="",
@@ -400,19 +523,33 @@ async def _default_image_model(session: AsyncSession, edit: bool) -> str:
     return route.primary_deployment if route else ""
 
 
-async def quote_node(session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequest) -> dict[str, Any]:
+async def quote_node_with_budget(
+    session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequest, *, quote_only: bool = False
+) -> tuple[dict[str, Any], Decimal]:
+    """报价 + 计入每日预算的云端预估（本地自托管为 0，与创建任务时的预留口径一致）。"""
     if req.kind == "video":
-        params, plan = await _video_plan(session, canvas, req)
-        return {
+        params, plan = await _video_plan(session, canvas, req, quote_only=quote_only)
+        quote = {
             "kind": "video",
             "mode": params["mode"],
             "model": plan.get("deployment_name") or plan["provider"],
             "resolution": plan["resolution"],
             "estimated_cost": float(plan["estimated_total_cost"]),
         }
+        cloud = (
+            Decimal(str(plan["estimated_total_cost"]))
+            if budget_service.is_cloud(plan["provider"])
+            else Decimal(0)
+        )
+        return quote, cloud
     slug = req.model or await _default_image_model(session, edit=bool(req.reference_artifact_ids))
     price = _image_price(slug, req.count)
-    return {"kind": "image", "model": slug, "estimated_cost": float(price) if price is not None else None}
+    quote = {"kind": "image", "model": slug, "estimated_cost": float(price) if price is not None else None}
+    return quote, price or Decimal(0)
+
+
+async def quote_node(session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequest) -> dict[str, Any]:
+    return (await quote_node_with_budget(session, canvas, req))[0]
 
 
 async def _reserve_budget(session: AsyncSession, canvas: NodeCanvas, estimate: Decimal) -> None:
@@ -429,21 +566,72 @@ async def run_node(
     req: NodeRunRequest,
     user_id: Optional[int] = None,
 ) -> GenerationJob:
-    """创建节点生成任务；节点此前已有成功结果时，任务创建成功后记一条 regenerated 反馈。"""
-    job = await _create_node_job(session, canvas, node_id, req)
-    # 新任务尚未成功，不会被当作“已有结果”，所以建完再查也只会命中此前的成功结果
-    await _safe_feedback(session, canvas, "regenerated", user_id=user_id, node_id=node_id)
+    """创建节点生成任务；节点此前已有成功结果时，任务创建成功后记一条 regenerated 反馈。
+
+    带 client_request_id 的重复请求直接返回已有任务：不再预留预算，也不记反馈。
+    """
+    job, created = await _create_node_job(session, canvas, node_id, req)
+    if created:
+        # 新任务尚未成功，不会被当作“已有结果”，所以建完再查也只会命中此前的成功结果
+        await _safe_feedback(session, canvas, "regenerated", user_id=user_id, node_id=node_id)
     return job
 
 
+def request_fingerprint(req: NodeRunRequest) -> str:
+    """规范化请求字段（不含 client_request_id）的哈希前 16 位，用于幂等 key。"""
+    data = req.model_dump(exclude={"client_request_id"})
+    data["prompt"] = req.prompt.strip()
+    raw = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _idempotency_key(canvas: NodeCanvas, node_id: str, req: NodeRunRequest) -> str:
+    if req.client_request_id:
+        return f"canvas:{canvas.id}:{node_id}:{req.kind}:{request_fingerprint(req)}:{req.client_request_id}"
+    return f"canvas:{canvas.id}:{node_id}:{req.kind}:{uuid.uuid4().hex}"
+
+
+async def advisory_lock(session: AsyncSession, key: str) -> None:
+    """按字符串 key 取事务级咨询锁（随事务结束释放），用来串行化同一幂等标识的并发请求。"""
+    digest = int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big", signed=True)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": digest})
+
+
+async def _existing_job_for_key(session: AsyncSession, key: str) -> Optional[GenerationJob]:
+    """同 key 的请求先串行再查已有任务。
+
+    先于预算预留执行：并发的重复请求在锁上等第一个提交，之后直接命中它的任务，
+    不会重复预留，也不会因为第一个任务的在途预估把自己挤出额度。
+    """
+    await advisory_lock(session, key)
+    return (
+        await session.execute(select(GenerationJob).where(GenerationJob.idempotency_key == key))
+    ).scalar_one_or_none()
+
+
 async def _create_node_job(
-    session: AsyncSession, canvas: NodeCanvas, node_id: str, req: NodeRunRequest
-) -> GenerationJob:
+    session: AsyncSession,
+    canvas: NodeCanvas,
+    node_id: str,
+    req: NodeRunRequest,
+    extra_params: Optional[dict[str, Any]] = None,
+    graph: Optional[dict[str, Any]] = None,
+) -> tuple[GenerationJob, bool]:
+    """返回 (job, 是否新建)。"""
     from app.providers.pricing import PRICE_TABLE_VERSION
 
-    if not any(node.get("id") == node_id for node in (canvas.graph or {}).get("nodes", [])):
+    # 批量运行按创建时的快照图校验节点，不受之后的画布编辑影响
+    if not any(
+        node.get("id") == node_id
+        for node in ((graph if graph is not None else canvas.graph) or {}).get("nodes", [])
+    ):
         raise CanvasError("节点不存在，可能还没保存")
-    base = {"canvas_id": canvas.id, "canvas_node_id": node_id}
+    idem_key = _idempotency_key(canvas, node_id, req)
+    if req.client_request_id:
+        existing = await _existing_job_for_key(session, idem_key)
+        if existing is not None:
+            return existing, False
+    base = {"canvas_id": canvas.id, "canvas_node_id": node_id, **(extra_params or {})}
     if req.kind == "image":
         if not req.prompt.strip():
             raise CanvasError("图片节点需要提示词")
@@ -457,7 +645,7 @@ async def _create_node_job(
         slug = req.model or await _default_image_model(session, edit=bool(references))
         estimate = _image_price(slug, req.count) or Decimal(0)
         await _reserve_budget(session, canvas, estimate)
-        return await job_service.create_job(
+        job = await job_service.create_job(
             session,
             operation="generate_image",
             project_id=canvas.project_id,
@@ -471,9 +659,10 @@ async def _create_node_job(
                 "deployment": req.model or None,
                 budget_service.ESTIMATE_PARAM: str(estimate),
             },
-            idempotency_key=f"canvas:{canvas.id}:{node_id}:image:{uuid.uuid4().hex}",
+            idempotency_key=idem_key,
             worker_class="image",
         )
+        return job, True
 
     params, plan = await _video_plan(session, canvas, req)
     params.update(base)
@@ -504,16 +693,17 @@ async def _create_node_job(
     )
     await _reserve_budget(session, canvas, estimate)
     params[budget_service.ESTIMATE_PARAM] = str(estimate)
-    return await job_service.create_job(
+    job = await job_service.create_job(
         session,
         operation="generate_video",
         project_id=canvas.project_id,
         params=params,
         provider=plan["provider"],
         model=plan["model"],
-        idempotency_key=f"canvas:{canvas.id}:{node_id}:video:{uuid.uuid4().hex}",
+        idempotency_key=idem_key,
         worker_class="video",
     )
+    return job, True
 
 
 def _display_status(job: GenerationJob) -> tuple[str, int]:

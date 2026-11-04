@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_user
 from app.db.database import get_session
 from app.db.models import User
+from app.services import canvas_batch_service as batches
 from app.services import node_canvas_service as service
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -158,6 +159,95 @@ async def run_node(
         raise HTTPException(status_code=422, detail=str(error)) from error
     await session.commit()
     return {"job_id": job.id, "status": job.status}
+
+
+@router.post("/node-canvases/{canvas_id}/batch-quote")
+async def batch_quote(
+    canvas_id: str,
+    body: batches.BatchRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    canvas = await _owned(session, canvas_id, user)
+    try:
+        return await batches.batch_quote(session, canvas, body)
+    except service.CanvasError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/node-canvases/{canvas_id}/batch-runs", status_code=status.HTTP_202_ACCEPTED)
+async def create_batch_run(
+    canvas_id: str,
+    body: batches.BatchRunRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    canvas = await _owned(session, canvas_id, user)
+    try:
+        batch = await batches.create_batch(session, canvas, body)
+    except batches.BatchRevisionConflict as error:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except service.CanvasError as error:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    # 服务端默认值（时间戳）flush 后是过期状态，提交前刷新并生成响应
+    await session.refresh(batch)
+    detail = batches.batch_detail(batch)
+    await session.commit()
+    return detail
+
+
+@router.get("/node-canvases/{canvas_id}/batch-runs")
+async def list_batch_runs(
+    canvas_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)
+):
+    canvas = await _owned(session, canvas_id, user)
+    return [batches.batch_detail(batch) for batch in await batches.list_batches(session, canvas)]
+
+
+async def _owned_batch(session: AsyncSession, canvas_id: str, batch_id: str, user: User):
+    canvas = await _owned(session, canvas_id, user)
+    try:
+        return await batches.get_batch(session, canvas, batch_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/node-canvases/{canvas_id}/batch-runs/{batch_id}")
+async def get_batch_run(
+    canvas_id: str,
+    batch_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    return batches.batch_detail(await _owned_batch(session, canvas_id, batch_id, user))
+
+
+@router.post("/node-canvases/{canvas_id}/batch-runs/{batch_id}/cancel")
+async def cancel_batch_run(
+    canvas_id: str,
+    batch_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    from app.routers import jobs as jobs_router
+
+    batch = await _owned_batch(session, canvas_id, batch_id, user)
+    job_ids = await batches.cancel_batch(session, batch.id)
+    await session.commit()
+    # 复用现有的任务取消（含供应商侧 best-effort 取消）；已终态的任务忽略
+    for job_id in job_ids:
+        try:
+            await jobs_router.cancel_job(job_id, session=session, user=user)
+        except HTTPException as error:
+            if error.status_code not in (404, 409):
+                raise
+    batch = await batches.advance_batch(session, batch.id)
+    await session.refresh(batch)
+    detail = batches.batch_detail(batch)
+    await session.commit()
+    return detail
 
 
 @router.post("/node-canvases/{canvas_id}/uploads", status_code=status.HTTP_201_CREATED)

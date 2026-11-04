@@ -123,6 +123,11 @@ export function newId(prefix: CanvasNodeType): string {
   return `${prefix}-${random}`
 }
 
+/** 每次点击生成一个幂等标识；失败自动重试时复用同一个。 */
+export function newRequestId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
+
 export function edgeId(source: string, target: string, handle: string): string {
   return `e-${source}-${target}-${handle}`
 }
