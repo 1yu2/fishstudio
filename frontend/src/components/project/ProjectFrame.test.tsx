@@ -17,6 +17,23 @@ vi.mock('../nodeCanvas/NodeCanvasPage', () => ({
 
 vi.mock('../storyboard/StoryboardPage', () => ({ default: () => <h1>STORYBOARD_PAGE</h1> }))
 
+// 剧本页替身：按测试里设置的 footerOverride 调用 setFooter（默认不覆盖），验证底栏覆盖机制
+const stub = vi.hoisted(() => ({ override: null as null | import('./outletContext').FooterOverride }))
+vi.mock('../script/ScriptPage', async () => {
+  const { useEffect } = await import('react')
+  const { useOutletContext } = await import('react-router-dom')
+  return {
+    default: function ScriptStub() {
+      const context = useOutletContext<import('./outletContext').ProjectOutletContext>()
+      useEffect(() => {
+        context.setFooter(stub.override)
+        return () => context.setFooter(null)
+      }, [context.setFooter]) // eslint-disable-line react-hooks/exhaustive-deps
+      return <h1>SCRIPT_PAGE</h1>
+    },
+  }
+})
+
 const summary: ProjectSummary = {
   canvas_id: 'c1',
   project_id: 'p1',
@@ -62,6 +79,7 @@ function renderAt(entry: string) {
 
 describe('ProjectFrame', () => {
   beforeEach(() => {
+    stub.override = null
     vi.mocked(workspaceApi.project).mockReset()
     vi.mocked(workspaceApi.project).mockResolvedValue(summary)
   })
@@ -135,6 +153,35 @@ describe('ProjectFrame', () => {
     expect(await screen.findByRole('heading', { name: '角色' })).toBeInTheDocument()
     expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/characters')
     expect(screen.getByRole('link', { name: '角色定稿，去分镜 →' })).toBeInTheDocument()
+  })
+
+  it('a step page can override the footer button, note and hint, and clears it on unmount', async () => {
+    const onClick = vi.fn()
+    stub.override = { label: '确认剧本，拆出角色和分镜 →', onClick, note: '先写剧本', hint: '场 3 有 2 句对白超过 30 字，配音会偏长' }
+    renderAt('/studio/c1/script')
+    const button = await screen.findByRole('button', { name: '确认剧本，拆出角色和分镜 →' })
+    expect(button).toBeEnabled()
+    expect(screen.getByText('先写剧本')).toBeInTheDocument()
+    expect(screen.getByText('场 3 有 2 句对白超过 30 字，配音会偏长')).toBeInTheDocument()
+    expect(screen.queryByText('为 2 个镜头选图')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '确认剧本，去定角色 →' })).not.toBeInTheDocument()
+    fireEvent.click(button)
+    expect(onClick).toHaveBeenCalledTimes(1)
+    // 离开剧本页：覆盖被清掉，回到默认的下一步按钮与摘要提示
+    fireEvent.click(screen.getByRole('button', { name: 'GO_TEST' }))
+    fireEvent.click(within(screen.getByRole('navigation', { name: '制作步骤' })).getByRole('link', { name: /角色/ }))
+    expect(await screen.findByRole('link', { name: '角色定稿，去分镜 →' })).toBeInTheDocument()
+    expect(screen.getByText('为 2 个镜头选图')).toBeInTheDocument()
+  })
+
+  it('a disabled or busy footer override cannot be clicked', async () => {
+    const onClick = vi.fn()
+    stub.override = { label: '正在拆分…', onClick, busy: true }
+    renderAt('/studio/c1/script')
+    const button = await screen.findByRole('button', { name: '正在拆分…' })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(onClick).not.toHaveBeenCalled()
   })
 
   it('voice next button leads to the following step', async () => {

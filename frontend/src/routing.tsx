@@ -12,6 +12,7 @@ import WorkspacePage from './components/workspace/WorkspacePage'
 import { paths } from './routePaths'
 
 const NodeCanvasPage = lazy(() => import('./components/nodeCanvas/NodeCanvasPage'))
+const ScriptPage = lazy(() => import('./components/script/ScriptPage'))
 const StoryboardPage = lazy(() => import('./components/storyboard/StoryboardPage'))
 
 export function legacyRedirectFor(pathname: string, search: string): string | null {
@@ -83,8 +84,9 @@ export function AppRoutes({ theme, onToggleTheme }: AppRoutesProps) {
           <Route path="studio/:canvasId" element={<ProjectFrame />}>
             <Route index element={<ActiveStepRedirect />} />
             <Route path="canvas" element={<NodeCanvasRoute />} />
+            <Route path="script" element={<Suspense fallback={pageFallback}><ScriptPage /></Suspense>} />
             <Route path="storyboard" element={<Suspense fallback={pageFallback}><StoryboardPage /></Suspense>} />
-            {STEP_KEYS.filter((key) => key !== 'storyboard').map((key) => (
+            {STEP_KEYS.filter((key) => key !== 'storyboard' && key !== 'script').map((key) => (
               <Route key={key} path={key} element={<StepPlaceholder step={key} />} />
             ))}
             <Route path="*" element={<CanvasRedirect />} />

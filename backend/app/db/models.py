@@ -143,6 +143,34 @@ class CanvasBatchRun(Base):
     )
 
 
+class CanvasScriptRevision(Base):
+    """画布剧本的版本：payload 为 幕 → 场 → 块 的结构化 JSON，版本号在同一画布内递增。"""
+
+    __tablename__ = "canvas_script_revisions"
+    __table_args__ = (UniqueConstraint("canvas_id", "revision", name="uq_canvas_script_revision"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    canvas_id: Mapped[str] = mapped_column(
+        ForeignKey("node_canvases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # user / ai_draft / import / restore
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
+    created_by: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 内容版本：这一行每被保存（含合并覆盖）一次 +1，用来识别“同一版被别处覆盖过”的过期写入
+    edit_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # 最近一次保存请求的客户端标识：页面关闭时的 keepalive 写入凭它认出“在途保存已落库”
+    last_save_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ModelProvider(Base):
     """供应商账号：接口协议 + Base URL + 密钥环境变量（只存引用）。其下模型继承地址与密钥引用。"""
 
