@@ -1,0 +1,68 @@
+/* 项目页框架：顶栏 / 步骤条 / 底栏；颜色全部来自 styles/tokens.css */
+.pf { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); color: var(--text-primary); font-size: 14px; line-height: 1.5; }
+
+.pf-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.pf-header__left, .pf-header__right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.pf-header__left { gap: 12px; }
+.pf-back { display: flex; color: var(--text-secondary); }
+.pf-back:hover { color: var(--text-primary); }
+.pf-title { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.pf-episode { color: var(--text-secondary); font-size: 13px; }
+
+.pf-seg { display: inline-flex; background: var(--surface-2); border-radius: var(--radius-md); padding: 3px; }
+.pf-seg__item { padding: 4px 14px; border-radius: var(--radius-sm); border: 1px solid transparent; color: var(--text-secondary); font-size: 13px; text-decoration: none; }
+.pf-seg__item--on { background: var(--surface); color: var(--text-primary); font-weight: 500; border-color: var(--border); }
+.pf-seg__item:focus-visible, .pf-step:focus-visible, .pf-next:focus-visible, .pf-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.pf-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pf-pill__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-tertiary); }
+.pf-pill[data-running='true'] { color: var(--text-primary); }
+.pf-pill[data-running='true'] .pf-pill__dot { background: var(--status-running); }
+
+.pf-icon-button { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--accent); cursor: pointer; }
+.pf-icon-button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.pf-skeleton { display: inline-block; border-radius: var(--radius-sm); background: var(--track); animation: pf-pulse 1.2s ease-in-out infinite; }
+.pf-skeleton--title { width: 120px; height: 18px; }
+.pf-skeleton--pill { width: 88px; height: 24px; border-radius: 999px; }
+@keyframes pf-pulse { 50% { opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) { .pf-skeleton { animation: none; } }
+
+.pf-banner { display: flex; align-items: center; gap: 12px; padding: 8px 20px; background: var(--status-failed-soft); color: var(--status-failed); font-size: 13px; }
+.pf-banner button { border: 1px solid currentColor; border-radius: var(--radius-sm); background: transparent; color: inherit; padding: 2px 10px; cursor: pointer; }
+
+/* 步骤条：窄屏只在条内横向滚动，页面本身不出现横向滚动 */
+.pf-steps { display: flex; align-items: center; gap: 24px; padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 13px; overflow-x: auto; }
+.pf-steps__list { display: flex; gap: 24px; margin: 0; padding: 0; list-style: none; flex-shrink: 0; }
+.pf-step { display: block; padding: 10px 0; white-space: nowrap; color: var(--text-secondary); text-decoration: none; border-bottom: 2px solid transparent; }
+.pf-step--done { color: var(--status-done); }
+.pf-step--active { color: var(--text-primary); }
+.pf-step--current { color: var(--text-primary); font-weight: 600; border-bottom-color: var(--text-primary); }
+.pf-steps__cost { margin-left: auto; padding-left: 12px; white-space: nowrap; color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.pf-body { flex: 1; min-height: 0; overflow: auto; }
+/* 画布视图：全屏工作区，覆盖画布自带的整屏最小高度，避免在框架内再出现滚动条 */
+.pf-body--canvas { display: flex; flex-direction: column; overflow: hidden; }
+.pf-body--canvas .nc-page { flex: 1; height: auto; min-height: 0; }
+
+.pf-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; background: var(--surface); border-top: 1px solid var(--border); }
+.pf-footer__hint { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.pf-footer__ai { color: var(--accent); font-weight: 600; }
+.pf-next { margin-left: auto; height: 36px; padding: 0 16px; display: inline-flex; align-items: center; border-radius: var(--radius-md); background: var(--fill-primary); color: var(--text-on-primary); font-size: 14px; font-weight: 500; text-decoration: none; }
+.pf-next:hover { background: var(--fill-primary-hover); }
+
+.pf-placeholder { max-width: 560px; margin: 48px auto; padding: 0 20px; }
+.pf-placeholder h1 { margin: 0 0 8px; font-size: 20px; }
+.pf-placeholder p { margin: 0 0 12px; color: var(--text-secondary); }
+.pf-placeholder__note { color: var(--text-tertiary); }
+.pf-placeholder__button { display: inline-flex; align-items: center; height: 36px; padding: 0 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-primary); text-decoration: none; font-size: 14px; }
+.pf-placeholder__button:hover { border-color: var(--accent); color: var(--accent); }
+
+.pf-message { padding: 48px 20px; text-align: center; color: var(--text-secondary); }
+.pf-message a { color: var(--accent); }
+
+@media (max-width: 800px) {
+  .pf-header { padding: 10px 12px; }
+  .pf-steps { padding: 0 12px; }
+  .pf-footer { padding: 12px; }
+}

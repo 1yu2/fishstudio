@@ -1,5 +1,8 @@
 import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
+import ProjectFrame from './components/project/ProjectFrame'
+import StepPlaceholder from './components/project/StepPlaceholder'
+import { STEP_KEYS } from './components/project/steps'
 import AppShell from './components/shell/AppShell'
 import LibraryPage from './components/workspace/LibraryPage'
 import ProjectsPage from './components/projects/ProjectsPage'
@@ -47,6 +50,11 @@ function NodeCanvasRoute() {
   )
 }
 
+function CanvasRedirect() {
+  const { canvasId = '' } = useParams()
+  return <Navigate to={paths.projectCanvas(canvasId)} replace />
+}
+
 export function AppRoutes({ theme, onToggleTheme }: AppRoutesProps) {
   return (
     <>
@@ -57,7 +65,15 @@ export function AppRoutes({ theme, onToggleTheme }: AppRoutesProps) {
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="library" element={<LibraryPage />} />
           <Route path="canvas/*" element={<Navigate to={paths.projects} replace />} />
-          <Route path="studio/:canvasId" element={<NodeCanvasRoute />} />
+          <Route path="studio/:canvasId" element={<ProjectFrame />}>
+            {/* 步骤页还是占位，先默认进画布；第 3 步做完分镜页后改为默认进当前步骤（后端 active_step） */}
+            <Route index element={<CanvasRedirect />} />
+            <Route path="canvas" element={<NodeCanvasRoute />} />
+            {STEP_KEYS.map((key) => (
+              <Route key={key} path={key} element={<StepPlaceholder step={key} />} />
+            ))}
+            <Route path="*" element={<CanvasRedirect />} />
+          </Route>
           <Route path="projects/drama/*" element={<Navigate to={paths.projects} replace />} />
           <Route path="settings" element={<SettingsPage theme={theme} onToggleTheme={onToggleTheme} managedByAppShell />} />
           <Route path="*" element={<Navigate to={paths.home} replace />} />

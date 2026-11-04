@@ -16,6 +16,9 @@ vi.mock('./components/projects/ProjectsPage', () => ({
 vi.mock('./components/SettingsPage', () => ({
   default: () => <div>SETTINGS_PAGE</div>,
 }))
+vi.mock('./api/workspace', () => ({
+  workspaceApi: { project: vi.fn(() => new Promise(() => undefined)), overview: vi.fn(() => new Promise(() => undefined)) },
+}))
 vi.mock('./components/nodeCanvas/NodeCanvasPage', () => ({
   default: ({ canvasId }: { canvasId: string }) => <div>NODE_CANVAS:{canvasId}</div>,
 }))
@@ -113,7 +116,7 @@ describe('application navigation', () => {
   })
 
   it.each([
-    ['/studio/node-refresh', 'NODE_CANVAS:node-refresh'],
+    ['/studio/node-refresh/canvas', 'NODE_CANVAS:node-refresh'],
     ['/library', 'LIBRARY_PAGE'],
     ['/settings', 'SETTINGS_PAGE'],
   ])('restores a refreshed deep link %s', async (entry, expected) => {
@@ -130,6 +133,8 @@ describe('application navigation', () => {
     ['/projects/drama/legacy-drama', 'PROJECTS_PAGE', '/projects'],
     ['/?page=settings', 'SETTINGS_PAGE', '/settings'],
     ['/prototype/projects', 'WORKSPACE_PAGE', '/'],
+    ['/studio/node-1', 'NODE_CANVAS:node-1', '/studio/node-1/canvas'],
+    ['/studio/node-1/unknown', 'NODE_CANVAS:node-1', '/studio/node-1/canvas'],
   ])('redirects legacy deep link %s with replace semantics', async (entry, content, expectedLocation) => {
     renderRoutes(entry)
     expect(await screen.findByText(content)).toBeInTheDocument()

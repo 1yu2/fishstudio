@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -102,24 +102,29 @@ def _next_hint(failed: int, review: int, shots_done: int, shots_total: int) -> s
     return "去配音"
 
 
-async def overview(session: AsyncSession, user: User) -> dict[str, Any]:
-    # 统计覆盖该用户全部画布；只取需要的列，避免载入整行
-    canvases = (
-        await session.execute(
-            select(
-                NodeCanvas.id,
-                NodeCanvas.project_id,
-                NodeCanvas.title,
-                NodeCanvas.aspect_ratio,
-                NodeCanvas.updated_at,
-                NodeCanvas.graph,
-            )
-            .where(NodeCanvas.owner_id == user.id)
-            .order_by(NodeCanvas.updated_at.desc())
-        )
-    ).all()
+_CANVAS_COLUMNS = (
+    NodeCanvas.id,
+    NodeCanvas.project_id,
+    NodeCanvas.title,
+    NodeCanvas.aspect_ratio,
+    NodeCanvas.updated_at,
+    NodeCanvas.graph,
+)
+
+
+class _Collected(NamedTuple):
+    """一批画布的聚合结果（overview 与单项目接口共用同一份规则）。"""
+
+    jobs: list[Any]
+    costs: dict[str, Decimal]
+    stats: dict[str, dict[str, Any]]
+    review_by_project: dict[str, list[dict[str, Any]]]
+    failed_by_project: dict[str, list[dict[str, Any]]]
+
+
+async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
+    """按给定画布一次性查出 jobs / artifacts / cost，并在内存里算出各项目的镜头统计、失败与待确认。"""
     project_ids = [canvas.project_id for canvas in canvases]
-    by_project = {canvas.project_id: canvas for canvas in canvases}
 
     jobs: list[Any] = []
     artifacts: list[Any] = []
@@ -169,22 +174,6 @@ async def overview(session: AsyncSession, user: User) -> dict[str, Any]:
                 )
             ).all()
         }
-
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    finished_this_week = (
-        await session.scalar(
-            select(func.count())
-            .select_from(GenerationJob)
-            .join(SeriesProject, SeriesProject.id == GenerationJob.project_id)
-            .where(
-                SeriesProject.user_id == user.id,
-                GenerationJob.operation.like("render%"),
-                GenerationJob.status == "succeeded",
-                func.coalesce(GenerationJob.finished_at, GenerationJob.updated_at) >= week_ago,
-            )
-        )
-        or 0
-    )
 
     # 任务按创建时间倒序，首个即该节点最新任务
     latest_job: dict[tuple[str, str], Any] = {}
@@ -275,26 +264,98 @@ async def overview(session: AsyncSession, user: User) -> dict[str, Any]:
             "has_script": has_script,
         }
 
-    projects = []
-    for canvas in canvases[:MAX_PROJECTS]:
-        info = stats[canvas.project_id]
-        failed = len(failed_by_project.get(canvas.project_id, []))
-        review = len(review_by_project.get(canvas.project_id, []))
-        projects.append(
-            {
-                "canvas_id": canvas.id,
-                "project_id": canvas.project_id,
-                "title": canvas.title,
-                "aspect_ratio": canvas.aspect_ratio,
-                "updated_at": _iso(canvas.updated_at),
-                "cover_artifact_id": info["cover"],
-                "total_cost": _money(costs.get(canvas.project_id)),
-                "shots_total": info["shots_total"],
-                "shots_done": info["shots_done"],
-                "steps": _steps(info["shots_done"], info["shots_total"], info["has_script"]),
-                "next_hint": _next_hint(failed, review, info["shots_done"], info["shots_total"]),
-            }
+    return _Collected(jobs, costs, stats, review_by_project, failed_by_project)
+
+
+def _project_entry(canvas: Any, data: _Collected) -> dict[str, Any]:
+    """单个项目的概览条目（工作台列表与项目页顶栏共用）。"""
+    info = data.stats[canvas.project_id]
+    failed = len(data.failed_by_project.get(canvas.project_id, []))
+    review = len(data.review_by_project.get(canvas.project_id, []))
+    return {
+        "canvas_id": canvas.id,
+        "project_id": canvas.project_id,
+        "title": canvas.title,
+        "aspect_ratio": canvas.aspect_ratio,
+        "updated_at": _iso(canvas.updated_at),
+        "cover_artifact_id": info["cover"],
+        "total_cost": _money(data.costs.get(canvas.project_id)),
+        "shots_total": info["shots_total"],
+        "shots_done": info["shots_done"],
+        "steps": _steps(info["shots_done"], info["shots_total"], info["has_script"]),
+        "next_hint": _next_hint(failed, review, info["shots_done"], info["shots_total"]),
+    }
+
+
+async def _budget(session: AsyncSession, user_id: int) -> dict[str, Optional[str]]:
+    budget = await budget_service.status(session, user_id)
+    return {
+        "cap": _money(budget["cap"]) if budget["cap"] is not None else None,
+        "spent_today": _money(budget["spent"]),
+        "in_flight": _money(budget["in_flight"]),
+        "remaining": _money(budget["remaining"]) if budget["remaining"] is not None else None,
+    }
+
+
+async def project_summary(session: AsyncSession, user: User, canvas_id: str) -> Optional[dict[str, Any]]:
+    """项目页顶栏 / 步骤条 / 底栏所需数据；不是自己的画布或不存在都返回 None（由路由转 404）。"""
+    canvas = (
+        await session.execute(
+            select(*_CANVAS_COLUMNS).where(NodeCanvas.id == canvas_id, NodeCanvas.owner_id == user.id)
         )
+    ).first()
+    if canvas is None:
+        return None
+    data = await _collect(session, [canvas])
+    entry = _project_entry(canvas, data)
+    return {
+        "canvas_id": entry["canvas_id"],
+        "project_id": entry["project_id"],
+        "title": entry["title"],
+        "aspect_ratio": entry["aspect_ratio"],
+        "total_cost": entry["total_cost"],
+        "shots_total": entry["shots_total"],
+        "shots_done": entry["shots_done"],
+        "steps": entry["steps"],
+        "active_step": next((step["key"] for step in entry["steps"] if step["status"] == "active"), None),
+        "next_hint": entry["next_hint"],
+        "running_count": sum(1 for job in data.jobs if job.status in RUNNING_STATUSES),
+        "budget": await _budget(session, user.id),
+    }
+
+
+async def overview(session: AsyncSession, user: User) -> dict[str, Any]:
+    # 统计覆盖该用户全部画布；只取需要的列，避免载入整行
+    canvases = (
+        await session.execute(
+            select(*_CANVAS_COLUMNS)
+            .where(NodeCanvas.owner_id == user.id)
+            .order_by(NodeCanvas.updated_at.desc())
+        )
+    ).all()
+    by_project = {canvas.project_id: canvas for canvas in canvases}
+    data = await _collect(session, canvases)
+    jobs = data.jobs
+    review_by_project = data.review_by_project
+    failed_by_project = data.failed_by_project
+
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    finished_this_week = (
+        await session.scalar(
+            select(func.count())
+            .select_from(GenerationJob)
+            .join(SeriesProject, SeriesProject.id == GenerationJob.project_id)
+            .where(
+                SeriesProject.user_id == user.id,
+                GenerationJob.operation.like("render%"),
+                GenerationJob.status == "succeeded",
+                func.coalesce(GenerationJob.finished_at, GenerationJob.updated_at) >= week_ago,
+            )
+        )
+        or 0
+    )
+
+    projects = [_project_entry(canvas, data) for canvas in canvases[:MAX_PROJECTS]]
 
     running_jobs = [job for job in jobs if job.status in RUNNING_STATUSES]
     node_labels = {
@@ -324,14 +385,8 @@ async def overview(session: AsyncSession, user: User) -> dict[str, Any]:
     needs_review = [item for pid in order for item in review_by_project.get(pid, [])]
     failed_items = [item for pid in order for item in failed_by_project.get(pid, [])]
 
-    budget = await budget_service.status(session, user.id)
     return {
-        "budget": {
-            "cap": _money(budget["cap"]) if budget["cap"] is not None else None,
-            "spent_today": _money(budget["spent"]),
-            "in_flight": _money(budget["in_flight"]),
-            "remaining": _money(budget["remaining"]) if budget["remaining"] is not None else None,
-        },
+        "budget": await _budget(session, user.id),
         "counts": {
             "running": len(running),
             "needs_review": len(needs_review),
