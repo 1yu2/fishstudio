@@ -1,19 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  Background, BackgroundVariant, Controls, MiniMap, Panel, ReactFlow, ReactFlowProvider, addEdge,
-  useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node, type OnConnectEnd,
+  Background, BackgroundVariant, ControlButton, Controls, MiniMap, Panel, ReactFlow, ReactFlowProvider, addEdge,
+  useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node, type NodeChange, type OnBeforeDelete, type OnConnectEnd,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { ArrowLeft, Check, Film, ImageIcon, Loader2, Play, Sparkles, Type, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronsDownUp, ChevronsUpDown, Film, ImageIcon, LayoutGrid, Loader2, Maximize, MoreHorizontal, Play, Plus, Sparkles, Type, X } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
-  ConflictError, nodeCanvasApi, type BatchKind, type BatchRun, type BatchScope, type CanvasDetail, type DailyBudget, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
+  ConflictError, nodeCanvasApi, type BatchKind, type BatchRun, type BatchScope, type CanvasDetail, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
   type SplitResult, type StoredEdge, type StoredGraph, type StoredNode,
 } from '../../api/nodeCanvas'
 import { paths } from '../../routePaths'
 import { toast } from '../ui/Toast'
 import { CanvasContext, type CanvasActions } from './context'
+import { isCharacterNode } from '../characters/characters'
+import { buildShots, newShot } from '../storyboard/shots'
 import { canConnect, defaultData, dropTarget, edgeId, layoutSplit, newId, newRequestId } from './graph'
+import {
+  CARD_SIZE, GROUP_HEADER, GROUP_NODE_TYPE, GROUP_PADDING, buildGroups, contentBottom, defaultCollapsed, expandWithRoom, focusViewport, groupNodeId, loadCollapsed, nodeRect, saveCollapsed, tidyLayout, unionRect, withCachedSizes,
+  type Rect, type ShotGroup, type SizeCache, type SizedNode,
+} from './groups'
+import type { ShotGroupData } from './ShotGroupNode'
 import { BatchDialog, kindsLabel, type BatchPlan } from './BatchDialog'
 import { nodeTypes } from './nodes'
 import './nodeCanvas.css'
@@ -21,31 +28,79 @@ import './nodeCanvas.css'
 type SaveState = 'saved' | 'saving' | 'dirty' | 'error'
 const SAVE_DELAY = 800
 const POLL_INTERVAL = 3000
+/** 量不到工具栏时（首次渲染前 / 测试环境）使用的避让高度 */
+const FALLBACK_TOOLBAR_HEIGHT = 72
+/** 初次进入时工具栏还没渲染，fitView 先按单行工具栏的高度留顶部空间 */
+const INITIAL_FIT_PADDING = { top: '96px', right: '48px', bottom: '48px', left: '48px' } as const
+/** 新镜头放在现有内容下方时与它们的间距 */
+const SHOT_GAP = 48
+
+/** 分组节点是派生的，任何来源的 graph 里出现都丢掉 */
+const isDerived = (node: { type?: string }) => node.type === GROUP_NODE_TYPE
 
 function toFlow(graph: StoredGraph): { nodes: Node[]; edges: Edge[] } {
   return {
-    nodes: (graph.nodes || []).map((node) => ({ id: node.id, type: node.type, position: node.position, data: node.data })),
+    nodes: (graph.nodes || []).filter((node) => !isDerived(node)).map((node) => ({ id: node.id, type: node.type, position: node.position, data: node.data })),
     edges: (graph.edges || []).map((edge) => ({ ...edge, sourceHandle: edge.sourceHandle ?? 'out' })),
   }
 }
 
+/** 只保存节点的真实内容：不含派生的分组节点，也不含 hidden / measured 这类显示状态。 */
 function stored(nodes: Node[]): StoredNode[] {
-  return nodes.map((node) => ({ id: node.id, type: node.type as CanvasNodeType, position: node.position, data: node.data as Record<string, unknown> }))
+  return nodes.filter((node) => !isDerived(node))
+    .map((node) => ({ id: node.id, type: node.type as CanvasNodeType, position: node.position, data: node.data as Record<string, unknown> }))
+}
+
+/** 会被保存的内容的指纹 */
+function graphSignature(nodes: Node[], edges: Edge[]): string {
+  return JSON.stringify([stored(nodes), storedEdges(edges)])
+}
+
+/** 供分组计算用：带测量尺寸的节点 */
+function sized(nodes: Node[]): SizedNode[] {
+  return nodes.filter((node) => !isDerived(node)).map((node) => ({
+    id: node.id, type: node.type as CanvasNodeType, position: node.position, data: node.data as Record<string, unknown>, measured: node.measured,
+  }))
 }
 
 function storedEdges(edges: Edge[]): StoredEdge[] {
   return edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle ?? null, targetHandle: edge.targetHandle ?? null }))
 }
 
-/** 今日云端花费 / 上限；进行中的任务按预估计入，剩余不足两成时变色。 */
-function BudgetBadge({ budget }: { budget: DailyBudget }) {
-  const cap = budget.cap ?? 0
-  const used = budget.spent + budget.in_flight
-  const low = cap > 0 && (budget.remaining ?? 0) < cap * 0.2
-  return <span className={`nc-budget${low ? ' nc-budget--low' : ''}`}
-    title={`今日云端已花 ¥${budget.spent.toFixed(2)}，进行中预估 ¥${budget.in_flight.toFixed(2)}；本地预览不计入`}>
-    今日云端 ¥{used.toFixed(2)} / ¥{cap.toFixed(0)}
-  </span>
+/** 工具栏上的下拉菜单：打开后焦点进第一项，上下键移动，Esc / 执行菜单项后焦点还给触发按钮，点外面关闭。 */
+function ToolbarMenu({ label, icon, disabled, children }: { label: string; icon: ReactNode; disabled?: boolean; children: (close: () => void) => ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const items = () => [...(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') || [])]
+  const close = useCallback(() => { setOpen(false); trigger.current?.focus() }, [])
+  useEffect(() => {
+    if (!open) return
+    items()[0]?.focus()
+    const onDown = (event: MouseEvent) => { if (!(event.target instanceof Element) || !ref.current?.contains(event.target)) setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    if (!open) return
+    if (event.key === 'Escape') { event.preventDefault(); close(); return }
+    if (event.key === 'Tab') { setOpen(false); return }
+    const move = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0
+    const edge = event.key === 'Home' ? 0 : event.key === 'End' ? -1 : null
+    if (!move && edge === null) return
+    event.preventDefault()
+    const list = items()
+    if (list.length === 0) return
+    const at = list.indexOf(document.activeElement as HTMLElement)
+    const next = edge !== null ? (edge === 0 ? 0 : list.length - 1) : (at + move + list.length) % list.length
+    list[next].focus()
+  }
+  return <div className="nc-menu" ref={ref} onKeyDown={onKeyDown}>
+    <button ref={trigger} className="nc-tool" aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen((value) => !value)}>
+      {icon}{label}<ChevronDown size={12} />
+    </button>
+    {open && <div className="nc-menu__list" role="menu">{children(close)}</div>}
+  </div>
 }
 
 function themeMode(): 'dark' | 'light' {
@@ -84,7 +139,6 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(initial.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(initial.edges)
   const [runs, setRuns] = useState<CanvasRuns | null>(null)
-  const [title, setTitle] = useState(detail.title)
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [copilot, setCopilot] = useState(false)
   const [polling, setPolling] = useState(true)
@@ -99,16 +153,98 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
   const loaded = useRef(false)
   const flow = useReactFlow()
   latest.current = { nodes, edges }
-  // 分镜页“在画布中打开”带 ?node=<id>：进入后选中该节点并把视口对到它
+  const flowRef = useRef<HTMLDivElement>(null)
+  const topRef = useRef<HTMLDivElement>(null)
+
+  // 分镜页“在画布中打开”带 ?node=<id>：进入后展开该节点所在的镜头组、选中它并把视口对到它
   const [searchParams] = useSearchParams()
   const focusNode = searchParams.get('node')
+
+  // 镜头分组：由 graph 推导；折叠状态存 localStorage（没存过按镜头数给默认值）
+  // 记住每个节点最后一次测到的尺寸：折叠后节点被隐藏、不再测量，展开 / 整理时仍按它算
+  const sizeCache = useRef<SizeCache>(new Map())
+  const flowNodes = useMemo(() => {
+    for (const node of nodes) {
+      const { width, height } = node.measured || {}
+      if (width && height) sizeCache.current.set(node.id, { width, height })
+    }
+    return withCachedSizes(sized(nodes), sizeCache.current)
+  }, [nodes])
+  const sizedNow = useCallback((): SizedNode[] => withCachedSizes(sized(latest.current.nodes), sizeCache.current), [])
+  // 刚展开、等成员测量完要再校正一次让位的组
+  const pendingFix = useRef(new Set<string>())
+  const flowEdges = useMemo(() => storedEdges(edges), [edges])
+  const groups = useMemo(() => buildGroups(flowNodes, flowEdges, runs), [flowNodes, flowEdges, runs])
+  const groupsRef = useRef(groups)
+  groupsRef.current = groups
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    const first = buildGroups(sized(initial.nodes), storedEdges(initial.edges), null)
+    const value = new Set(loadCollapsed(detail.id) ?? defaultCollapsed(first.map((group) => group.shotId)))
+    return value
+  })
+  const updateCollapsed = useCallback((change: (value: Set<string>) => Set<string>) => {
+    setCollapsed((current) => { const next = change(current); saveCollapsed(detail.id, next); return next })
+  }, [detail.id])
+  const collapsedRef = useRef(collapsed)
+  collapsedRef.current = collapsed
+  const runsRef = useRef(runs)
+  runsRef.current = runs
+  // 展开若干组（按顺序依次让位）：被展开后的框盖住的内容往下推并保存新位置；折叠不回收空间
+  const expandGroups = useCallback((ids: string[], room = true) => {
+    for (const id of ids) pendingFix.current.add(id)
+    // room=false（?node= 打开）：只展开，不在这一刻用可能是默认的尺寸去推别人，等成员测量完由校正来做
+    const result = room
+      ? expandWithRoom(sizedNow(), storedEdges(latest.current.edges), runsRef.current, collapsedRef.current, ids)
+      : { positions: {} as Record<string, { x: number; y: number }>, collapsed: new Set([...collapsedRef.current].filter((id) => !ids.includes(id))) }
+    const { positions } = result
+    if (Object.keys(positions).length > 0) setNodes((items) => items.map((node) => positions[node.id] ? { ...node, position: positions[node.id] } : node))
+    updateCollapsed(() => result.collapsed)
+  }, [setNodes, updateCollapsed, sizedNow])
+  const toggleGroup = useCallback((shotId: string) => {
+    if (collapsedRef.current.has(shotId)) expandGroups([shotId])
+    else { pendingFix.current.delete(shotId); updateCollapsed((current) => new Set(current).add(shotId)) }
+  }, [expandGroups, updateCollapsed])
+  const allCollapsed = groups.length > 0 && groups.every((group) => collapsed.has(group.shotId))
+  const toggleAll = () => {
+    if (allCollapsed) expandGroups(groups.map((group) => group.shotId))
+    else { pendingFix.current.clear(); updateCollapsed(() => new Set(groups.map((group) => group.shotId))) }
+  }
+
+  // 工具栏占掉的顶部高度（相对画布容器）；量不到时用回退值
+  const toolbarInset = useCallback(() => {
+    const box = flowRef.current?.getBoundingClientRect()
+    const bar = topRef.current?.getBoundingClientRect()
+    return box && bar && bar.height > 0 ? bar.bottom - box.top + 12 : FALLBACK_TOOLBAR_HEIGHT
+  }, [])
+  // 把一块区域对到视口中央，并让出顶部工具栏的高度，避免被它挡住
+  const focusRect = useCallback((rect: Rect, duration = 400) => {
+    const box = flowRef.current?.getBoundingClientRect()
+    const size = box && box.width > 0 && box.height > 0 ? { width: box.width, height: box.height } : { width: window.innerWidth, height: window.innerHeight }
+    void Promise.resolve(flow.setViewport(focusViewport(rect, size, toolbarInset()), { duration })).catch(() => undefined)
+  }, [flow, toolbarInset])
+  // 适应画面：所有 fitView 都走这里，顶部让出工具栏高度
+  const fitAll = useCallback((duration = 300) => {
+    void Promise.resolve(flow.fitView({ padding: { top: `${toolbarInset() + 16}px` as const, right: '48px', bottom: '48px', left: '48px' }, maxZoom: 1, duration })).catch(() => undefined)
+  }, [flow, toolbarInset])
+  // 定位到一个节点：在组里就对整组，否则对节点自己。等节点测量完再定位，所以延后一点
+  const focusNodeLater = useCallback((nodeId: string) => {
+    return window.setTimeout(() => {
+      const group = groupsRef.current.find((item) => item.members.includes(nodeId))
+      const node = latest.current.nodes.find((item) => item.id === nodeId)
+      if (group) focusRect(group.bounds)
+      else if (node) focusRect(nodeRect(sized([node])[0]))
+    }, 80)
+  }, [focusRect])
+
   useEffect(() => {
     if (!focusNode || !latest.current.nodes.some((node) => node.id === focusNode)) return
+    const group = groupsRef.current.find((item) => item.members.includes(focusNode))
+    // 目标组本来就展开：只定位，不改任何坐标；原来折叠的：只展开，让位交给测量后的校正
+    if (group && collapsedRef.current.has(group.shotId)) expandGroups([group.shotId], false)
     setNodes((items) => items.map((node) => ({ ...node, selected: node.id === focusNode })))
-    // 等节点测量完再定位，否则 fitView 拿不到尺寸
-    const timer = window.setTimeout(() => void flow.fitView({ nodes: [{ id: focusNode }], padding: 0.6, maxZoom: 1, duration: 400 }), 80)
+    const timer = focusNodeLater(focusNode)
     return () => window.clearTimeout(timer)
-  }, [focusNode, flow, setNodes])
+  }, [focusNode, focusNodeLater, setNodes, expandGroups])
 
   const save = useCallback(async () => {
     if (pending.current) await pending.current
@@ -117,8 +253,9 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     saveFailed.current = false
     setSaveState('saving')
     const graph: StoredGraph = { nodes: stored(latest.current.nodes), edges: storedEdges(latest.current.edges), viewport: flow.getViewport() }
+    const signature = graphSignature(latest.current.nodes, latest.current.edges)
     pending.current = nodeCanvasApi.save(detail.id, graph, revision.current)
-      .then((result) => { revision.current = result.revision; setSaveState(dirty.current ? 'dirty' : 'saved') })
+      .then((result) => { revision.current = result.revision; savedSignature.current = signature; setSaveState(dirty.current ? 'dirty' : 'saved') })
       .catch(async (error) => {
         saveFailed.current = true
         setSaveState('error')
@@ -127,6 +264,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
           const fresh = await nodeCanvasApi.get(detail.id)
           const next = toFlow(fresh.graph)
           revision.current = fresh.revision
+          savedSignature.current = graphSignature(next.nodes, next.edges)
           setNodes(next.nodes); setEdges(next.edges)
           setSaveState('saved')
         } else {
@@ -140,8 +278,11 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
 
   const markDirty = useCallback(() => { dirty.current = true; setSaveState('dirty') }, [])
 
+  // 只有真正会保存的内容（节点 / 边）变了才算脏：选中、测量尺寸、折叠这类显示状态变化不触发保存
+  const savedSignature = useRef(graphSignature(initial.nodes, initial.edges))
   useEffect(() => {
     if (!loaded.current) { loaded.current = true; return }
+    if (graphSignature(nodes, edges) === savedSignature.current) return
     markDirty()
   }, [nodes, edges, markDirty])
 
@@ -256,13 +397,18 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     } catch (error) { toast(error instanceof Error ? error.message : '取消失败', 'error') }
   }
 
+  const storedNodes = useMemo(() => stored(nodes), [nodes])
+  const characterIds = useMemo(() => new Set(storedNodes.filter((node) => isCharacterNode(node, flowEdges)).map((node) => node.id)), [storedNodes, flowEdges])
+  const hasCharacterRefs = useMemo(() => flowEdges.some((edge) => edge.targetHandle === 'reference' && characterIds.has(edge.source)), [flowEdges, characterIds])
+
   const actions: CanvasActions = useMemo(() => ({
     canvasId: detail.id,
     aspectRatio: detail.aspect_ratio,
     models,
     runs,
-    nodes: stored(nodes),
-    edges: storedEdges(edges),
+    nodes: storedNodes,
+    edges: flowEdges,
+    characterIds,
     updateData,
     quote: (request: RunRequest) => nodeCanvasApi.quote(detail.id, request),
     runBatch: (scope: BatchScope, nodeId?: string) => { void openBatch(scope, nodeId) },
@@ -294,7 +440,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
         await refreshRuns()
       } catch (error) { toast(error instanceof Error ? error.message : '上传失败', 'error') }
     },
-  }), [detail.id, detail.aspect_ratio, models, runs, nodes, edges, updateData, flushThen, refreshRuns, openBatch])
+  }), [detail.id, detail.aspect_ratio, models, runs, storedNodes, flowEdges, characterIds, updateData, flushThen, refreshRuns, openBatch])
 
   const isValidConnection = useCallback((connection: Connection | Edge) => canConnect(stored(latest.current.nodes), storedEdges(latest.current.edges), connection), [])
 
@@ -327,58 +473,188 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     const laid = layoutSplit(split, stored(latest.current.nodes))
     setNodes((items) => [...items, ...toFlow({ nodes: laid.nodes }).nodes])
     setEdges((items) => [...items, ...toFlow({ edges: laid.edges }).edges])
-    window.setTimeout(() => flow.fitView({ nodes: laid.nodes.map((node) => ({ id: node.id })), padding: 0.15, duration: 400 }), 50)
-  }, [flow, setEdges, setNodes])
+    const area = unionRect(laid.nodes.map((node) => nodeRect(node)))
+    if (area) window.setTimeout(() => focusRect(area), 50)
+  }, [focusRect, setEdges, setNodes])
 
-  const rename = async () => {
-    const next = title.trim()
-    if (!next || next === detail.title) return
-    try { await nodeCanvasApi.rename(detail.id, { title: next }) } catch (error) { toast(error instanceof Error ? error.message : '重命名失败', 'error') }
-  }
+  // 在已有镜头下方新建一组镜头节点（口径同分镜页的“添加镜头”），默认展开并定位
+  const addShot = useCallback(() => {
+    const current = stored(latest.current.nodes)
+    const made = newShot(current, buildShots(current, storedEdges(latest.current.edges), runs))
+    // 数据口径沿用 newShot，位置改放到所有节点和组框（用实测尺寸）的下方，留出新组的标题和间距
+    const bottom = contentBottom(sizedNow(), groupsRef.current, collapsedRef.current)
+    if (bottom !== null) {
+      const y = bottom + SHOT_GAP + GROUP_PADDING + GROUP_HEADER
+      for (const item of made.nodes) item.position = { ...item.position, y }
+    }
+    setNodes((items) => [
+      ...items.map((node) => ({ ...node, selected: false, ...(node.id in made.orders ? { data: { ...node.data, order: made.orders[node.id] } } : {}) })),
+      ...toFlow({ nodes: made.nodes }).nodes.map((node) => ({ ...node, selected: node.id === made.mainId })),
+    ])
+    setEdges((items) => [...items, ...toFlow({ edges: made.edges }).edges])
+    updateCollapsed((value) => { const next = new Set(value); next.delete(made.mainId); return next })
+    const area = unionRect(made.nodes.map((node) => nodeRect(node)))
+    window.setTimeout(() => {
+      const group = groupsRef.current.find((item) => item.id === groupNodeId(made.mainId))
+      if (group) focusRect(group.bounds)
+      else if (area) focusRect(area)
+    }, 80)
+  }, [focusRect, runs, setEdges, setNodes, updateCollapsed])
+
+  // 渲染用的节点：成员 + 派生的分组节点。折叠时成员只是 hidden（显示状态，不进 state、不保存）
+  const hiddenIds = useMemo(() => new Set(groups.filter((group) => collapsed.has(group.shotId)).flatMap((group) => group.members)), [groups, collapsed])
+  // 刚展开的组：只要收到它的成员“展开之后”的尺寸变化（measured 变了），就按镜头顺序再让位一次。
+  // 以尺寸变化为准，所以折叠前留下的旧 measured 不会让校正提前结束；展开时尺寸没变就无事可做，标记保留，等真有变化再校正。
+  // 校正只改 position、不改 measured，不会循环；一个组校正过一次就清除标记。
+  const lastMeasured = useRef(new Map<string, string>())
+  useEffect(() => {
+    const changed = new Set<string>()
+    for (const node of nodes) {
+      const { width, height } = node.measured || {}
+      if (!width || !height) continue
+      const key = `${width}x${height}`
+      if (lastMeasured.current.get(node.id) !== key) { lastMeasured.current.set(node.id, key); changed.add(node.id) }
+    }
+    if (pendingFix.current.size === 0 || changed.size === 0) return
+    const ready = groupsRef.current
+      .filter((group) => pendingFix.current.has(group.shotId) && !collapsedRef.current.has(group.shotId) && group.members.some((id) => changed.has(id)))
+      .map((group) => group.shotId)
+    if (ready.length === 0) return
+    for (const id of ready) pendingFix.current.delete(id)
+    const { positions } = expandWithRoom(sizedNow(), storedEdges(latest.current.edges), runsRef.current, collapsedRef.current, ready)
+    if (Object.keys(positions).length > 0) setNodes((items) => items.map((node) => positions[node.id] ? { ...node, position: positions[node.id] } : node))
+  }, [nodes, setNodes, sizedNow])
+
+  const hiddenRef = useRef(hiddenIds)
+  hiddenRef.current = hiddenIds
+  // 折叠后看不见的节点和边不能还处于选中状态，否则按 Delete 会误删
+  useEffect(() => {
+    if (hiddenIds.size === 0) return
+    const hiddenEdge = (edge: Edge) => hiddenIds.has(edge.source) || hiddenIds.has(edge.target)
+    if (latest.current.nodes.some((node) => node.selected && hiddenIds.has(node.id))) {
+      setNodes((items) => items.map((node) => node.selected && hiddenIds.has(node.id) ? { ...node, selected: false } : node))
+    }
+    if (latest.current.edges.some((edge) => edge.selected && hiddenEdge(edge))) {
+      setEdges((items) => items.map((edge) => edge.selected && hiddenEdge(edge) ? { ...edge, selected: false } : edge))
+    }
+  }, [hiddenIds, setEdges, setNodes])
+  // 删除前再拦一道：隐藏的节点、派生的分组节点不能被删；连着隐藏节点的边只有在另一端节点确实被删时才跟着删
+  const onBeforeDelete: OnBeforeDelete<Node, Edge> = useCallback(async ({ nodes: doomed, edges: doomedEdges }) => {
+    const hidden = hiddenRef.current
+    const kept = doomed.filter((node) => !hidden.has(node.id) && node.type !== GROUP_NODE_TYPE)
+    const gone = new Set(kept.map((node) => node.id))
+    return {
+      nodes: kept,
+      // 一端是实际被删的节点的边一律跟着删（哪怕另一端藏着），否则会留下指向已删节点的残边；其余连着隐藏节点的边不能删
+      edges: doomedEdges.filter((edge) => gone.has(edge.source) || gone.has(edge.target) || (!hidden.has(edge.source) && !hidden.has(edge.target))),
+    }
+  }, [])
+
+  const tidy = useCallback(() => {
+    const positions = tidyLayout(sizedNow(), storedEdges(latest.current.edges), runs, collapsedRef.current)
+    setNodes((items) => items.map((node) => positions[node.id] ? { ...node, position: positions[node.id] } : node))
+    window.setTimeout(() => fitAll(), 80)
+  }, [fitAll, runs, setNodes])
+
+  const displayNodes = useMemo(() => {
+    const derived: Node[] = groups.map((group: ShotGroup) => {
+      const folded = collapsed.has(group.shotId)
+      const data: ShotGroupData = { group, collapsed: folded, onToggle: toggleGroup }
+      return {
+        id: group.id, type: GROUP_NODE_TYPE, position: { x: group.bounds.x, y: group.bounds.y }, data,
+        style: folded ? { width: CARD_SIZE.width, height: CARD_SIZE.height } : { width: group.bounds.width, height: group.bounds.height },
+        // 展开的框垫在成员下面；只有标题栏（展开）/ 整张卡片（折叠）能拖
+        zIndex: folded ? 1 : -1, dragHandle: folded ? '.nc-group-card' : '.nc-group__head',
+        selectable: false, deletable: false, connectable: false, focusable: false,
+      }
+    })
+    const members = hiddenIds.size ? nodes.map((node) => hiddenIds.has(node.id) ? { ...node, hidden: true } : node) : nodes
+    return [...derived, ...members]
+  }, [groups, collapsed, hiddenIds, nodes, toggleGroup])
+  // 角色参考线画成虚线；只是显示样式，不写进 edges state
+  const displayEdges = useMemo(() => edges.map((edge) => characterIds.has(edge.source) && edge.targetHandle === 'reference'
+    ? { ...edge, style: { ...edge.style, strokeDasharray: '6 4', stroke: 'var(--accent)', opacity: 0.6 } } : edge), [edges, characterIds])
+
+  // 拖动分组标题栏 = 整组成员一起移动：把分组节点的位置变化换算成成员的位置变化
+  const handleNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+    const byId = new Map(groupsRef.current.map((group) => [group.id, group]))
+    const passed: NodeChange<Node>[] = []
+    for (const change of changes) {
+      const group = 'id' in change ? byId.get(change.id) : undefined
+      if (!group) { passed.push(change); continue }
+      if (change.type !== 'position' || !change.position) continue
+      const dx = change.position.x - group.bounds.x
+      const dy = change.position.y - group.bounds.y
+      if (!dx && !dy && change.dragging !== false) continue
+      for (const id of group.members) {
+        const member = latest.current.nodes.find((node) => node.id === id)
+        if (member) passed.push({ type: 'position', id, dragging: change.dragging, position: { x: member.position.x + dx, y: member.position.y + dy } })
+      }
+    }
+    if (passed.length) onNodesChange(passed)
+  }, [onNodesChange])
 
   const saveLabel = { saved: '已保存', saving: '保存中…', dirty: '未保存', error: '保存失败' }[saveState]
 
+  const running = batch?.status === 'running'
+
   return <CanvasContext.Provider value={actions}>
     <div className={`nc-page${copilot ? ' nc-page--copilot' : ''}`}>
-      <div className="nc-flow">
-        <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+      <div className="nc-flow" ref={flowRef}>
+        <ReactFlow nodes={displayNodes} edges={displayEdges} nodeTypes={nodeTypes} onNodesChange={handleNodesChange} onEdgesChange={onEdgesChange}
           onConnect={onConnect} onConnectEnd={onConnectEnd} isValidConnection={isValidConnection}
-          defaultViewport={detail.graph.viewport || { x: 0, y: 0, zoom: 1 }} fitView={!detail.graph.viewport && nodes.length > 0} fitViewOptions={{ padding: 0.2 }}
+          defaultViewport={detail.graph.viewport || { x: 0, y: 0, zoom: 1 }} fitView={!detail.graph.viewport && nodes.length > 0} fitViewOptions={{ padding: INITIAL_FIT_PADDING, maxZoom: 1 }} onBeforeDelete={onBeforeDelete}
           onMoveEnd={markDirty} minZoom={0.1} maxZoom={2} colorMode={themeMode()} deleteKeyCode={['Backspace', 'Delete']} proOptions={{ hideAttribution: true }}>
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-          <Controls position="bottom-left" />
+          <Controls position="bottom-left" showFitView={false}>
+            <ControlButton onClick={() => fitAll()} aria-label="适应画面" title="适应画面"><Maximize size={12} /></ControlButton>
+          </Controls>
+          {hasCharacterRefs && <Panel position="bottom-left" className="nc-legend-panel"><span className="nc-legend"><span className="nc-legend__line" aria-hidden="true" />虚线：角色参考</span></Panel>}
           <MiniMap position="bottom-right" pannable zoomable nodeStrokeWidth={2} style={{ width: 160, height: 104 }} />
-          <Panel position="top-left" className="nc-toolbar">
-            <Link className="nc-icon" to={paths.projects} aria-label="返回项目"><ArrowLeft size={15} /></Link>
-            <input className="nc-title" aria-label="画布名称" value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => void rename()}
-              onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }} />
-            <span className="nc-divider" />
-            <button className="nc-tool" onClick={() => addNode('text')}><Type size={14} />文本</button>
-            <button className="nc-tool" onClick={() => addNode('image')}><ImageIcon size={14} />图片</button>
-            <button className="nc-tool" onClick={() => addNode('video')}><Film size={14} />视频</button>
-            <span className="nc-divider" />
-            {(['image', 'video'] as const).map((kind) => <button key={kind} className="nc-tool" disabled={nodes.length === 0 || batch?.status === 'running'} onClick={() => void openBatch('all', undefined, [kind])}>
-              {kind === 'image' ? <ImageIcon size={14} /> : <Film size={14} />}{kind === 'image' ? '生成全部画面' : '生成全部视频'}
-            </button>)}
-            <button className="nc-tool" disabled={nodes.length === 0 || batch?.status === 'running'} onClick={() => void openBatch('all')}><Play size={14} />全部运行</button>
-            {batch && <span className={`nc-batch-status nc-batch-status--${batch.status}`} role="status">
-              {batch.status === 'running' && <Loader2 size={12} className="nc-spin" />}
-              {kindsLabel(batch.kinds)} {batch.completed}/{batch.total} 完成{batch.failed > 0 ? ` · ${batch.failed} 失败` : ''}{batch.status === 'canceled' ? ' · 已取消' : ''}
-              {batch.status === 'running' && <button className="nc-link" onClick={() => void cancelBatch()}>取消</button>}
-            </span>}
-            {batch && batch.id !== hintDismissed && batch.status !== 'running' && batch.status !== 'canceled' && batch.kinds?.length === 1 && batch.kinds[0] === 'image' && <span className="nc-batch-hint" role="status">
-              画面已完成：挑选满意的图，再点「生成全部视频」
-              <button className="nc-link" onClick={() => void openBatch('all', undefined, ['video'])}>生成全部视频</button>
-              <button className="nc-icon" aria-label="关闭提示" onClick={() => setHintDismissed(batch.id)}><X size={12} /></button>
-            </span>}
-            <span className="nc-divider" />
-            <span className={`nc-save nc-save--${saveState}`}>{saveState === 'saved' ? <Check size={12} /> : saveState === 'saving' ? <Loader2 size={12} className="nc-spin" /> : null}{saveLabel}</span>
-            <span className="nc-spent" title="本画布累计花费">已花费 ¥{Number(runs?.spent || 0).toFixed(2)}</span>
-            {runs?.budget?.cap != null && <BudgetBadge budget={runs.budget} />}
-            {!copilot && <button className="nc-tool nc-tool--accent" onClick={() => setCopilot(true)}><Sparkles size={14} />Copilot</button>}
+          <Panel position="top-center" className="nc-top" ref={topRef}>
+            <div className="nc-toolbar">
+              <button className="nc-tool nc-tool--primary" disabled={nodes.length === 0 || running} onClick={() => void openBatch('all')}><Play size={14} />全部运行</button>
+              <ToolbarMenu label="分段生成" icon={<Sparkles size={14} />} disabled={nodes.length === 0 || running}>
+                {(close) => <>
+                  <button role="menuitem" className="nc-menu__item" onClick={() => { close(); void openBatch('all', undefined, ['image']) }}><ImageIcon size={14} />生成全部画面</button>
+                  <button role="menuitem" className="nc-menu__item" onClick={() => { close(); void openBatch('all', undefined, ['video']) }}><Film size={14} />生成全部视频</button>
+                </>}
+              </ToolbarMenu>
+              <span className="nc-divider" />
+              <button className="nc-tool" disabled={groups.length === 0} onClick={toggleAll}>
+                {allCollapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />}{allCollapsed ? '全部展开' : '全部折叠'}
+              </button>
+              <button className="nc-tool" onClick={addShot}><Plus size={14} />添加镜头</button>
+              <ToolbarMenu label="更多" icon={<MoreHorizontal size={14} />}>
+                {(close) => <>
+                  <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('text') }}><Type size={14} />新建文本节点</button>
+                  <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('image') }}><ImageIcon size={14} />新建图片节点</button>
+                  <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('video') }}><Film size={14} />新建视频节点</button>
+                  <button role="menuitem" className="nc-menu__item" disabled={nodes.length === 0} onClick={() => { close(); tidy() }}><LayoutGrid size={14} />整理布局</button>
+                </>}
+              </ToolbarMenu>
+              <span className="nc-divider" />
+              <span className="nc-meta">
+                <span className={`nc-save nc-save--${saveState}`}>{saveState === 'saved' ? <Check size={11} /> : saveState === 'saving' ? <Loader2 size={11} className="nc-spin" /> : null}{saveLabel}</span>
+                <span className="nc-spent" title="本画布累计花费">已花费 ¥{Number(runs?.spent || 0).toFixed(2)}</span>
+              </span>
+              {!copilot && <button className="nc-tool nc-tool--accent" aria-label="Copilot" title="Copilot" onClick={() => setCopilot(true)}><Sparkles size={14} /><span className="nc-tool__label">Copilot</span></button>}
+            </div>
+            {batch && <div className="nc-top__notes">
+              {batch && <span className={`nc-batch-status nc-batch-status--${batch.status}`} role="status">
+                {batch.status === 'running' && <Loader2 size={12} className="nc-spin" />}
+                {kindsLabel(batch.kinds)} {batch.completed}/{batch.total} 完成{batch.failed > 0 ? ` · ${batch.failed} 失败` : ''}{batch.status === 'canceled' ? ' · 已取消' : ''}
+                {batch.status === 'running' && <button className="nc-link" onClick={() => void cancelBatch()}>取消</button>}
+              </span>}
+              {batch && batch.id !== hintDismissed && batch.status !== 'running' && batch.status !== 'canceled' && batch.kinds?.length === 1 && batch.kinds[0] === 'image' && <span className="nc-batch-hint" role="status">
+                <span className="nc-ellipsis">画面已完成：挑选满意的图，再点「生成全部视频」</span>
+                <button className="nc-link" onClick={() => void openBatch('all', undefined, ['video'])}>生成全部视频</button>
+                <button className="nc-icon" aria-label="关闭提示" onClick={() => setHintDismissed(batch.id)}><X size={12} /></button>
+              </span>}
+            </div>}
           </Panel>
           {nodes.length === 0 && <Panel position="top-center" className="nc-empty">
-            从上方添加文本 / 图片 / 视频节点，或打开 Copilot 把想法拆成镜头。拖动节点端口到空白处可直接建下游节点。
+            从上方「更多」菜单添加文本 / 图片 / 视频节点，点「添加镜头」新建一组镜头，或打开 Copilot 把想法拆成镜头。拖动节点端口到空白处可直接建下游节点。
           </Panel>}
         </ReactFlow>
       </div>

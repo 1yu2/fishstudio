@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { ArrowLeft, Loader2, Sparkles } from 'lucide-react'
 import { Link, Outlet, useLocation, useParams } from 'react-router-dom'
 import type { ProjectSummary, StepKey, WorkspaceStep } from '../../api/workspace'
+import { nodeCanvasApi } from '../../api/nodeCanvas'
+import { toast } from '../ui/Toast'
 import type { FooterOverride, ProjectOutletContext } from './outletContext'
 import { paths } from '../../routePaths'
 import { yuan, yuanCap } from '../workspace/format'
@@ -66,6 +68,51 @@ function StepNav({
   )
 }
 
+/** 顶栏标题：点击变成输入框，回车 / 失焦保存，Esc 取消。 */
+function EditableTitle({ canvasId, title, onRenamed }: { canvasId: string; title: string; onRenamed: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(title)
+  const cancelled = useRef(false)
+  const saving = useRef(false)
+  const commit = async () => {
+    if (saving.current) return
+    const next = value.trim()
+    setEditing(false)
+    if (cancelled.current || !next || next === title) return
+    saving.current = true
+    try {
+      await nodeCanvasApi.rename(canvasId, { title: next })
+      onRenamed()
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '重命名失败', 'error')
+    } finally { saving.current = false }
+  }
+  if (!editing) {
+    return (
+      <button type="button" className="pf-title pf-title--button" title="点击改名" onClick={() => { cancelled.current = false; setValue(title); setEditing(true) }}>
+        {title}
+      </button>
+    )
+  }
+  return (
+    <input
+      className="pf-title-input"
+      aria-label="项目名称"
+      autoFocus
+      maxLength={120}
+      value={value}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={() => void commit()}
+      onKeyDown={(event) => {
+        // 输入法选词时的 Enter / Esc 属于输入法，不能当作提交 / 取消
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return
+        if (event.key === 'Enter') (event.target as HTMLInputElement).blur()
+        else if (event.key === 'Escape') { cancelled.current = true; setEditing(false) }
+      }}
+    />
+  )
+}
+
 /** 项目页框架：顶栏 + （步骤视图下的）步骤条与底栏，中间是当前视图。 */
 export default function ProjectFrame() {
   const { canvasId = '' } = useParams()
@@ -105,7 +152,7 @@ export default function ProjectFrame() {
             <ArrowLeft size={18} aria-hidden="true" />
           </Link>
           {summary ? (
-            <span className="pf-title">{summary.title}</span>
+            <EditableTitle key={summary.title} canvasId={canvasId} title={summary.title} onRenamed={retry} />
           ) : (
             <span className="pf-skeleton pf-skeleton--title" aria-busy={loading} aria-label="项目加载中" />
           )}
