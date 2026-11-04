@@ -304,6 +304,11 @@ async def _quote_plan(
         item["estimated_cost"] = quote["estimated_cost"]
         total += Decimal(str(quote["estimated_cost"]))
         billable += cloud
+    kinds = effective_kinds(request)
+    for item in items:
+        # 分段运行时，缺的只是批次外上游结果的节点自己先跳过（blocked），不拦整个批次
+        item["blocks_batch"] = bool(item["blockers"]) and not (kinds and item["upstream_missing_only"])
+    pending = [item for item in items if item["status"] == "pending"]
     cap, remaining = await _remaining_budget(session, canvas.owner_id)
     return {
         "graph": graph,
@@ -313,8 +318,19 @@ async def _quote_plan(
         "nodes": items,
         "estimated_total": float(total),
         "billable_total": float(billable),
+        # 真正会提交任务的节点数；缺上游先跳过的、拦住整个批次的分别计数
+        "runnable_count": sum(1 for item in pending if not item["blockers"]),
+        "waiting_count": sum(1 for item in pending if item["blockers"] and not item["blocks_batch"]),
+        "blocking_count": sum(1 for item in pending if item["blocks_batch"]),
         "unavailable_nodes": [
-            {"node_id": item["node_id"], "label": item["label"], "reason": item["reason"]}
+            {
+                "node_id": item["node_id"],
+                "label": item["label"],
+                "reason": item["reason"],
+                # runs=True：只是价格未知，照常运行；blocks_batch=True：要先处理才能运行整个批次
+                "runs": not item["blockers"],
+                "blocks_batch": item["blocks_batch"],
+            }
             for item in items
             if item["unavailable"]
         ],
@@ -423,13 +439,12 @@ async def create_batch(session: AsyncSession, canvas: NodeCanvas, request: Batch
     await budget_service.lock_user(session, canvas.owner_id)
     plan = await _quote_plan(session, canvas, request)
     kinds = effective_kinds(request)
-    # 分段运行时，blocker 全部来自批次外无结果上游的节点只是自己 blocked（由 advance 标记），不拒绝整个批次
-    blocked = [
-        item for item in plan["nodes"] if item["blockers"] and not (kinds and item["upstream_missing_only"])
-    ]
+    blocked = [item for item in plan["nodes"] if item["blocks_batch"]]
     if blocked:
         first = blocked[0]
         raise CanvasError(f"节点「{first['label']}」无法运行：{first['reason']}")
+    if plan["runnable_count"] == 0 and plan["waiting_count"] > 0:
+        raise CanvasError("没有可以运行的节点：它们的上游图片都还没有结果，先生成画面")
     if plan["exceeds_budget"]:
         raise CanvasError(
             f"批量运行预计云端花费 ¥{plan['_billable']:.2f}，超出今日剩余额度 ¥{plan['_remaining']:.2f}"

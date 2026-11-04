@@ -92,25 +92,39 @@ const dialogTitle = (plan: BatchPlan) => {
 
 const money = (value: number) => `¥${value.toFixed(value < 1 ? 3 : 2)}`
 
-/** 批量运行确认：先看合计报价和未知价格的节点，确认后才提交。 */
+/** 批量运行确认：先看合计报价和不能运行 / 价格未知的节点，确认后才提交。 */
 function BatchDialog({ plan, onConfirm, onClose }: { plan: BatchPlan; onConfirm: () => void; onClose: () => void }) {
   const { quote } = plan
-  const pending = quote?.nodes.filter((item) => item.status === 'pending').length ?? 0
-  const skipped = (quote?.nodes.length ?? 0) - pending
+  const skipped = quote?.nodes.filter((item) => item.status === 'skipped').length ?? 0
+  const runnable = quote?.runnable_count ?? 0
+  const blocking = quote?.blocking_count ?? 0
+  const notes = [
+    skipped > 0 ? `${skipped} 个已有结果，跳过` : '',
+    quote?.waiting_count ? `${quote.waiting_count} 个缺上游图片，先跳过` : '',
+  ].filter(Boolean).join('；')
+  const cannotRun = quote?.unavailable_nodes.filter((item) => !item.runs) ?? []
+  const unpriced = quote?.unavailable_nodes.filter((item) => item.runs) ?? []
   return <aside className="nc-copilot nc-batch" aria-label="批量运行">
     <header><Play size={15} /><strong>{dialogTitle(plan)}</strong><button className="nc-icon" aria-label="关闭批量运行" onClick={onClose}><X size={14} /></button></header>
     {!quote && !plan.error && <p className="nc-copilot__hint"><Loader2 size={13} className="nc-spin" /> 正在报价…</p>}
     {plan.notice && <p className="nc-batch__warn" role="status">{plan.notice}</p>}
     {plan.error && <div className="nc-error nc-copilot__error" role="alert">{plan.error}</div>}
     {quote && <div className="nc-copilot__result">
-      <p className="nc-batch__total">将运行 {pending} 个节点{skipped > 0 ? `（${skipped} 个已有结果，跳过）` : ''}，预计合计 <b>{money(quote.estimated_total)}</b></p>
+      {blocking > 0
+        ? <p className="nc-batch__warn">有 {blocking} 个节点需要先处理，处理后才能运行</p>
+        : runnable === 0
+          ? <p className="nc-batch__total">没有可以运行的节点{notes ? `（${notes}）` : ''}</p>
+          : <p className="nc-batch__total">将运行 {runnable} 个节点{notes ? `（${notes}）` : ''}，预计合计 <b>{money(quote.estimated_total)}</b></p>}
       {quote.budget.remaining !== null && <p className={quote.exceeds_budget ? 'nc-batch__warn' : 'nc-copilot__hint'}>
         今日剩余额度 {money(quote.budget.remaining)}{quote.exceeds_budget ? `，云端预计 ${money(quote.billable_total)}，超出额度无法运行` : ''}
       </p>}
-      {quote.unavailable_nodes.length > 0 && <section><h4>{plan.kinds?.[0] === 'video' && plan.kinds.length === 1 ? '这些视频暂时无法运行（未计入合计）' : '价格未知（未计入合计）'}</h4>
-        {quote.unavailable_nodes.map((item) => <div key={item.node_id} className="nc-copilot__item"><b>{item.label}</b>{item.reason}</div>)}
+      {cannotRun.length > 0 && <section><h4>这些节点暂时无法运行（未计入合计）</h4>
+        {cannotRun.map((item) => <div key={item.node_id} className="nc-copilot__item"><b>{item.label}</b>{item.reason}</div>)}
       </section>}
-      <button className="nc-run nc-run--wide" disabled={plan.busy || quote.exceeds_budget || pending === 0} onClick={onConfirm}>
+      {unpriced.length > 0 && <section><h4>价格未知（未计入合计）</h4>
+        {unpriced.map((item) => <div key={item.node_id} className="nc-copilot__item"><b>{item.label}</b>{item.reason}</div>)}
+      </section>}
+      <button className="nc-run nc-run--wide" disabled={plan.busy || quote.exceeds_budget || blocking > 0 || runnable === 0} onClick={onConfirm}>
         {plan.busy ? <Loader2 size={13} className="nc-spin" /> : <Play size={13} />}确认运行
       </button>
     </div>}

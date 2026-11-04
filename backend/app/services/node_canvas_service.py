@@ -466,8 +466,24 @@ async def _video_plan(
             explicit_deployment=req.model,
         )
     except VideoRoutingError as error:
-        raise CanvasError(str(error)) from error
+        logger.info(f"视频路由不可用: {error}")
+        raise CanvasError(video_routing_message(error.code, req.duration)) from error
     return params, plan
+
+
+NO_VIDEO_MODEL = "还没有设置视频模型：在「设置 → 模型服务 → 默认模型」里设置「镜头视频」"
+
+
+def video_routing_message(code: str, duration: int) -> str:
+    """把视频路由错误换成用户看得懂的话；技术细节只进日志。"""
+    if code == "no_route":
+        return NO_VIDEO_MODEL
+    if code == "route_disabled":
+        return "默认的「镜头视频」模型已停用：在「设置 → 模型服务 → 默认模型」里重新启用"
+    return (
+        f"没有能生成这个 {duration} 秒镜头的视频模型：可能缺少 API Key 或不支持这个时长，"
+        "请在「设置 → 模型服务」检查"
+    )
 
 
 def _image_price(slug: str, count: int) -> Optional[Decimal]:
