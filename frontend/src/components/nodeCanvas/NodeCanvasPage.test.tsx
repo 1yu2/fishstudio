@@ -256,4 +256,16 @@ describe('NodeCanvasPage', () => {
       expect(screen.getByRole('status')).toHaveTextContent('批量 0/7')
     } finally { vi.useRealTimers() }
   })
+
+  it('explains a missing image model before generating', async () => {
+    api.models.mockResolvedValue({ image: [], video: [], defaults: { image: '', video_preview: '', video_final: '' }, image_problem: '还没有可用的图片模型：去设置添加' })
+    renderPage()
+    await screen.findByDisplayValue('雨夜便利店')
+    fireEvent.click(screen.getByRole('button', { name: '图片' }))
+    fireEvent.change(await screen.findByLabelText('提示词'), { target: { value: '女店员' } })
+    expect(await screen.findByText('还没有可用的图片模型：去设置添加')).toBeInTheDocument()
+    expect((await screen.findByText('生成')).closest('button')).toBeDisabled()
+    expect(screen.getByLabelText('上传')).not.toBeDisabled()
+  })
 })
+

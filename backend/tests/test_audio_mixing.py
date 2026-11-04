@@ -95,6 +95,21 @@ def test_concatenate_audio_with_crossfade(audio_dirs):
     assert result["duration_seconds"] == pytest.approx(1.1, abs=0.06)
 
 
+def test_concatenate_three_clips_with_crossfade(audio_dirs):
+    audios, _, _ = audio_dirs
+    clips = []
+    for name, seconds, frequency in (("a", 0.6, 440), ("b", 0.4, 550), ("c", 0.5, 660)):
+        path = audios / f"{name}.wav"
+        _make_tone(path, seconds, frequency)
+        clips.append(str(path))
+
+    raw = _tool_call(
+        audio_mixing.concatenate_audio_tool, audio_files=clips, crossfade_duration=100, silence_duration=0
+    )
+    # 0.6 + 0.4 + 0.5 - 两处 0.1 的交叠
+    assert json.loads(raw)["duration_seconds"] == pytest.approx(1.3, abs=0.06)
+
+
 def test_select_bgm_loops_and_trims(audio_dirs):
     audios, bgm, _ = audio_dirs
     source = bgm / "欢快 开场.wav"
