@@ -31,15 +31,16 @@
   --no-eval-run          不写 EvalRun（默认把每个用例写成一条 /api/eval/runs 记录）
   --allow-unpriced       允许运行“未配置价格”的收费节点（默认拒绝：价格未知的节点会绕过预算）
   --worker-max-attempts N  假设 worker 对每个任务最多尝试几次，默认 3；运行后会核对任务的 max_attempts
-  --image-price-tolerance X  图片报价与实际落账口径不一致的容差倍数，默认 1.2
+  --max-split-calls N    拆分接口总调用次数上限，默认等于用例数；每个用例只拆分一次，失败不重试
   --llm-input-price / --llm-output-price  拆分用对话模型的单价（元 / 百万 token），用于估算拆分花费，默认 4 / 16
-  --allow-mock-media     仅用于 mock 联调：允许图片 / 视频 / 拆分来自 mock，并放行未配置价格的节点。
-                         结果不能用于基准判定，会醒目警告
+  --allow-mock-media     仅用于 mock 联调：允许图片 / 视频 / 拆分来自 mock，并放行 mock 产生的未配置价格节点。
+                         不免除任何付费保护：仍须 --budget-yuan 和服务端每日上限预检；开跑前还会检查后端
+                         没有已启用的真实图片 / 视频 / 对话部署，有就拒绝。结果不能用于基准判定，会醒目警告
 
 预算保护（真实跑）：
   1. 开跑前读后端的“每日云端花费上限”（DAILY_BUDGET_CNY，随画布 /runs 的 budget 字段返回）。上限为空（不限），
      或高于 --budget-yuan + 今日已花（含在途）时直接拒绝启动，并给出应设置的值：这是服务端硬上限，真正兜底。
-  2. 每一步运行前先批量报价，要求 报价 × worker 最大尝试次数 × （图片再乘价格口径容差）
+  2. 每一步运行前先批量报价，要求 报价 × worker 最大尝试次数
      + 累计已花 <= --budget-yuan。拆分同样先估算（token 数 × 单价 × 3 倍余量，覆盖自动修复和重试）再调用。
   3. 报价里“未配置价格”的节点默认拒绝（--allow-unpriced 才放行）。
   4. 实际花费一律取自接口（画布 /runs 的 spent，即用量事件）；拆分未归入画布用量时，按估算的单次费用保守计入。
@@ -165,21 +166,20 @@ class BudgetGuard:
     """总预算守卫。
 
     通过条件：累计已花 + 报价 × 倍数 <= 上限。倍数 = worker 最大尝试次数（任务失败重试不会再经过脚本），
-    图片再乘价格口径容差（报价用 Catalog 单价，落账用静态价目，二者可能不同）。limit 为 None 表示不限（仅 mock 用）。
+    报价与落账口径是否一致由开跑前的价格体检（/api/eval/price-consistency）保证。limit 为 None 表示不限（仅 mock 用）。
     """
 
     limit: Optional[float]
     spent: float = 0.0
     allow_unpriced: bool = False
     attempts: int = 3
-    image_tolerance: float = 1.2
     unpriced_nodes: int = 0
 
     def remaining(self) -> Optional[float]:
         return None if self.limit is None else max(0.0, self.limit - self.spent)
 
     def multiplier(self, kind: str) -> float:
-        return self.attempts * (self.image_tolerance if kind == "image" else 1.0)
+        return float(self.attempts)
 
     def check(
         self,
@@ -199,7 +199,7 @@ class BudgetGuard:
         worst = estimate * factor
         if self.limit is not None and self.spent + worst > self.limit + 1e-9:
             raise BudgetStop(
-                f"{label} 报价 ¥{estimate:.2f} × 最大 {factor:g} 倍（尝试次数 / 价格容差）= ¥{worst:.2f}，"
+                f"{label} 报价 ¥{estimate:.2f} × 最大 {factor:g} 倍（尝试次数）= ¥{worst:.2f}，"
                 f"累计已花 ¥{self.spent:.2f}，超出总预算 ¥{self.limit:.2f}",
                 label,
             )
@@ -222,10 +222,14 @@ def quote_unpriced(quote: dict[str, Any]) -> int:
 
 
 def estimate_split_cost(idea: str, shots: int, input_price: float, output_price: float) -> float:
-    """一次拆分调用的保守费用（元）：输入按“1 字 1 token”，输出按每镜头约 260 token；单价是元 / 百万 token。"""
+    """一次拆分请求的保守费用（元）。
+
+    输入按“1 字 1 token”，输出按每镜头约 260 token；后端格式错误时会自动修复重试一次（带上上一轮输出再请求），
+    所以输入和输出都乘 2。单价是元 / 百万 token。守卫再按 SPLIT_RETRY_HEADROOM 倍预留。
+    """
     tokens_in = SPLIT_PROMPT_CHARS + len(idea)
     tokens_out = 300 + 260 * max(1, shots)
-    return (tokens_in * input_price + tokens_out * output_price) / 1_000_000
+    return (tokens_in * input_price * 2 + tokens_out * output_price * 2) / 1_000_000
 
 
 def check_daily_cap(budget: dict[str, Any], limit: float) -> Optional[str]:
@@ -652,6 +656,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines += [f"- **基准被停止**：{budget['stopped_reason']}"]
     if budget.get("unpriced_nodes"):
         lines += [f"- 注意：{budget['unpriced_nodes']} 个节点未配置价格（--allow-unpriced），未计入花费"]
+    split_total = sum(float(case.get("split_cost_estimated") or 0) for case in report["cases"])
+    if split_total:
+        lines += [
+            f"- 拆分（LLM）费用：估算 ¥{split_total:.4f}（LLM 免费额度内可能为 0），已按估算计入累计花费"
+        ]
     if summary["tts_mocked_cases"]:
         lines += [
             f"- 配音为模拟（无真实 TTS key）：{summary['tts_mocked_cases']} 个用例，这些用例的配音花费记 0"
@@ -826,6 +835,7 @@ class Settings:
     allow_mock_media: bool = False
     llm_input_price: float = 4.0
     llm_output_price: float = 16.0
+    max_split_calls: int = 1000
 
 
 @dataclass
@@ -869,6 +879,7 @@ class Runner:
         self.guard = guard
         self.log = log
         self.stop_reason = ""
+        self.split_calls = 0
 
     # ---- 画布读写 ----
     def canvas(self, canvas_id: str) -> dict[str, Any]:
@@ -959,6 +970,32 @@ class Runner:
                 ctx.job_seconds[node_id] = seconds
         return found
 
+    def flag_mock(self, ctx: CaseCtx, step: str, kinds: list[str]) -> None:
+        """图片 / 视频来自 mock：默认判该用例 invalid_mock（抛 MockDetected）；--allow-mock-media 只做标记。"""
+        if not self.cfg.allow_mock_media:
+            kinds_text = "、".join(sorted(set(kinds)))
+            raise MockDetected(step, f"{step} 的结果来自 mock（{kinds_text}），不是真实厂商")
+        ctx.mock_media = True
+
+    def verify_media(self, ctx: CaseCtx, step: str) -> None:
+        """核对画布上所有图片 / 视频节点的全部任务（含已被取消批次的、以及被 skip_succeeded 复用的旧产物）的来源。
+
+        批量运行的节点状态为 skipped 时 job_id 为空，inspect_jobs 看不到它们；这里改从 /runs 取每个节点的全部任务，
+        逐个查 provider / mocked。上传的设定图没有任务，不在此列。配音节点只记录是否模拟。
+        """
+        runs = self.api.json("GET", f"/api/node-canvases/{ctx.canvas_id}/runs")
+        mocked: list[str] = []
+        for node_id, kind in ctx.node_kinds.items():
+            for item in ((runs.get("nodes") or {}).get(node_id) or {}).get("jobs") or []:
+                if not job_is_mock(self.job(item["id"])):
+                    continue
+                if kind == "audio":
+                    ctx.tts_mocked = True
+                else:
+                    mocked.append(kind)
+        if mocked:
+            self.flag_mock(ctx, step, mocked)
+
     # ---- 批量步骤 ----
     def batch_step(self, ctx: CaseCtx, step: str, kinds: list[str], price_kind: str) -> dict[str, Any]:
         """报价 → 预算判断 → 运行 → 轮询 → 核对；失败重试一次（异常路径先取消并结算再重试）。"""
@@ -1004,6 +1041,8 @@ class Runner:
                     self.settle(ctx, step)
                 finally:
                     self.sync_spend(ctx)
+                # 旧批次的任务（已结算）和之后会被复用的产物都要核对：重试时它们会被 skip_succeeded 跳过
+                self.verify_media(ctx, step)
                 continue
             # 批次已结束（成功 / 失败 / 被取消）：先核对任务，再入账
             found = self.inspect_jobs(ctx, detail)
@@ -1018,10 +1057,7 @@ class Runner:
                     step,
                 )
             if found["mock_media"] and step != "voices":
-                if not self.cfg.allow_mock_media:
-                    kinds_text = "、".join(sorted(set(found["mock_media"])))
-                    raise MockDetected(step, f"{step} 的结果来自 mock（{kinds_text}），不是真实厂商")
-                ctx.mock_media = True
+                self.flag_mock(ctx, step, found["mock_media"])
             if detail["status"] == "succeeded":
                 return {"seconds": time.monotonic() - started, "attempts": attempt}
             last_error = batch_failure_reason(detail)
@@ -1132,6 +1168,8 @@ class Runner:
                 record["step_seconds"][step] = outcome["seconds"]
                 record["retries"] += outcome["attempts"] - 1
             current = "render"
+            # 渲染前最后核对一遍：进入成片的每个图片 / 视频产物都必须来自真实厂商
+            self.verify_media(ctx, "render")
             rendered = self.render_step(ctx.canvas_id, self.cfg.run_dir / story["key"])
             record["step_seconds"]["render"] = rendered["seconds"]
             record["retries"] += rendered["attempts"] - 1
@@ -1247,37 +1285,42 @@ class Runner:
         record["step_seconds"]["characters"] = time.monotonic() - t1
 
     def split(self, story: dict[str, Any], ctx: CaseCtx, record: dict[str, Any]) -> dict[str, Any]:
-        """真实拆分：调用前估算并过预算，调用后读实际花费；每次尝试（含脚本自己的重试）都单独过预算。"""
+        """真实拆分：每个用例只调一次，不重试。
+
+        调用前按“输入 × 2 + 输出 × 2（覆盖后端的 JSON 修复重试）× 3 倍余量”估算并过预算；总调用次数不超过
+        --max-split-calls。无论成功、接口错误、超时还是其它异常，都按估算入账（LLM 免费额度内实际可能为 0）。
+        """
         idea = build_idea(story, self.cfg.max_shots)
         shots = min(12, self.cfg.max_shots)
-        single = estimate_split_cost(idea, shots, self.cfg.llm_input_price, self.cfg.llm_output_price)
-        reason = ""
-        for attempt in (1, 2):
-            # 后端遇到格式错误会自动修复重试一次，脚本再重试一次：按 3 倍余量预留
-            self.guard.check(single, label="split", multiplier=SPLIT_RETRY_HEADROOM)
-            try:
-                split = self.api.json(
-                    "POST",
-                    f"/api/node-canvases/{ctx.canvas_id}/copilot/split",
-                    json={"idea": idea, "shots": shots},
-                )
-            except ApiError as error:
-                reason = error.message
-                self.charge_split(ctx, single)
-                record["retries"] += 1 if attempt == 1 else 0
-                continue
-            self.charge_split(ctx, single)
-            if split.get("mocked"):
-                if not self.cfg.allow_mock_media:
-                    raise MockDetected("split", "拆分结果来自 mock 对话模型，不是真实模型")
-                ctx.mock_media = True
-            return split
-        raise StepFailed("split", f"拆分失败：{reason}")
+        estimate = estimate_split_cost(idea, shots, self.cfg.llm_input_price, self.cfg.llm_output_price)
+        if self.split_calls >= self.cfg.max_split_calls:
+            raise BudgetStop(f"拆分调用次数已达上限 {self.cfg.max_split_calls}（--max-split-calls）", "split")
+        self.guard.check(estimate, label="split", multiplier=SPLIT_RETRY_HEADROOM)
+        self.split_calls += 1
+        record["split_cost_estimated"] = estimate
+        try:
+            split = self.api.json(
+                "POST",
+                f"/api/node-canvases/{ctx.canvas_id}/copilot/split",
+                json={"idea": idea, "shots": shots},
+            )
+        except ApiError as error:
+            raise StepFailed("split", f"拆分失败：{error.message}") from error
+        finally:
+            self.charge_split(ctx, estimate)
+        if split.get("mocked"):
+            if not self.cfg.allow_mock_media:
+                raise MockDetected("split", "拆分结果来自 mock 对话模型，不是真实模型")
+            ctx.mock_media = True
+        return split
 
-    def charge_split(self, ctx: CaseCtx, single: float) -> None:
-        """拆分后入账：画布用量里读到的实际花费优先；拆分的 LLM 用量不一定记在画布名下，保守地至少按单次估算计入。"""
-        delta = self.sync_spend(ctx)
-        extra = max(0.0, single - delta)
+    def charge_split(self, ctx: CaseCtx, estimate: float) -> None:
+        """拆分后入账：画布用量里读到的花费优先；LLM 用量不一定记在画布名下，所以至少按估算计入。读不到用量也按估算计。"""
+        try:
+            delta = self.sync_spend(ctx)
+        except (ApiError, httpx.HTTPError):
+            delta = 0.0
+        extra = max(0.0, estimate - delta)
         ctx.split_extra += extra
         self.guard.record(extra)
 
@@ -1310,6 +1353,45 @@ class Runner:
             self.api.json("DELETE", f"/api/node-canvases/{canvas_id}", ok=(200, 204))
         except (ApiError, httpx.HTTPError):
             pass
+
+    def ensure_no_real_deployments(self) -> None:
+        """--allow-mock-media 开跑前：不能有任何已启用的真实图片 / 视频 / 对话部署，否则会真实调用厂商。"""
+        try:
+            rows = self.api.json("GET", "/api/model-deployments")
+        except ApiError as error:
+            raise BudgetStop(
+                f"无法读取模型部署列表（需要管理员账号）：{error.message}，--allow-mock-media 拒绝启动",
+                "preflight",
+            ) from error
+        real = sorted(
+            f"{row['slug']}({row['modality']})"
+            for row in rows
+            if row.get("enabled") and row.get("modality") in ("image", "video", "chat")
+        )
+        if real:
+            raise BudgetStop(
+                "--allow-mock-media 只能在没有真实模型的环境用，但这些部署已启用并可能产生真实花费："
+                + "、".join(real)
+                + "。请先停用它们，或去掉 --allow-mock-media 走真实跑流程",
+                "preflight",
+            )
+
+    def check_prices(self, image_model: str, video_model: str, tier: str) -> None:
+        """真实跑开跑前：图片 / 视频模型的报价口径与 worker 落账口径必须一致（服务端函数核对）。"""
+        try:
+            data = self.api.json(
+                "GET",
+                "/api/eval/price-consistency",
+                params={"image_model": image_model, "video_model": video_model, "tier": tier},
+            )
+        except ApiError as error:
+            raise BudgetStop(
+                f"无法做价格一致性检查（需要管理员账号）：{error.message}", "preflight"
+            ) from error
+        if not data.get("ok"):
+            raise BudgetStop(
+                "价格不一致，拒绝启动：" + "；".join(data.get("problems") or ["未知"]), "preflight"
+            )
 
     def preflight_budget(self, limit: float) -> None:
         """开跑前核对服务端每日云端花费上限（真正的兜底）；不合格抛 BudgetStop。"""
@@ -1350,7 +1432,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--allow-unpriced", action="store_true")
     parser.add_argument("--allow-mock-media", action="store_true")
     parser.add_argument("--worker-max-attempts", type=int, default=3)
-    parser.add_argument("--image-price-tolerance", type=float, default=1.2)
+    parser.add_argument("--max-split-calls", type=int, default=None)
     parser.add_argument("--llm-input-price", type=float, default=4.0)
     parser.add_argument("--llm-output-price", type=float, default=16.0)
     parser.add_argument("--resolution", default="480p", choices=sorted(TIER_BY_RESOLUTION))
@@ -1401,9 +1483,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not username or not password:
         print("缺少 BENCH_USERNAME / BENCH_PASSWORD 环境变量", file=sys.stderr)
         return 2
-    real_run = not args.dry_quote and not args.allow_mock_media
+    # 除 --dry-quote 外一律按“可能花钱”对待：--allow-mock-media 不免除预算和服务端上限检查
+    real_run = not args.dry_quote
     if real_run and args.budget_yuan is None:
-        print("真实跑必须指定 --budget-yuan（总预算上限）", file=sys.stderr)
+        print("必须指定 --budget-yuan（总预算上限）；--allow-mock-media 也不例外", file=sys.stderr)
         return 2
     data = json.loads(DATASET_FILE.read_text(encoding="utf-8"))
     try:
@@ -1442,6 +1525,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         run_dir=run_dir,
         dry_quote=args.dry_quote,
         allow_mock_media=args.allow_mock_media,
+        max_split_calls=args.max_split_calls or len(stories),
         llm_input_price=args.llm_input_price,
         llm_output_price=args.llm_output_price,
     )
@@ -1450,12 +1534,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         # mock 联调时图片没有价格，放行；真实跑默认拒绝未配置价格的节点
         allow_unpriced=args.allow_unpriced or args.allow_mock_media,
         attempts=args.worker_max_attempts,
-        image_tolerance=args.image_price_tolerance,
     )
     runner = Runner(api, cfg, guard)
     if real_run:
         try:
             runner.preflight_budget(args.budget_yuan)
+            if args.allow_mock_media:
+                runner.ensure_no_real_deployments()
+            else:
+                runner.check_prices(args.image_model, args.video_model, cfg.video_tier)
         except BudgetStop as error:
             print(error.reason, file=sys.stderr)
             return 2

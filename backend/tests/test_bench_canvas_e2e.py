@@ -56,11 +56,11 @@ def _story(key="s1", shots=6, characters=None):
 # ── 预算 ──────────────────────────────────────────────────────────────────
 
 
-def test_budget_guard_multiplies_quote_by_attempts_and_image_tolerance():
-    guard = bench.BudgetGuard(limit=10, attempts=3, image_tolerance=1.2)
-    guard.check(3.0, kind="video", label="v")  # 3 × 3 = 9 <= 10
+def test_budget_guard_multiplies_quote_by_worker_attempts_only():
+    guard = bench.BudgetGuard(limit=10, attempts=3)
+    guard.check(3.3, kind="image", label="i")  # 3.3 × 3 = 9.9 <= 10，不再有图片容差倍数
     with pytest.raises(bench.BudgetStop, match="超出总预算"):
-        guard.check(3.0, kind="image", label="i")  # 3 × 3 × 1.2 = 10.8 > 10
+        guard.check(3.4, kind="image", label="i")  # 10.2 > 10
     guard.record(2)
     with pytest.raises(bench.BudgetStop):
         guard.check(3.0, kind="video", label="v")  # 2 + 9 > 10
@@ -96,12 +96,12 @@ def test_guard_explicit_multiplier_for_split_headroom():
         guard.check(0.02, label="split", multiplier=3)
 
 
-def test_estimate_split_cost_scales_with_idea_and_shots():
+def test_estimate_split_cost_covers_json_repair_retry():
     small = bench.estimate_split_cost("a" * 100, 3, 4.0, 16.0)
     large = bench.estimate_split_cost("a" * 2000, 12, 4.0, 16.0)
     assert 0 < small < large
-    # (450+100)*4 + (300+780)*16 = 2200 + 17280 = 19480 / 1e6
-    assert small == pytest.approx(19480 / 1e6)
+    # 输入和输出都按 2 倍（后端会带着上一轮输出再请求一次）：((450+100)*4 + (300+780)*16) * 2 / 1e6
+    assert small == pytest.approx(38960 / 1e6)
 
 
 def test_check_daily_cap_is_the_hard_backstop():
@@ -810,3 +810,222 @@ def test_partial_eval_run_gets_its_own_hash_and_is_excluded_from_routing_stats()
         row.status = "completed"
     stats = asyncio.run(eval_service.routing_stats(_FakeSession([partial, full])))
     assert len(stats) == 1 and stats[0]["sample_runs"] == 1  # 只统计完整基准那一条
+
+
+def _split_ok():
+    return {
+        "characters": [],
+        "shots": [{"title": "a", "prompt": "p", "characters": [], "duration_s": 4, "lines": []}],
+        "mocked": False,
+    }
+
+
+def test_split_is_called_once_never_retried_and_charged_on_api_error(tmp_path):
+    backend = FakeBackend()
+    backend.on("POST", r"/copilot/split$", lambda _r: httpx.Response(422, json={"detail": "格式无法识别"}))
+    backend.on("GET", r"/runs$", {"spent": 0})
+    guard = bench.BudgetGuard(limit=10)
+    runner = bench.Runner(_api(backend), _cfg(tmp_path), guard, log=lambda _m: None)
+    case = runner.run_case(_story())
+    assert case["failed_step"] == "split" and case["status"] == "failed"
+    assert len([1 for m, p in backend.calls if m == "POST" and p.endswith("/copilot/split")]) == 1
+    assert guard.spent == pytest.approx(case["split_cost_estimated"]) and guard.spent > 0
+
+
+def test_split_charged_on_timeout_and_other_exceptions(tmp_path):
+    backend = FakeBackend()
+    backend.on("POST", r"/copilot/split$", httpx.ReadTimeout("厂商已收费但响应超时"))
+    backend.on("GET", r"/runs$", {"spent": 0})
+    guard = bench.BudgetGuard(limit=10)
+    runner = bench.Runner(_api(backend), _cfg(tmp_path), guard, log=lambda _m: None)
+    case = runner.run_case(_story())
+    assert case["ok"] is False and case["failed_step"] == "split"
+    assert guard.spent == pytest.approx(case["split_cost_estimated"])  # 异常也按估算入账
+    assert guard.spent > 0
+    assert case["cost_yuan"] == pytest.approx(guard.spent)
+
+
+def test_max_split_calls_limits_total_split_requests(tmp_path):
+    backend = FakeBackend()
+    backend.on("POST", r"/copilot/split$", _split_ok())
+    backend.on("GET", r"/runs$", {"spent": 0})
+    runner = bench.Runner(
+        _api(backend), _cfg(tmp_path, max_split_calls=1), bench.BudgetGuard(limit=10), log=lambda _m: None
+    )
+    ctx = bench.CaseCtx(canvas_id="c1")
+    runner.split(_story(), ctx, {})
+    with pytest.raises(bench.BudgetStop, match="max-split-calls"):
+        runner.split(_story(), ctx, {})
+    assert len([1 for m, p in backend.calls if m == "POST" and p.endswith("/copilot/split")]) == 1
+
+
+def _runs_with_jobs(node_jobs):
+    return {
+        "spent": 0,
+        "nodes": {node: {"jobs": [{"id": job} for job in jobs]} for node, jobs in node_jobs.items()},
+    }
+
+
+def test_mock_outputs_from_first_batch_are_caught_even_when_retry_would_skip_them(tmp_path):
+    """首批已产出 mock 图片 → 轮询失败 → 结算后核对旧批次任务 → invalid_mock，不会进入会跳过它们的重试。"""
+    backend = FakeBackend()
+    backend.on("GET", r"/api/node-canvases/c1$", {"revision": 3})
+    backend.on("POST", r"/batch-runs$", httpx.ReadTimeout("轮询前连接断开"))
+    backend.on(
+        "GET", r"/batch-runs$", [{"id": "b1", "status": "canceled", "nodes": {"n": {"job_id": "j-old"}}}]
+    )
+    backend.on(
+        "GET",
+        r"/api/jobs/j-old",
+        {"status": "succeeded", "provider": "mock_image", "result": {"mocked": True}},
+    )
+    backend.on("GET", r"/runs$", _runs_with_jobs({"n": ["j-old"]}))
+    runner = bench.Runner(_api(backend), _cfg(tmp_path), bench.BudgetGuard(limit=100), log=lambda _m: None)
+    ctx = bench.CaseCtx(canvas_id="c1", node_kinds={"n": "image"})
+    with pytest.raises(bench.MockDetected):
+        runner.batch_step(ctx, "keyframes", ["image"], "image")
+    assert len([1 for m, p in backend.calls if m == "POST" and p.endswith("/batch-runs")]) == 1  # 没有重试
+
+
+def test_reused_skipped_outputs_are_traced_back_to_their_jobs_before_render(tmp_path):
+    # 节点在批次里是 skipped（job_id 为空），但它复用的产物来自 mock 任务
+    backend = FakeBackend()
+    jobs = {
+        "j-real": {"status": "succeeded", "provider": "volcano_image", "result": {"mocked": False}},
+        "j-mock": {"status": "succeeded", "provider": "mock_image", "result": {"mocked": True}},
+    }
+    backend.on(
+        "GET", r"/api/jobs/(.+)$", lambda r: httpx.Response(200, json=jobs[r.url.path.rsplit("/", 1)[1]])
+    )
+    backend.on("GET", r"/runs$", _runs_with_jobs({"k1": ["j-real"], "k2": ["j-mock"]}))
+    runner = bench.Runner(_api(backend), _cfg(tmp_path), bench.BudgetGuard(limit=100), log=lambda _m: None)
+    ctx = bench.CaseCtx(canvas_id="c1", node_kinds={"k1": "image", "k2": "image"})
+    with pytest.raises(bench.MockDetected, match="mock"):
+        runner.verify_media(ctx, "render")
+    # 全是真实产物则通过；--allow-mock-media 只标记不抛
+    ok = bench.Runner(_api(backend), _cfg(tmp_path), bench.BudgetGuard(limit=100), log=lambda _m: None)
+    backend.handlers = [h for h in backend.handlers if h[1] != r"/runs$"]
+    backend.on("GET", r"/runs$", _runs_with_jobs({"k1": ["j-real"]}))
+    ok.verify_media(bench.CaseCtx(canvas_id="c1", node_kinds={"k1": "image"}), "render")
+    lenient = bench.Runner(
+        _api(backend),
+        _cfg(tmp_path, allow_mock_media=True),
+        bench.BudgetGuard(limit=100),
+        log=lambda _m: None,
+    )
+    backend.handlers = [h for h in backend.handlers if h[1] != r"/runs$"]
+    backend.on("GET", r"/runs$", _runs_with_jobs({"k2": ["j-mock"]}))
+    ctx2 = bench.CaseCtx(canvas_id="c1", node_kinds={"k2": "image"})
+    lenient.verify_media(ctx2, "render")
+    assert ctx2.mock_media is True
+
+
+def test_allow_mock_media_requires_budget_and_no_real_deployments(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCH_USERNAME", "u")
+    monkeypatch.setenv("BENCH_PASSWORD", "p")
+    assert bench.main(["--allow-mock-media", "--stories", "1"]) == 2  # 不给预算：拒绝（不登录、不请求）
+    backend = FakeBackend()
+    backend.on(
+        "GET",
+        r"/api/model-deployments$",
+        [
+            {"slug": "volcano-video", "modality": "video", "enabled": False},
+            {"slug": "seedream", "modality": "image", "enabled": True},
+            {"slug": "qwen-tts", "modality": "speech", "enabled": True},
+        ],
+    )
+    runner = bench.Runner(_api(backend), _cfg(tmp_path), bench.BudgetGuard(limit=5))
+    with pytest.raises(bench.BudgetStop, match="seedream"):
+        runner.ensure_no_real_deployments()
+    clean = FakeBackend()
+    clean.on(
+        "GET", r"/api/model-deployments$", [{"slug": "volcano-video", "modality": "video", "enabled": False}]
+    )
+    bench.Runner(_api(clean), _cfg(tmp_path), bench.BudgetGuard(limit=5)).ensure_no_real_deployments()
+
+
+def test_check_prices_refuses_on_inconsistent_server_report(tmp_path):
+    backend = FakeBackend()
+    backend.on(
+        "GET", r"/api/eval/price-consistency$", {"ok": False, "problems": ["图片部署 x：落账静态价目缺失"]}
+    )
+    runner = bench.Runner(_api(backend), _cfg(tmp_path), bench.BudgetGuard(limit=5))
+    with pytest.raises(bench.BudgetStop, match="价格不一致.*落账静态价目缺失"):
+        runner.check_prices("x", "", "preview")
+    good = FakeBackend()
+    good.on("GET", r"/api/eval/price-consistency$", {"ok": True, "problems": []})
+    bench.Runner(_api(good), _cfg(tmp_path), bench.BudgetGuard(limit=5)).check_prices("", "", "preview")
+
+
+# ── 服务端价格一致性函数 / 接口 ───────────────────────────────────────────
+
+
+def _catalog(monkeypatch, deployments, routes=None):
+    from app.model_runtime import catalog as catalog_module
+
+    routes = routes or {}
+    snapshot = SimpleNamespace(
+        get=lambda slug: deployments.get(slug),
+        route_candidates=lambda purpose, tier="final": (
+            routes.get((purpose, tier)) or routes.get((purpose, "final")) or ()
+        ),
+    )
+    monkeypatch.setattr(catalog_module, "get_catalog", lambda: SimpleNamespace(snapshot=snapshot))
+
+
+def _dep(modality, model, pricing, name="volcano_image", driver="volcano_image"):
+    return SimpleNamespace(
+        modality=modality, model=model, pricing=pricing, driver=driver, instance=SimpleNamespace(name=name)
+    )
+
+
+def test_price_consistency_flags_missing_and_underquoted_image_prices(monkeypatch):
+    from decimal import Decimal
+
+    from app.providers import pricing as pricing_module
+    from app.services import eval_service
+
+    monkeypatch.setattr(
+        pricing_module,
+        "estimate_image_cost",
+        lambda provider, model, count=1: {"seedream": Decimal("0.30"), "cheap": Decimal("0.10")}.get(model),
+    )
+    video = _dep(
+        "video",
+        "seedance",
+        {"currency": "CNY", "output_per_million_tokens": "4.20"},
+        name="volcano_video",
+        driver="volcano_video",
+    )
+    deployments = {
+        "good": _dep("image", "seedream", {"output_per_image": "0.30"}),
+        "under": _dep("image", "seedream", {"output_per_image": "0.20"}),  # 落账价 0.30 > 0.20 × 1.05
+        "noprice": _dep("image", "unknown-model", {"output_per_image": "0.1"}),  # 无静态价目
+        "noquote": _dep("image", "cheap", {}),  # Catalog 无报价
+        "vid": video,
+    }
+    _catalog(
+        monkeypatch,
+        deployments,
+        {("image_generation", "final"): ("good",), ("shot_video", "preview"): ("vid",)},
+    )
+    ok = eval_service.price_consistency()
+    assert ok["ok"] is True and ok["image"][0]["quote"] == "0.30" and ok["video"][0]["ok"] is True
+    for slug, needle in (
+        ("under", "高于报价"),
+        ("noprice", "落账静态价目缺失"),
+        ("noquote", "Catalog 报价缺失"),
+    ):
+        result = eval_service.price_consistency(image_model=slug, video_model="vid")
+        assert result["ok"] is False and needle in "；".join(result["problems"])
+    missing = eval_service.price_consistency(image_model="nope", video_model="vid")
+    assert missing["ok"] is False and "不存在" in missing["problems"][0]
+
+
+def test_price_consistency_endpoint_is_admin_only_read_only():
+    from app.auth.dependencies import require_admin
+    from app.routers import eval as eval_router
+
+    route = next(r for r in eval_router.router.routes if r.path == "/eval/price-consistency")
+    assert route.methods == {"GET"}
+    assert require_admin in [dep.call for dep in route.dependant.dependencies]

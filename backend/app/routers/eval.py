@@ -237,6 +237,20 @@ async def drilldown_usage(
     ]
 
 
+@router.get("/eval/price-consistency")
+async def get_price_consistency(
+    image_model: str = "",
+    video_model: str = "",
+    tier: str = "preview",
+    duration: int = 4,
+    _: User = Depends(require_admin),
+):
+    """报价口径与 worker 落账口径的单价对照（管理员只读）；基准脚本真实跑前用它拒绝价格不一致的模型。"""
+    return eval_service.price_consistency(
+        image_model=image_model, video_model=video_model, tier=tier, duration=duration
+    )
+
+
 @router.get("/eval/prices")
 async def list_prices(session: AsyncSession = Depends(get_session)):
     rows = (
