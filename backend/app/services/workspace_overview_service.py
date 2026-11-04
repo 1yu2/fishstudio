@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Artifact, GenerationJob, NodeCanvas, SeriesProject, UsageEvent, User
-from app.services import budget_service
+from app.services import budget_service, canvas_script_service, character_library_service
 from app.services.cost_report_service import _effective_cost
 
 MAX_PROJECTS = 20
@@ -67,21 +67,35 @@ def _display_status(status: str, external_task_id: str) -> str:
     return "queued"
 
 
-def _steps(shots_done: int, shots_total: int, has_script: bool) -> list[dict[str, str]]:
-    """五步进度。目前画布只有镜头数据：剧本看文本节点，分镜看镜头完成数，其余待后续任务补全。"""
+def _steps(
+    shots_done: int,
+    shots_total: int,
+    has_script: bool,
+    characters: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, str]]:
+    """五步进度。characters 是各角色的 {name, final}；剧本看文本节点，分镜看镜头完成数，其余待后续任务补全。
+
+    角色步骤：没有角色 → 有剧本即算完成（可跳过）；有角色且全部定稿 → 完成；否则进行中（不要求剧本完成）。
+    进行中的顺序：剧本 → 角色 → 分镜 → 配音。
+    """
+    characters = characters or []
+    characters_pending = any(not item["final"] for item in characters)
     done = {
         "script": has_script,
-        "characters": False,
+        "characters": (not characters_pending) if characters else has_script,
         "storyboard": shots_total > 0 and shots_done >= shots_total,
         "voice": False,
         "final": False,
     }
-    # 角色 / 配音 / 成片目前没有数据，不会被选为进行中；
-    # 有镜头：分镜未完成 → 分镜进行中，分镜完成 → 配音进行中；没有镜头：先剧本再分镜
+    # 配音 / 成片目前没有数据，不会被选为进行中；
+    # 有镜头：分镜未完成 → 分镜进行中，分镜完成 → 配音进行中；没有镜头：先剧本再分镜；角色待定稿时角色优先（不要求剧本）
     if shots_total > 0:
         active = "voice" if done["storyboard"] else "storyboard"
     else:
         active = "storyboard" if has_script else "script"
+    # 有未定稿的角色时，角色一定先于分镜 / 配音；剧本没写（直接做镜头）不强制回到剧本步骤
+    if characters_pending:
+        active = "characters"
     steps: list[dict[str, str]] = []
     for key, label in STEP_LABELS:
         status = "done" if done[key] else "active" if key == active else "todo"
@@ -90,7 +104,16 @@ def _steps(shots_done: int, shots_total: int, has_script: bool) -> list[dict[str
     return steps
 
 
-def _next_hint(failed: int, review: int, shots_done: int, shots_total: int) -> str:
+def _next_hint(
+    failed: int,
+    review: int,
+    shots_done: int,
+    shots_total: int,
+    pending_characters: Optional[list[str]] = None,
+) -> str:
+    if pending_characters:
+        names = "、".join(pending_characters[:3])
+        return f"还有 {len(pending_characters)} 个角色没定稿：{names}"
     if failed:
         return f"处理 {failed} 个失败镜头"
     if review:
@@ -125,6 +148,8 @@ class _Collected(NamedTuple):
 async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
     """按给定画布一次性查出 jobs / artifacts / cost，并在内存里算出各项目的镜头统计、失败与待确认。"""
     project_ids = [canvas.project_id for canvas in canvases]
+    # 有结构化剧本（至少一块非空）的画布，一次批量查出
+    scripted = await canvas_script_service.scripted_canvas_ids(session, [canvas.id for canvas in canvases])
 
     jobs: list[Any] = []
     artifacts: list[Any] = []
@@ -204,9 +229,14 @@ async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
     for canvas in canvases:
         nodes = (canvas.graph or {}).get("nodes", [])
         media = [node for node in nodes if node.get("type") in ("image", "video")]
+        graph_edges = (canvas.graph or {}).get("edges", [])
+        # 角色图不是镜头，也不进“待选图”（角色定稿看角色步骤）
+        character_ids = {
+            n["id"] for n in media if character_library_service.is_character_node(n, graph_edges)
+        }
         videos = [node for node in media if node["type"] == "video"]
-        shot_nodes = videos or [node for node in media if node["type"] == "image"]
-        has_script = any(
+        shot_nodes = videos or [n for n in media if n["type"] == "image" and n["id"] not in character_ids]
+        has_script = canvas.id in scripted or any(
             node.get("type") == "text" and str((node.get("data") or {}).get("text") or "").strip()
             for node in nodes
         )
@@ -230,7 +260,7 @@ async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
                         "error": _readable_error(latest.error),
                     }
                 )
-            elif latest.status == "succeeded":
+            elif latest.status == "succeeded" and node["id"] not in character_ids:
                 generated = [a for a in node_results.get(key, []) if a.job_id]
                 if not generated:
                     continue
@@ -262,6 +292,14 @@ async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
             "shots_total": len(shot_nodes),
             "shots_done": done,
             "has_script": has_script,
+            "characters": character_library_service.character_stats(
+                canvas.graph or {},
+                {
+                    node["id"]: {a.id for a in node_results.get((canvas.project_id, node["id"]), [])}
+                    for node in media
+                    if node["id"] in character_ids
+                },
+            ),
         }
 
     return _Collected(jobs, costs, stats, review_by_project, failed_by_project)
@@ -272,6 +310,9 @@ def _project_entry(canvas: Any, data: _Collected) -> dict[str, Any]:
     info = data.stats[canvas.project_id]
     failed = len(data.failed_by_project.get(canvas.project_id, []))
     review = len(data.review_by_project.get(canvas.project_id, []))
+    steps = _steps(info["shots_done"], info["shots_total"], info["has_script"], info["characters"])
+    characters_active = any(step["key"] == "characters" and step["status"] == "active" for step in steps)
+    pending = [item["name"] for item in info["characters"] if not item["final"]] if characters_active else []
     return {
         "canvas_id": canvas.id,
         "project_id": canvas.project_id,
@@ -282,8 +323,8 @@ def _project_entry(canvas: Any, data: _Collected) -> dict[str, Any]:
         "total_cost": _money(data.costs.get(canvas.project_id)),
         "shots_total": info["shots_total"],
         "shots_done": info["shots_done"],
-        "steps": _steps(info["shots_done"], info["shots_total"], info["has_script"]),
-        "next_hint": _next_hint(failed, review, info["shots_done"], info["shots_total"]),
+        "steps": steps,
+        "next_hint": _next_hint(failed, review, info["shots_done"], info["shots_total"], pending),
     }
 
 

@@ -80,6 +80,8 @@ describe('layoutSplit', () => {
     }, [node('old', 'text')])
     expect(nodes.map((item) => item.type)).toEqual(['image', 'image', 'video', 'image', 'video'])
     expect(nodes[0].data.label).toBe('角色 · 林夏')
+    // 角色节点带 role / character，默认出 4 张候选
+    expect(nodes[0].data).toMatchObject({ role: 'character', character: '林夏', count: 4 })
     expect(nodes[2].data).toMatchObject({ duration: 4, tier: 'preview', label: '1 · 推门' })
     expect(nodes[3].data.label).toBe('2 · 镜头 2 关键帧')
     expect(Math.min(...nodes.map((item) => item.position.y))).toBeGreaterThan(0)

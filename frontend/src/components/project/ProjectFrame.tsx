@@ -1,7 +1,8 @@
-import { ArrowLeft, Sparkles } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowLeft, Loader2, Sparkles } from 'lucide-react'
 import { Link, Outlet, useLocation, useParams } from 'react-router-dom'
 import type { ProjectSummary, StepKey, WorkspaceStep } from '../../api/workspace'
-import type { ProjectOutletContext } from './outletContext'
+import type { FooterOverride, ProjectOutletContext } from './outletContext'
 import { paths } from '../../routePaths'
 import { yuan, yuanCap } from '../workspace/format'
 import { STEPS, stepMeta } from './steps'
@@ -84,7 +85,8 @@ export default function ProjectFrame() {
   const remainingShots = summary ? summary.shots_total - summary.shots_done : 0
   const storyboardBlocked = current?.key === 'storyboard' && (!summary || summary.shots_total === 0 || remainingShots > 0)
   const blockedNote = !summary ? '' : summary.shots_total === 0 ? '还没有镜头' : `还有 ${remainingShots} 个镜头没完成`
-  const outletContext: ProjectOutletContext = { summary, loading, refreshSummary: retry }
+  const [footer, setFooter] = useState<FooterOverride | null>(null)
+  const outletContext: ProjectOutletContext = { summary, loading, refreshSummary: retry, setFooter }
 
   if (notFound) {
     return (
@@ -159,14 +161,23 @@ export default function ProjectFrame() {
       {!canvasView && (
         <footer className="pf-footer">
           <span className="pf-footer__hint">
-            {hint && (
+            {(footer?.hint ?? hint) && (
               <>
                 <span className="pf-footer__ai" aria-hidden="true">AI</span>
-                {hint}
+                {footer?.hint ?? hint}
               </>
             )}
           </span>
-          {current?.nextLabel && next && storyboardBlocked && (
+          {footer && (
+            <span className="pf-next-wrap">
+              {footer.note && <span className="pf-next-note">{footer.note}</span>}
+              <button type="button" className="pf-next" disabled={footer.disabled || footer.busy} onClick={footer.onClick}>
+                {footer.busy && <Loader2 size={14} className="pf-spin" aria-hidden="true" />}
+                {footer.label}
+              </button>
+            </span>
+          )}
+          {!footer && current?.nextLabel && next && storyboardBlocked && (
             <span className="pf-next-wrap">
               {blockedNote && <span className="pf-next-note">{blockedNote}</span>}
               <button type="button" className="pf-next" disabled>
@@ -174,7 +185,7 @@ export default function ProjectFrame() {
               </button>
             </span>
           )}
-          {current?.nextLabel && next && !storyboardBlocked && (
+          {!footer && current?.nextLabel && next && !storyboardBlocked && (
             <Link to={paths.projectStep(canvasId, next.key)} className="pf-next">
               {current.nextLabel}
             </Link>

@@ -2,7 +2,7 @@
 
 - project_id 非空：仅项目 owner（或 admin）可下载。
 - project_id 为 NULL：artifact 本身没有 user 字段，无法判定创建者，
-  过渡期内仅 admin 可下载。
+  过渡期内仅 admin 可下载；角色库上传的图（metadata.source=library_upload）本人也可下载。
 - 一律 404 响应无权/不存在，不泄露 artifact 存在性。
 """
 
@@ -54,8 +54,11 @@ async def download_artifact(
         except PermissionError:
             raise HTTPException(status_code=404, detail="artifact not found") from None
     elif not user.is_admin:
-        # project_id 为 NULL 的 artifact 没有创建者字段可校验，过渡期仅 admin 可下
-        raise HTTPException(status_code=404, detail="artifact not found")
+        # project_id 为 NULL 的 artifact 没有创建者字段：角色库上传的图在 metadata 里记了 owner_user_id，
+        # 本人可下载；其余过渡期仅 admin 可下
+        meta = getattr(artifact, "artifact_metadata", None) or {}
+        if not (meta.get("source") == "library_upload" and meta.get("owner_user_id") == user.id):
+            raise HTTPException(status_code=404, detail="artifact not found")
 
     if getattr(artifact, "storage_backend", "local") in {"s3", "minio"}:
         from app.services.storage_backend import storage

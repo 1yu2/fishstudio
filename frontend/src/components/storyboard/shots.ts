@@ -83,7 +83,7 @@ function caption(frame: MediaStatus, video: MediaStatus, shotSize: string, hasFr
 /**
  * 画布 graph → 镜头列表。
  * 镜头 = 每个视频节点（它的 first_frame 上游图片节点是画面节点）；另外，没有连到任何视频、且出边不全是 reference 的
- * 图片节点单独算一个“只有画面”的镜头；只通过 reference 边连出去的图片节点是角色图，不算镜头。
+ * 图片节点单独算一个“只有画面”的镜头；role 为 character 的节点，以及只通过 reference 边连出去的旧画布图片节点是角色图，不算镜头。
  * 顺序：主节点 data.order 升序，没有 order 的按画布位置 y、再 x 排在后面。
  * 口径说明：后端 workspace_overview_service 的 shot 是“视频节点，否则图片节点”，两者都有时与这里一致；
  * 差异只在“只有画面”的镜头（这里算镜头，后端只在没有任何视频节点时才把图片节点算作镜头）。
@@ -103,6 +103,7 @@ export function buildShots(nodes: StoredNode[], edges: StoredEdge[], runs: Canva
       const frame = first ? byId.get(first.source) : undefined
       mains.push({ main: node, video: node, frame: frame?.type === 'image' ? frame : undefined })
     } else if (node.type === 'image' && !toVideo.has(node.id)) {
+      if ((node.data as ImageData).role === 'character') continue  // 角色图永远不是镜头（含还没被任何镜头引用的）
       const out = outgoing.get(node.id) || []
       if (out.length > 0 && out.every((edge) => edge.targetHandle === 'reference')) continue  // 角色图
       mains.push({ main: node, frame: node })

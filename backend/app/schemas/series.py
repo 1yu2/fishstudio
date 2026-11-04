@@ -517,6 +517,11 @@ class CharacterProfile(BaseModel):
     voice_asset_id: Optional[str] = None
     allowed_changes: list[str] = Field(default_factory=list)
     forbidden_changes: list[str] = Field(default_factory=list)
+    # 角色库：各套造型（{name, artifact_id}）与保存来源画布（同一画布再次保存时更新而不是新建）
+    looks: list[dict[str, Any]] = Field(default_factory=list)
+    source_canvas_id: Optional[str] = None
+    # 角色库身份：第一个版本的资产 id，随新版本一直带着（项目里的节点记的是它）
+    library_root_id: Optional[str] = None
 
 
 class SceneProfile(BaseModel):

@@ -319,7 +319,7 @@ def test_project_steps_progress_cost_and_cover(pg):
     assert project["cover_artifact_id"] == img_id
     assert [(s["key"], s["status"]) for s in project["steps"]] == [
         ("script", "done"),
-        ("characters", "todo"),
+        ("characters", "done"),  # 没有角色且有剧本：可跳过，算完成
         ("storyboard", "active"),
         ("voice", "todo"),
         ("final", "todo"),
@@ -336,7 +336,89 @@ def test_steps_active_rules():
     assert active(0, 0, True) == ["storyboard"]
     assert active(2, 5, False) == ["storyboard"]
     assert active(5, 5, True) == ["voice"]
-    assert all(s["status"] == "todo" for s in service._steps(1, 3, True) if s["key"] == "characters")
+    # 没有角色：有剧本算完成（可跳过），没剧本是待办
+    assert service._steps(1, 3, True)[1]["status"] == "done"
+    assert service._steps(0, 0, False)[1]["status"] == "todo"
+
+
+def test_characters_step_rules_and_hint():
+    pending = [{"name": "书生", "final": False}, {"name": "狐妖", "final": True}]
+    final = [{"name": "狐妖", "final": True}]
+
+    def statuses(done, total, script, characters):
+        return {s["key"]: s["status"] for s in service._steps(done, total, script, characters)}
+
+    # 有未定稿角色且剧本已完成：角色进行中，排在分镜 / 配音前面
+    assert statuses(0, 0, True, pending)["characters"] == "active"
+    assert statuses(2, 5, True, pending)["storyboard"] == "todo"
+    assert statuses(5, 5, True, pending)["voice"] == "todo"
+    # 没写剧本直接做镜头：不强制回剧本步骤，但有未定稿角色时角色仍排在分镜 / 配音前面
+    result = statuses(0, 0, False, pending)
+    assert (result["script"], result["characters"]) == ("todo", "active")
+    result = statuses(2, 5, False, pending)
+    assert (result["characters"], result["storyboard"]) == ("active", "todo")
+    assert statuses(5, 5, False, pending)["voice"] == "todo"
+    # 全部定稿：角色完成，回到原来的顺序
+    result = statuses(0, 0, True, final)
+    assert (result["characters"], result["storyboard"]) == ("done", "active")
+    names = ["甲", "乙", "丙", "丁"]
+    assert service._next_hint(0, 0, 0, 0, names) == "还有 4 个角色没定稿：甲、乙、丙"
+    assert service._next_hint(1, 0, 0, 0, []) == "处理 1 个失败镜头"
+
+
+@requires_pg
+def test_character_finalized_state_and_not_counted_as_shots(pg):
+    async def _run():
+        async with pg() as s:
+            user = await _user(s, "u")
+            canvas = await _canvas(
+                s,
+                user,
+                "角色",
+                [
+                    _node("t", "text", text="剧本"),
+                    _node("fox", "image", label="角色 · 狐妖", role="character", character="狐妖"),
+                    _node("fox2", "image", role="character", character="狐妖", look="冬装"),
+                    _node("sc", "image", label="角色 · 书生"),  # 旧画布：靠 reference 边识别
+                    _node("shot", "image", label="镜头"),
+                ],
+            )
+            canvas.graph = {
+                **canvas.graph,
+                "edges": [
+                    {"id": "e1", "source": "sc", "target": "shot", "targetHandle": "reference"},
+                ],
+            }
+            job = await _job(s, canvas, "fox", "succeeded", age=2)
+            art = await _artifact(s, canvas, job, age=2)
+            # 书生：选中的 artifact 不是该节点的结果 => 未定稿
+            stranger = await _artifact(s, canvas, None, age=1)
+            canvas.graph = {
+                **canvas.graph,
+                "nodes": [
+                    {**n, "data": {**n["data"], "selected": art.id}} if n["id"] == "fox" else n
+                    for n in canvas.graph["nodes"]
+                ],
+            }
+            before = await service.project_summary(s, user, canvas.id)
+            canvas.graph = {
+                **canvas.graph,
+                "nodes": [
+                    {**n, "data": {**n["data"], "selected": stranger.id}} if n["id"] == "sc" else n
+                    for n in canvas.graph["nodes"]
+                ],
+            }
+            invalid = await service.project_summary(s, user, canvas.id)
+            return before, invalid
+
+    before, invalid = asyncio.run(_run())
+    # 镜头只有 shot 一个；角色图不算镜头
+    assert before["shots_total"] == 1
+    steps = {s["key"]: s["status"] for s in before["steps"]}
+    assert steps["characters"] == "active" and steps["storyboard"] == "todo"
+    assert before["active_step"] == "characters"
+    assert before["next_hint"] == "还有 1 个角色没定稿：书生"
+    assert invalid["next_hint"] == "还有 1 个角色没定稿：书生"
 
 
 @requires_pg

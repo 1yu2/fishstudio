@@ -149,6 +149,8 @@ async def save_graph(
     revision: int,
     user_id: Optional[int] = None,
 ) -> NodeCanvas:
+    # 锁住画布行并重读：版本比较与写入在同一把行锁内，并发保存不会互相覆盖（后到者读到新 revision 得 409）
+    await session.refresh(canvas, with_for_update=True)
     if revision != canvas.revision:
         raise CanvasConflict("画布已在其他窗口更新，请刷新后再编辑")
     if len(json.dumps(graph, ensure_ascii=False).encode()) > MAX_GRAPH_BYTES:

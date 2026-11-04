@@ -536,6 +536,9 @@ class _FakeSession:
     async def flush(self):
         pass
 
+    async def refresh(self, obj, **kwargs):
+        pass  # 真实会话在这里锁行并重读
+
     async def get(self, model, key):
         return self.artifacts.get(key)
 
