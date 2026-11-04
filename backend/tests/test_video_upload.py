@@ -1,27 +1,26 @@
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 from app.main import app
 
-client = TestClient(app)
+client = TestClient(app, headers={"Authorization": "Bearer test"})
 
 
-def test_upload_video_saves_supported_file():
+def test_upload_video_saves_supported_file(real_media, tmp_path, monkeypatch):
+    from app.routers import chat
+
+    monkeypatch.setattr(chat, "_STORAGE_DIR", tmp_path)
     response = client.post(
         "/api/upload-video",
-        files={"file": ("sample.mp4", b"fake video bytes", "video/mp4")},
+        files={"file": ("sample.mp4", real_media["mp4"], "video/mp4")},
     )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["url"].startswith("/storage/videos/upload_")
-    assert payload["url"].endswith(".mp4")
-
-    saved_path = Path(__file__).resolve().parents[1] / payload["url"].lstrip("/")
-    assert saved_path.exists()
-    assert saved_path.read_bytes() == b"fake video bytes"
-    saved_path.unlink()
+    body = response.json()
+    assert body["url"].startswith("/storage/uploads/1/videos/upload_")
+    assert body["url"].endswith(".mp4")
+    saved_path = tmp_path / body["url"].removeprefix("/storage/")
+    # 上传后会被重新封装（丢弃尾随数据与元数据），字节不要求与原文件一致
+    assert saved_path.read_bytes()[4:8] == b"ftyp"
 
 
 def test_upload_video_rejects_unsupported_file():
@@ -31,4 +30,4 @@ def test_upload_video_rejects_unsupported_file():
     )
 
     assert response.status_code == 400
-    assert "只支持视频文件" in response.json()["detail"]
+    assert "不支持的视频格式" in response.json()["detail"]

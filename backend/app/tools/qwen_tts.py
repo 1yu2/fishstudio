@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.services import safe_fetch
+
 logger = logging.getLogger(__name__)
 
 # 优先加载 backend/.env
@@ -295,8 +297,8 @@ def qwen_voice_synthesis_tool(
         audio_url = ((data.get("output") or {}).get("audio") or {}).get("url", "")
         if not audio_url:
             return f"Error: 响应中未找到音频URL. Response: {json.dumps(data)}"
-        audio_response = requests.get(audio_url, timeout=60)
-        audio_response.raise_for_status()
+        # 音频 URL 来自厂商响应：走 safe_fetch 防 SSRF
+        audio_response = safe_fetch.fetch(audio_url, timeout=60, max_bytes=safe_fetch.MAX_AUDIO_BYTES)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = str(uuid.uuid4())[:8]
@@ -434,8 +436,7 @@ def qwen_voice_cloning_tool(reference_audio: str, text: str, language: str = "zh
 
             # 下载并保存音频
             logger.info(f"📥 开始下载音频: {audio_url}")
-            audio_response = requests.get(audio_url, timeout=60)
-            audio_response.raise_for_status()
+            audio_response = safe_fetch.fetch(audio_url, timeout=60, max_bytes=safe_fetch.MAX_AUDIO_BYTES)
 
             # 保存音频
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

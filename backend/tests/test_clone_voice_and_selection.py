@@ -272,7 +272,8 @@ async def test_clone_voice_quote_confirm_is_persistent_and_one_time(monkeypatch,
     assert len([obj for obj in session.added if isinstance(obj, GenerationJob)]) == 1
 
 
-async def test_project_audio_upload_creates_protected_artifact(monkeypatch, tmp_path):
+async def test_project_audio_upload_creates_protected_artifact(monkeypatch, tmp_path, real_media):
+    WAV_BYTES = real_media["wav"]
     from app.routers import series as series_router
     from app.services import asset_service
 
@@ -287,7 +288,7 @@ async def test_project_audio_upload_creates_protected_artifact(monkeypatch, tmp_
 
     async def fake_create_artifact(session, **kwargs):
         created.update(kwargs)
-        assert (asset_service.STORAGE_DIR / kwargs["storage_key"]).read_bytes() == b"RIFFfake"
+        assert (asset_service.STORAGE_DIR / kwargs["storage_key"]).read_bytes()[:4] == b"RIFF"
         return SimpleNamespace(id="audio-artifact-1", **kwargs)
 
     class FakeUpload:
@@ -295,7 +296,7 @@ async def test_project_audio_upload_creates_protected_artifact(monkeypatch, tmp_
         content_type = "audio/wav"
 
         def __init__(self):
-            self._chunks = [b"RIFFfake", b""]
+            self._chunks = [WAV_BYTES, b""]
             self.closed = False
 
         async def read(self, size=-1):

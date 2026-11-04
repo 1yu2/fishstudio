@@ -366,7 +366,7 @@ def qwen_http(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(qwen_tts.requests, "post", fake_post)
-    monkeypatch.setattr(qwen_tts.requests, "get", lambda url, timeout=None: _FakeResponse())
+    monkeypatch.setattr(qwen_tts.safe_fetch, "fetch", lambda url, **kwargs: _FakeResponse())
     return SimpleNamespace(calls=calls, audios=audios)
 
 
