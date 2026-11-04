@@ -58,7 +58,7 @@
       "aspect_ratio": "16:9",
       "node_id": "v",
       "expected": {
-        "request": {"kind": "video", "prompt": "推门", "model": "", "aspect_ratio": "16:9", "duration": 6, "tier": "final", "first_frame_artifact_id": null, "last_frame_artifact_id": null},
+        "request": {"kind": "video", "prompt": "推门", "model": "", "aspect_ratio": "16:9", "duration": 6, "tier": "final", "first_frame_artifact_id": null, "last_frame_artifact_id": null, "reference_artifact_ids": []},
         "blockers": ["首帧节点「关键帧」还没有图片"]
       }
     },
@@ -77,7 +77,7 @@
       "aspect_ratio": "9:16",
       "node_id": "v",
       "expected": {
-        "request": {"kind": "video", "prompt": "", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": "fa", "last_frame_artifact_id": "fb"},
+        "request": {"kind": "video", "prompt": "", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": "fa", "last_frame_artifact_id": "fb", "reference_artifact_ids": []},
         "blockers": []
       }
     },
@@ -92,7 +92,7 @@
       "aspect_ratio": "9:16",
       "node_id": "v",
       "expected": {
-        "request": {"kind": "video", "prompt": "x", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": "fb"},
+        "request": {"kind": "video", "prompt": "x", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": "fb", "reference_artifact_ids": []},
         "blockers": ["有尾帧时也需要连入首帧"]
       }
     },
@@ -113,7 +113,7 @@
       "aspect_ratio": "9:16",
       "node_id": "v",
       "expected": {
-        "request": {"kind": "video", "prompt": "雨夜\n慢推镜头\n女店员", "model": "seedance", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": null},
+        "request": {"kind": "video", "prompt": "雨夜\n慢推镜头\n女店员", "model": "seedance", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": null, "reference_artifact_ids": []},
         "blockers": []
       }
     },
@@ -156,7 +156,7 @@
       "aspect_ratio": "9:16",
       "node_id": "v",
       "expected": {
-        "request": {"kind": "video", "prompt": "转身\n运镜：缓慢推近", "model": "", "aspect_ratio": "9:16", "duration": 4, "tier": "preview", "first_frame_artifact_id": "fa", "last_frame_artifact_id": null},
+        "request": {"kind": "video", "prompt": "转身\n运镜：缓慢推近", "model": "", "aspect_ratio": "9:16", "duration": 4, "tier": "preview", "first_frame_artifact_id": "fa", "last_frame_artifact_id": null, "reference_artifact_ids": []},
         "blockers": []
       }
     },
@@ -203,6 +203,61 @@
       "expected": {
         "request": {"kind": "tts", "text": "很久以前", "voice": ""},
         "blockers": []
+      }
+    },
+    {
+      "name": "video collects character reference images, skips duplicates, blocks on missing result",
+      "nodes": [
+        {"id": "c1", "type": "image", "data": {"role": "character", "selected": "old"}},
+        {"id": "c2", "type": "image", "data": {"role": "character"}},
+        {"id": "c3", "type": "image", "data": {"role": "character"}},
+        {"id": "v", "type": "video", "data": {"prompt": "对视"}}
+      ],
+      "edges": [
+        {"source": "c1", "target": "v", "targetHandle": "reference"},
+        {"source": "c2", "target": "v", "targetHandle": "reference"},
+        {"source": "c3", "target": "v", "targetHandle": "reference"}
+      ],
+      "results": {"c1": ["new", "old"], "c2": ["old"]},
+      "aspect_ratio": "9:16",
+      "node_id": "v",
+      "expected": {
+        "request": {"kind": "video", "prompt": "对视", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": null, "reference_artifact_ids": ["old"]},
+        "blockers": ["参考图节点「图片」还没有图片"]
+      }
+    },
+    {
+      "name": "video blocks reference images mixed with first frame",
+      "nodes": [
+        {"id": "c", "type": "image", "data": {"role": "character"}},
+        {"id": "k", "type": "image", "data": {}},
+        {"id": "v", "type": "video", "data": {"prompt": "对视"}}
+      ],
+      "edges": [
+        {"source": "c", "target": "v", "targetHandle": "reference"},
+        {"source": "k", "target": "v", "targetHandle": "first_frame"}
+      ],
+      "results": {"c": ["rc"], "k": ["fk"]},
+      "aspect_ratio": "9:16",
+      "node_id": "v",
+      "expected": {
+        "request": {"kind": "video", "prompt": "对视", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": "fk", "last_frame_artifact_id": null, "reference_artifact_ids": ["rc"]},
+        "blockers": ["参考图和首帧不能同时使用：去掉首帧连线，或去掉参考图连线"]
+      }
+    },
+    {
+      "name": "video with a parked first frame but no reference images is blocked, not sent as text-to-video",
+      "nodes": [
+        {"id": "k", "type": "image", "data": {}},
+        {"id": "v", "type": "video", "data": {"prompt": "对视", "parked_first_frame": "k"}}
+      ],
+      "edges": [],
+      "results": {"k": ["fk"]},
+      "aspect_ratio": "9:16",
+      "node_id": "v",
+      "expected": {
+        "request": {"kind": "video", "prompt": "对视", "model": "", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": null, "reference_artifact_ids": []},
+        "blockers": ["还没有连角色参考图：连上角色，或改回「从首帧画面生成」"]
       }
     }
   ]

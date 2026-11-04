@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { buildCharacters } from '../characters/characters'
 import type { CanvasRuns, NodeJob, StoredEdge, StoredNode } from '../../api/nodeCanvas'
-import { appendPhrase, buildEditChain, buildShots, editRequest, newShot, priceSuffix, reorderPatch, shotTitle, totalSeconds } from './shots'
+import { appendPhrase, applyVideoMode, buildEditChain, buildShots, editRequest, newShot, priceSuffix, reorderPatch, shotCharacters, shotReferenceUse, shotTitle, totalSeconds, videoMode } from './shots'
 
 const node = (id: string, type: StoredNode['type'], data: Record<string, unknown> = {}, x = 0, y = 0): StoredNode => ({ id, type, position: { x, y }, data })
 const edge = (source: string, target: string, targetHandle: string): StoredEdge => ({ id: `${source}-${target}`, source, target, sourceHandle: 'out', targetHandle })
@@ -41,6 +42,144 @@ describe('buildShots: which nodes are shots', () => {
 
   it('ignores text nodes', () => {
     expect(buildShots([node('t', 'text', { text: '想法' })], [], null)).toEqual([])
+  })
+})
+
+describe('buildShots: character reference edges into video', () => {
+  const base = () => [
+    node('char', 'image', { role: 'character', character: '狐妖' }), node('legacy', 'image', { label: '角色 · 书生' }),
+    node('k1', 'image', { prompt: '开场' }), node('v1', 'video', { label: '1 · 开场' }),
+  ]
+
+  it('does not turn characters into shots, or the video shot into a character, when characters feed the video', () => {
+    const edges = [edge('char', 'v1', 'reference'), edge('legacy', 'v1', 'reference'), edge('k1', 'v1', 'first_frame')]
+    const shots = buildShots(base(), edges, null)
+    expect(shots.map((shot) => shot.id)).toEqual(['v1'])
+    expect(shots[0].frame?.id).toBe('k1')
+  })
+
+  it('keeps the unlinked first-frame image in its shot when the video records it as parked', () => {
+    const nodes = base()
+    nodes[3].data.parked_first_frame = 'k1'
+    const edges = [edge('char', 'v1', 'reference'), edge('legacy', 'v1', 'reference')]
+    const shots = buildShots(nodes, edges, null)
+    expect(shots.map((shot) => shot.id)).toEqual(['v1'])
+    expect(shots[0].frame?.id).toBe('k1')
+    // 没有记录时，被摘掉连线的图片会成为独立的“只有画面”镜头
+    expect(buildShots(base(), edges, null).map((shot) => shot.id).sort()).toEqual(['k1', 'v1'])
+  })
+})
+
+describe('video generation mode', () => {
+  const graph = () => ({
+    nodes: [
+      node('char', 'image', { role: 'character', character: '狐妖' }), node('boy', 'image', { role: 'character', character: '书生' }),
+      node('k1', 'image', { prompt: '雪夜竹林' }), node('v1', 'video', { label: '1 · 开场' }),
+    ],
+    edges: [edge('char', 'k1', 'reference'), edge('boy', 'k1', 'reference'), edge('k1', 'v1', 'first_frame')],
+  })
+
+  it('finds the characters on the shot through the key frame reference edges', () => {
+    const { nodes, edges } = graph()
+    const [shot] = buildShots(nodes, edges, null)
+    expect(shotCharacters(shot, nodes, edges).map((item) => item.name)).toEqual(['狐妖', '书生'])
+    expect(videoMode(shot, edges)).toBe('frame')
+    const lone = buildShots([node('k', 'image'), node('v', 'video')], [edge('k', 'v', 'first_frame')], null)[0]
+    expect(shotCharacters(lone, [node('k', 'image'), node('v', 'video')], [edge('k', 'v', 'first_frame')])).toEqual([])
+  })
+
+  it('switches to reference: base looks feed the video, first frame edge goes, the image stays and is parked', () => {
+    const { nodes, edges } = graph()
+    const [shot] = buildShots(nodes, edges, null)
+    const next = applyVideoMode(shot, 'reference', nodes, edges)
+    const intoVideo = next.edges.filter((item) => item.target === 'v1')
+    expect(intoVideo.map((item) => [item.source, item.targetHandle])).toEqual([['char', 'reference'], ['boy', 'reference']])
+    expect(next.nodes.map((item) => item.id)).toEqual(nodes.map((item) => item.id))
+    expect(next.nodes.find((item) => item.id === 'v1')!.data).toMatchObject({ parked_first_frame: 'k1', prompt: '雪夜竹林' })
+    // 角色到关键帧的出镜连线保持不变，镜头仍是同一个，且处于参考图模式
+    expect(next.edges.filter((item) => item.target === 'k1')).toHaveLength(2)
+    const [after] = buildShots(next.nodes, next.edges, null)
+    expect(after.id).toBe('v1')
+    expect(after.frame?.id).toBe('k1')
+    expect(videoMode(after, next.edges)).toBe('reference')
+    expect(shotCharacters(after, next.nodes, next.edges)).toHaveLength(2)
+  })
+
+  it('switches back: reference edges removed, first frame restored, parked marks cleared', () => {
+    const { nodes, edges } = graph()
+    const [shot] = buildShots(nodes, edges, null)
+    const reference = applyVideoMode(shot, 'reference', nodes, edges)
+    const [refShot] = buildShots(reference.nodes, reference.edges, null)
+    const back = applyVideoMode(refShot, 'frame', reference.nodes, reference.edges)
+    expect(back.edges.filter((item) => item.target === 'v1').map((item) => [item.source, item.targetHandle])).toEqual([['k1', 'first_frame']])
+    expect(back.nodes.find((item) => item.id === 'v1')!.data).not.toHaveProperty('parked_first_frame')
+    expect(videoMode(buildShots(back.nodes, back.edges, null)[0], back.edges)).toBe('frame')
+  })
+
+  it('does not overwrite an existing video prompt, and leaves other videos alone', () => {
+    const { nodes, edges } = graph()
+    nodes[3].data.prompt = '回头'
+    const other = [...nodes, node('v2', 'video', {})]
+    const shot = buildShots(other, edges, null).find((item) => item.id === 'v1')!
+    const next = applyVideoMode(shot, 'reference', other, edges)
+    expect(next.nodes.find((item) => item.id === 'v1')!.data.prompt).toBe('回头')
+    expect(next.nodes.find((item) => item.id === 'v2')).toBe(other.find((item) => item.id === 'v2'))
+  })
+})
+
+describe('video generation mode: edge cases', () => {
+  const graph = (count = 2) => {
+    const chars = Array.from({ length: count }, (_, index) => node(`c${index}`, 'image', { role: 'character', character: `角色${index}` }))
+    return {
+      nodes: [...chars, node('k1', 'image', { prompt: '雪夜竹林' }), node('v1', 'video', { label: '1 · 开场' })],
+      edges: [...chars.map((item) => edge(item.id, 'k1', 'reference')), edge('k1', 'v1', 'first_frame')],
+    }
+  }
+  const toReference = (g: ReturnType<typeof graph>) => applyVideoMode(buildShots(g.nodes, g.edges, null)[0], 'reference', g.nodes, g.edges)
+
+  it('stays in reference mode after every reference edge is deleted, and can restore the first frame', () => {
+    const switched = toReference(graph())
+    const edges = switched.edges.filter((item) => item.targetHandle !== 'reference' || item.target !== 'v1')
+    const [shot] = buildShots(switched.nodes, edges, null)
+    expect(videoMode(shot, edges)).toBe('reference')
+    expect(shotReferenceUse(shot, switched.nodes, edges).used).toBe(0)
+    const back = applyVideoMode(shot, 'frame', switched.nodes, edges)
+    expect(back.edges.filter((item) => item.target === 'v1').map((item) => [item.source, item.targetHandle])).toEqual([['k1', 'first_frame']])
+    expect(back.nodes.find((item) => item.id === 'v1')!.data).not.toHaveProperty('parked_first_frame')
+    expect(videoMode(buildShots(back.nodes, back.edges, null)[0], back.edges)).toBe('frame')
+  })
+
+  it('reports the real number and the unused characters beyond nine', () => {
+    const g = graph(11)
+    const before = shotReferenceUse(buildShots(g.nodes, g.edges, null)[0], g.nodes, g.edges)
+    expect(before.characters).toHaveLength(11)
+    expect(before.unused).toEqual(['角色9', '角色10'])
+    const switched = toReference(g)
+    const [shot] = buildShots(switched.nodes, switched.edges, null)
+    const use = shotReferenceUse(shot, switched.nodes, switched.edges)
+    expect(switched.edges.filter((item) => item.target === 'v1' && item.targetHandle === 'reference')).toHaveLength(9)
+    expect(use).toMatchObject({ used: 9, unused: ['角色9', '角色10'] })
+  })
+
+  it('copies the description from an upstream text node when the key frame has no prompt of its own', () => {
+    const g = graph()
+    g.nodes.push(node('t', 'text', { text: '雨夜便利店门口' }))
+    g.edges.push(edge('t', 'k1', 'prompt'))
+    g.nodes.find((item) => item.id === 'k1')!.data.prompt = ''
+    const next = toReference(g)
+    expect(next.nodes.find((item) => item.id === 'v1')!.data.prompt).toBe('雨夜便利店门口')
+  })
+
+  it('does not treat a parked first frame that is also another shot reference as a character', () => {
+    // A 是镜头 X 的停放首帧，同时是镜头 Y 的参考图
+    const nodes = [node('A', 'image', { prompt: '共用画面' }), node('X', 'video', { parked_first_frame: 'A', order: 0 }), node('Y', 'video', { order: 1 })]
+    const edges = [edge('A', 'Y', 'reference')]
+    expect(buildCharacters(nodes, edges, null)).toEqual([])
+    const shots = buildShots(nodes, edges, null)
+    expect(shots.map((shot) => shot.id)).toEqual(['X', 'Y'])
+    expect(shots[0].frame?.id).toBe('A')
+    // 没有停放记录时仍按旧口径：出边全是 reference 的图片是角色
+    expect(buildCharacters([node('A', 'image'), node('Y', 'video')], edges, null).map((item) => item.name)).toHaveLength(1)
   })
 })
 

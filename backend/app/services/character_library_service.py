@@ -48,9 +48,29 @@ def sniff_image(data: bytes) -> Optional[tuple[str, str]]:
 # ── 画布里的角色识别（工作台步骤状态与角色库共用）──────────────────────────
 
 
-def is_character_node(node: dict[str, Any], edges: list[dict[str, Any]]) -> bool:
-    """role == character，或兼容旧画布：出边非空且全是 reference 的图片节点。"""
+def parked_frame_ids(nodes: list[dict[str, Any]]) -> set[str]:
+    """被视频节点“停放”的首帧 / 尾帧图片 id（视频切到参考图模式时摘掉了它们的连线，它们仍是镜头画面）。"""
+    ids: set[str] = set()
+    for node in nodes:
+        if node.get("type") == "video":
+            for key in ("parked_first_frame", "parked_last_frame"):
+                value = (node.get("data") or {}).get(key)
+                if isinstance(value, str) and value:
+                    ids.add(value)
+    return ids
+
+
+def is_character_node(
+    node: dict[str, Any], edges: list[dict[str, Any]], nodes: Optional[list[dict[str, Any]]] = None
+) -> bool:
+    """role == character，或兼容旧画布：出边非空且全是 reference 的图片节点。
+
+    传入 nodes 时，被视频节点停放的首帧 / 尾帧图片永远是镜头画面，不是角色
+    （它们被摘掉首帧连线后，剩下的出边可能全是给别的镜头当参考图的 reference）。
+    """
     if node.get("type") != "image":
+        return False
+    if nodes is not None and node.get("id") in parked_frame_ids(nodes):
         return False
     if (node.get("data") or {}).get("role") == "character":
         return True
@@ -77,8 +97,9 @@ def character_groups(graph: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     """角色名 → 该角色的造型节点（保持画布顺序）。"""
     edges = graph.get("edges") or []
     groups: dict[str, list[dict[str, Any]]] = {}
-    for node in graph.get("nodes") or []:
-        if is_character_node(node, edges):
+    nodes = graph.get("nodes") or []
+    for node in nodes:
+        if is_character_node(node, edges, nodes):
             groups.setdefault(character_name(node), []).append(node)
     return groups
 
@@ -379,7 +400,7 @@ async def add_from_library(
     if not entries:
         raise LibraryError("这个角色的图片已不可用")
 
-    characters = [node for node in nodes if is_character_node(node, graph.get("edges") or [])]
+    characters = [node for node in nodes if is_character_node(node, graph.get("edges") or [], nodes)]
     if characters:
         x = min(node["position"]["x"] for node in characters)
         y = max(node["position"]["y"] for node in characters) + ROW

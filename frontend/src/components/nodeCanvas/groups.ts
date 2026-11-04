@@ -103,7 +103,7 @@ export function buildGroups(nodes: SizedNode[], edges: StoredEdge[], runs: Canva
   const claims = new Map<string, number>()
   const cores = shots.map((shot) => {
     const ids = [...new Set([shot.main.id, shot.frame?.id, shot.video?.id].filter((id): id is string => !!id))]
-      .filter((id) => { const node = byId.get(id); return !!node && !isCharacterNode(node, edges) })
+      .filter((id) => { const node = byId.get(id); return !!node && !isCharacterNode(node, edges, nodes) })
     for (const id of ids) claims.set(id, (claims.get(id) || 0) + 1)
     return ids
   })
@@ -149,7 +149,7 @@ function pruneMembers(mainId: string, candidates: string[], nodes: SizedNode[], 
     const drop = [...members].filter((id) => id !== mainId && edges.some((edge) => {
       if (edge.source !== id || members.has(edge.target)) return false
       const target = byId.get(edge.target)
-      return !!target && !isCharacterNode(target, edges)
+      return !!target && !isCharacterNode(target, edges, nodes)
     }))
     if (drop.length === 0) return candidates.filter((id) => members.has(id))
     members = new Set([...members].filter((id) => !drop.includes(id)))
@@ -231,7 +231,7 @@ export function tidyLayout(nodes: SizedNode[], edges: StoredEdge[], runs: Canvas
   const byId = new Map(nodes.map((node) => [node.id, node]))
   const groups = buildGroups(nodes, edges, runs)
   const grouped = new Set(groups.flatMap((group) => group.members))
-  const characters = nodes.filter((node) => isCharacterNode(node, edges) && !grouped.has(node.id))
+  const characters = nodes.filter((node) => isCharacterNode(node, edges, nodes) && !grouped.has(node.id))
   const others = nodes.filter((node) => !grouped.has(node.id) && !characters.includes(node))
   const stack = (list: SizedNode[], x: number, top: number) => {
     let y = top
@@ -283,7 +283,7 @@ export function expandWithRoom(
     const grouped = new Set(groups.flatMap((group) => group.members))
     const items: { rect: Rect; ids: string[] }[] = [
       ...groups.filter((group) => group !== target).map((group) => ({ rect: visibleRect(group, current.has(group.shotId)), ids: group.members })),
-      ...list.filter((node) => !grouped.has(node.id) && !isCharacterNode(node, edges)).map((node) => ({ rect: nodeRect(node), ids: [node.id] })),
+      ...list.filter((node) => !grouped.has(node.id) && !isCharacterNode(node, edges, nodes)).map((node) => ({ rect: nodeRect(node), ids: [node.id] })),
     ]
     const below = items.filter((item) => item.rect.y > box.y && item.rect.x + item.rect.width > box.x && item.rect.x < box.x + box.width)
     if (below.length === 0) continue

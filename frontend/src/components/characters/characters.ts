@@ -4,7 +4,7 @@
  * 同名 character 的多个节点是同一角色的多套造型。不保存额外状态，不依赖 React，便于单测。
  */
 import type { CanvasRuns, NodeJob, NodeResult, StoredEdge, StoredNode } from '../../api/nodeCanvas'
-import { ACTIVE, newId, type ImageData } from '../nodeCanvas/graph'
+import { ACTIVE, newId, parkedFrameIds, type ImageData } from '../nodeCanvas/graph'
 
 export const DEFAULT_LOOK = '默认'
 export const CANDIDATE_COUNT = 4
@@ -12,9 +12,11 @@ const ROW = 380
 const COLUMN = 420
 const LABEL_PREFIX = /^\s*角色\s*[·.、:：-]\s*/
 
-/** 角色节点：role 为 character，或旧画布里出边非空且全是 reference 的图片节点。 */
-export function isCharacterNode(node: StoredNode, edges: StoredEdge[]): boolean {
+/** 角色节点：role 为 character，或旧画布里出边非空且全是 reference 的图片节点（被视频停放的首帧 / 尾帧图片除外）。 */
+export function isCharacterNode(node: StoredNode, edges: StoredEdge[], nodes?: StoredNode[]): boolean {
   if (node.type !== 'image') return false
+  // 被视频节点停放的首帧图片永远是镜头画面（传入 nodes 才能判断）
+  if (nodes && parkedFrameIds(nodes).has(node.id)) return false
   if ((node.data as ImageData).role === 'character') return true
   const out = edges.filter((edge) => edge.source === node.id)
   return out.length > 0 && out.every((edge) => edge.targetHandle === 'reference')
@@ -84,7 +86,7 @@ function lookView(node: StoredNode, runs: CanvasRuns | null): LookView {
 export function buildCharacters(nodes: StoredNode[], edges: StoredEdge[], runs: CanvasRuns | null): Character[] {
   const groups = new Map<string, StoredNode[]>()
   for (const node of nodes) {
-    if (!isCharacterNode(node, edges)) continue
+    if (!isCharacterNode(node, edges, nodes)) continue
     const name = characterName(node)
     groups.set(name, [...(groups.get(name) || []), node])
   }
@@ -124,7 +126,7 @@ export function describePrompt(name: string, description: string): string {
 
 /** 新角色节点：放在已有角色节点下方（没有角色时放在画布左侧）。 */
 export function newCharacterNode(nodes: StoredNode[], edges: StoredEdge[], name: string, description: string): StoredNode {
-  const existing = nodes.filter((node) => isCharacterNode(node, edges))
+  const existing = nodes.filter((node) => isCharacterNode(node, edges, nodes))
   const x = existing.length ? Math.min(...existing.map((node) => node.position.x)) : nodes.length ? Math.min(...nodes.map((node) => node.position.x)) - COLUMN : 0
   const y = existing.length ? Math.max(...existing.map((node) => node.position.y)) + ROW : 0
   return {
@@ -135,7 +137,7 @@ export function newCharacterNode(nodes: StoredNode[], edges: StoredEdge[], name:
 
 /** 新造型节点：同名角色节点，prompt = 基础描述 + “，造型：…”；放在已有角色节点下方。 */
 export function newLookNode(nodes: StoredNode[], edges: StoredEdge[], character: Character, look: string, difference: string): StoredNode {
-  const existing = nodes.filter((node) => isCharacterNode(node, edges))
+  const existing = nodes.filter((node) => isCharacterNode(node, edges, nodes))
   const base = character.base.node
   const text = difference.trim()
   return {
@@ -164,5 +166,5 @@ export function editCharacter(nodes: StoredNode[], character: Character, patch: 
 /** 名字是否已被另一个角色占用。 */
 export function nameTaken(nodes: StoredNode[], edges: StoredEdge[], name: string, except?: string): boolean {
   const wanted = name.trim()
-  return nodes.some((node) => isCharacterNode(node, edges) && characterName(node) === wanted && wanted !== except)
+  return nodes.some((node) => isCharacterNode(node, edges, nodes) && characterName(node) === wanted && wanted !== except)
 }

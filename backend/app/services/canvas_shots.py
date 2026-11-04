@@ -1,6 +1,9 @@
 """画布镜头口径：从画布 graph 推导镜头列表（与前端 storyboard/shots.ts 的 buildShots 一致）。
 
 - 每个视频节点是一个镜头，它的 first_frame 上游图片是画面（帧）节点。
+- 视频节点切到“直接参考角色图”时会摘掉首帧连线，原首帧图片节点的 id 记在视频节点的
+  data.parked_first_frame / parked_last_frame 里：它仍是本镜头的画面，不会被当成独立的“只有画面”镜头。
+  角色图 → 视频的 reference 边只表示参考，不影响镜头口径（连到视频的图片节点本来就不算镜头）。
 - 没有连到任何视频的图片节点也是一个“只有画面”的镜头，但不包括角色图
   （data.role == "character"，或出边非空且全是 reference 的旧画布图片）。
 - 顺序：主节点 data.order 升序；没有 order 的按画布位置 y、再 x 排在后面。
@@ -57,6 +60,14 @@ def canvas_shots(graph: dict[str, Any]) -> list[dict[str, Any]]:
     edges = (graph or {}).get("edges", [])
     by_id = {node["id"]: node for node in nodes}
     to_video: set[str] = set()
+    # 被视频节点“停放”的首帧图片：节点 id → 视频节点
+    parked: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        if node.get("type") == "video":
+            for key in ("parked_first_frame", "parked_last_frame"):
+                target = (node.get("data") or {}).get(key)
+                if isinstance(target, str) and by_id.get(target, {}).get("type") == "image":
+                    parked.setdefault(target, node)
     outgoing: dict[str, list[dict[str, Any]]] = {}
     for edge in edges:
         outgoing.setdefault(edge.get("source"), []).append(edge)
@@ -75,6 +86,9 @@ def canvas_shots(graph: dict[str, Any]) -> list[dict[str, Any]]:
                 None,
             )
             frame = by_id.get(first.get("source")) if first else None
+            if frame is None:
+                parked_id = (node.get("data") or {}).get("parked_first_frame")
+                frame = by_id.get(parked_id) if isinstance(parked_id, str) else None
             mains.append(
                 {
                     "main": node,
@@ -82,7 +96,7 @@ def canvas_shots(graph: dict[str, Any]) -> list[dict[str, Any]]:
                     "frame": frame if frame and frame.get("type") == "image" else None,
                 }
             )
-        elif node.get("type") == "image" and node["id"] not in to_video:
+        elif node.get("type") == "image" and node["id"] not in to_video and node["id"] not in parked:
             if (node.get("data") or {}).get("role") == "character":
                 continue
             out = outgoing.get(node["id"], [])
