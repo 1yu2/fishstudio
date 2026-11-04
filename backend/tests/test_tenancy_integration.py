@@ -45,6 +45,11 @@ async def _recreate_database() -> None:
     conn = await asyncpg.connect(database="postgres", **_admin_dsn())
     try:
         db = _target_db()
+        # 前面的测试（启动过 app lifespan 的 TestClient、worker 等）可能还留着连接，先断开再重建
+        await conn.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid <> pg_backend_pid()",
+            db,
+        )
         await conn.execute(f'DROP DATABASE IF EXISTS "{db}"')
         await conn.execute(f'CREATE DATABASE "{db}"')
     finally:

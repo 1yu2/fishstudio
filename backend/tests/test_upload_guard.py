@@ -196,8 +196,11 @@ def test_budget_checked_before_any_pixel_is_decoded(tmp_path, monkeypatch):
     monkeypatch.setattr(upload_guard, "IMAGE_MAX_TOTAL_PIXELS", 10)
     called = []
     monkeypatch.setattr(ImageFile.ImageFile, "load", lambda self: called.append(1))
-    with pytest.raises(Exception, match="400|图片"):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
         upload_guard._reencode_image(path, "gif")
+    assert excinfo.value.status_code == 400
     assert called == []
 
 
