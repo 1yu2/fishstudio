@@ -36,6 +36,7 @@ from app.routers import model_runtime as model_runtime_router
 from app.routers import node_canvases as node_canvases_router
 from app.routers import series as series_router
 from app.routers import settings as settings_router
+from app.routers import traces as traces_router
 from app.routers import workflow as workflow_router
 from app.services import workspace_service
 from app.services.connection_manager import manager
@@ -66,8 +67,11 @@ async def lifespan(app: FastAPI):
 
         worker_task = asyncio.create_task(run_worker())
         logger.info("🧵 embedded generation worker started")
+    # 多进程/多副本时 WebSocket 广播经 Redis 转发（未配置 REDIS_URL 则仅进程内）
+    await manager.start_relay()
     yield
     # shutdown
+    await manager.stop_relay()
     if worker_task is not None:
         worker_task.cancel()
         try:
@@ -217,6 +221,7 @@ app.include_router(auth_router.router, prefix="/api", tags=["auth"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(jobs_router.router, prefix="/api", tags=["jobs"])
+app.include_router(traces_router.router, prefix="/api", tags=["traces"])
 app.include_router(
     model_deployments_router.router,
     prefix="/api/model-deployments",

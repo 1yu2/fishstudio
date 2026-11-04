@@ -303,27 +303,98 @@ async def render_episode(
         else None
     )
     shots = await _load_shots(session, episode_id)
-    if not shots:
+    return await _render(
+        session,
+        project_id=project_id,
+        episode_id=episode_id,
+        shots=shots,
+        timeline=timeline,
+        output_aspect=output_aspect,
+        burn_subtitles=burn_subtitles,
+        bgm_storage_key=bgm_storage_key,
+        bgm_volume_db=bgm_volume_db,
+        render_mode=render_mode,
+        export_profile=export_profile,
+    )
+
+
+async def render_timeline(
+    session: AsyncSession,
+    *,
+    project_id: str,
+    spec: dict[str, Any],
+    output_aspect: Optional[str] = None,
+    burn_subtitles: bool = True,
+    bgm_storage_key: Optional[str] = None,
+    bgm_volume_db: float = -18.0,
+    render_mode: Literal["preview", "final"] = "preview",
+    episode_id: Optional[str] = None,
+) -> dict:
+    """直接渲染 EDL，不依赖 Shot；可附带画布对应的 episode 归属。"""
+    if render_mode not in ("preview", "final"):
+        raise ValueError(f"非法 render_mode: {render_mode}")
+    validated = timeline_service.validate_spec(spec)
+    timeline = SimpleNamespace(
+        spec=validated,
+        id=None,
+        revision=None,
+        content_hash=timeline_service.canonical_hash(validated),
+    )
+    return await _render(
+        session,
+        project_id=project_id,
+        episode_id=episode_id,
+        shots=[],
+        timeline=timeline,
+        output_aspect=output_aspect or validated.get("aspect_ratio") or DEFAULT_ASPECT,
+        burn_subtitles=burn_subtitles,
+        bgm_storage_key=bgm_storage_key,
+        bgm_volume_db=bgm_volume_db,
+        render_mode=render_mode,
+        export_profile="preview",
+        source="edl",
+    )
+
+
+async def _render(
+    session: AsyncSession,
+    *,
+    project_id: str,
+    episode_id: Optional[str],
+    shots: Sequence[Any],
+    timeline: Any,
+    output_aspect: Optional[str],
+    burn_subtitles: bool,
+    bgm_storage_key: Optional[str],
+    bgm_volume_db: float,
+    render_mode: str,
+    export_profile: str,
+    source: Optional[str] = None,
+) -> dict:
+    """共用 normalize、拼接、混音、字幕和产物封装流程。"""
+    if not shots and not timeline:
         raise ValueError(f"episode {episode_id} 没有可渲染的镜头")
     timeline_clips = timeline_service.video_clips(timeline.spec) if timeline else []
     timeline_artifacts: list[Artifact] = []
     if timeline:
+        if not timeline_clips:
+            raise ValueError("TimelineRevision 没有视频 clip")
+        try:
+            await timeline_service.validate_artifacts(session, project_id, timeline.spec)
+        except PermissionError as exc:
+            raise ValueError(str(exc)) from exc
         shot_map = {shot.id: shot for shot in shots}
         rendered_shots: list[Any] = []
         for index, clip in enumerate(timeline_clips):
             artifact = await session.get(Artifact, clip.artifact_id)
-            if artifact is None or artifact.project_id != project_id:
-                raise ValueError(f"timeline clip artifact not found: {clip.artifact_id}")
-            if clip.artifact_hash and artifact.content_hash != clip.artifact_hash:
-                raise ValueError(f"timeline clip artifact hash changed: {clip.artifact_id}")
-            source = shot_map.get(clip.shot_id or "")
+            shot_source = shot_map.get(clip.shot_id or "")
             duration = max(1, round((clip.source_out_ms - clip.source_in_ms) / clip.speed))
             rendered_shots.append(
                 SimpleNamespace(
                     id=clip.shot_id or clip.id,
-                    shot_no=getattr(source, "shot_no", index + 1),
+                    shot_no=getattr(shot_source, "shot_no", index + 1),
                     duration_ms=duration,
-                    aspect_ratio=getattr(source, "aspect_ratio", "9:16"),
+                    aspect_ratio=getattr(shot_source, "aspect_ratio", "9:16"),
                     dialogue_tracks=[],
                     narration_tracks=[],
                     subtitle_tracks=[],
@@ -331,8 +402,6 @@ async def render_episode(
             )
             timeline_artifacts.append(artifact)
         shots = rendered_shots
-        if not shots:
-            raise ValueError("TimelineRevision 没有视频 clip")
 
     # 画幅：参数 > 第一镜头 aspect_ratio > 默认竖版
     aspect = output_aspect or (shots[0].aspect_ratio if shots else "") or DEFAULT_ASPECT
@@ -373,7 +442,7 @@ async def render_episode(
             if artifact is not None and (STORAGE_DIR / artifact.storage_key).is_file():
                 input_keys.append(artifact.storage_key)
                 clip = timeline_clips[i] if timeline else None
-                speed_filter = f",setpts=PTS/{clip.speed:.8f}" if clip and clip.speed != 1 else ""
+                speed_filter = f"setpts=(PTS-STARTPTS)/{clip.speed:.8f}," if clip else ""
                 args = [
                     # -stream_loop -1：素材短于镜头时长时循环补足（-t 只截不补）
                     "-stream_loop",
@@ -382,13 +451,9 @@ async def render_episode(
                     "-i",
                     str(STORAGE_DIR / artifact.storage_key),
                     "-t",
-                    (
-                        f"{(clip.source_out_ms - clip.source_in_ms) / 1000:.3f}"
-                        if clip
-                        else f"{max(1, shot.duration_ms) / 1000:.3f}"
-                    ),
+                    f"{max(1, shot.duration_ms) / 1000:.3f}",
                     "-vf",
-                    norm_filter + speed_filter,
+                    speed_filter + norm_filter,
                     "-an",
                     "-c:v",
                     "libx264",
@@ -475,17 +540,20 @@ async def render_episode(
 
         # 4) 混音 + 可选字幕烧录（libass 不可用时退化为不烧录）
         uid = uuid.uuid4().hex[:8]
-        final_path = VIDEOS_DIR / f"episode_{episode_id}_{uid}.mp4"
+        output_name = f"episode_{episode_id}" if episode_id else f"timeline_{uid}"
+        final_path = VIDEOS_DIR / f"{output_name}_{uid}.mp4"
         VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
         srt_text = build_timeline_srt(timeline.spec) if timeline else build_srt(list(zip(shots, offsets)))
-        srt_rel = f"videos/episode_{episode_id}_sub.srt"
+        srt_rel = f"videos/{output_name}_sub.srt"
         srt_path = STORAGE_DIR / srt_rel
         subtitles_burned = False
 
         base_args: list[str] = ["-i", str(concat_out)]
         for p in audio_files:
             base_args += ["-i", str(p)]
+        if not audio_specs:
+            base_args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
 
         def _encode_args(burn: bool) -> list[str]:
             args = list(base_args)
@@ -495,6 +563,8 @@ async def render_episode(
                 fc, aout = build_audio_mix_filter(audio_specs, bgm_volume_db)
                 filters.append(fc)
                 maps += ["-map", aout]
+            else:
+                maps += ["-map", "1:a"]
             if burn:
                 filters.append(f"[0:v]subtitles={srt_path}[vout]")
                 maps += ["-map", "[vout]"]
@@ -503,14 +573,15 @@ async def render_episode(
             if filters:
                 args += ["-filter_complex", ";".join(filters)]
             args += maps + ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
-            if audio_specs:
-                args += ["-c:a", "aac", "-shortest"]
-            else:
-                args += ["-an"]
-            args += [str(final_path)]
+            args += ["-c:a", "aac", "-shortest", "-movflags", "+faststart", str(final_path)]
             return args
 
-        profile = timeline.spec.get("export_profiles", {}).get(export_profile, {}) if timeline else {}
+        # 画布 EDL 没有审批流程里的导出档位，字幕烧录只看调用方参数
+        profile = (
+            timeline.spec.get("export_profiles", {}).get(export_profile, {})
+            if timeline and source != "edl"
+            else {}
+        )
         burn_subtitles = bool(profile.get("burn_subtitles", burn_subtitles))
         want_burn = burn_subtitles and bool(srt_text.strip())
         if want_burn:
@@ -612,7 +683,9 @@ async def render_episode(
         "overlay_tracks": timeline.spec.get("overlay_tracks", []) if timeline else [],
         "export": {"codec": "h264/aac", "container": "mp4", "renderer": "ffmpeg"},
     }
-    manifest_rel = f"videos/episode_{episode_id}_manifest.json"
+    if source:
+        manifest["source"] = source
+    manifest_rel = f"videos/{output_name}_manifest.json"
     (STORAGE_DIR / manifest_rel).write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )

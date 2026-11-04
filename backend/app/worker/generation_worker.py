@@ -26,14 +26,18 @@ from app.providers.pricing import PRICE_TABLE_VERSION, actual_video_cost, estima
 from app.providers.video_router import NoProviderError, RouteDecision
 from app.services import (
     asset_service,
+    cost_service,
     job_event_service,
     job_service,
+    lineage_service,
+    media_probe,
     model_invocation_service,
     provider_circuit_service,
     timeline_renderer,
     usage_service,
     workflow_service,
 )
+from app.services.execution_context import ExecutionContext, reset_execution_context, set_execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +108,7 @@ def _resolve_locked_video_provider(
 def _build_video_request(job: GenerationJob) -> VideoGenerationRequest:
     """job.params -> VideoGenerationRequest；剔除编排字段，duration_ms 折算 duration。"""
     params = dict(job.params or {})
-    for key in ("shot_id", "step_id", "run_id", "price_snapshot"):
+    for key in ("shot_id", "step_id", "run_id", "price_snapshot", "trace"):
         params.pop(key, None)
     if "duration" not in params and params.get("duration_ms"):
         params["duration"] = max(1, int(params.pop("duration_ms")) // 1000)
@@ -114,7 +118,7 @@ def _build_video_request(job: GenerationJob) -> VideoGenerationRequest:
 
 
 async def _job_user_id(session: AsyncSession, job: GenerationJob) -> Optional[int]:
-    """worker 进程没有 ExecutionContext，从项目归属补 user_id（usage/summary 按用户隔离）。"""
+    """从项目归属补 user_id（usage/summary 按用户隔离）。"""
     if not job.project_id:
         return None
     return await session.scalar(select(SeriesProject.user_id).where(SeriesProject.id == job.project_id))
@@ -215,7 +219,7 @@ async def _ensure_media_invocation(
     }
     invocation = await model_invocation_service.begin(
         session,
-        request_id=job.id,
+        request_id=((job.params or {}).get("trace") or {}).get("request_id") or job.id,
         purpose=purpose,
         modality=modality,
         deployment_name=snapshot.get("deployment_name") or f"{job.provider}.default",
@@ -669,6 +673,8 @@ async def _finish_job(
                 ),
             },
         )
+        await media_probe.attach_l1_check(artifact, asset_service.STORAGE_DIR / storage_key, job.params or {})
+        await lineage_service.attach_lineage(artifact, job)
         artifact_id = artifact.id
         url = asset_service.artifact_url(artifact)
         shot_id = (job.params or {}).get("shot_id") or job.shot_id
@@ -811,6 +817,8 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
             mime_type="image/png",
             meta={"prompt": req.prompt, "mocked": mocked},
         )
+        await media_probe.attach_l1_check(artifact, asset_service.STORAGE_DIR / sk, job.params or {})
+        await lineage_service.attach_lineage(artifact, job)
         artifact_ids.append(artifact.id)
         storage_keys.append(sk)
         shot_id = (job.params or {}).get("shot_id") or job.shot_id
@@ -1117,6 +1125,8 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
     else:
         logger.warning(f"tts job {job.id}: shot {params.get('shot_id')} 不存在，跳过 track 回写")
 
+    # 优先用 provider 返回的字符数
+    tts_characters = int(result.usage.get("characters") or len(text.strip()))
     await finalize_job(
         session,
         job,
@@ -1132,8 +1142,11 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
             "status": "success",
             "latency_ms": int((time.monotonic() - started) * 1000),
             "output_units": float(result.usage.get("output_audio_seconds", 0) or 0),
+            # TTS 按输入字符计费（qwen3-tts-flash 刊例价）；Mock 不计费
+            "actual_cost": 0 if mocked else cost_service.tts_cost(tts_characters),
+            "cost_source": "provider_usage",
             "provider_request_id": result.external_request_id,
-            "event_metadata": {"mocked": mocked},
+            "event_metadata": {"mocked": mocked, "characters": tts_characters},
         },
     )
 
@@ -1351,6 +1364,23 @@ EXECUTORS: dict[str, Callable[[AsyncSession, GenerationJob], Awaitable[None]]] =
 
 
 async def _process_job(session: AsyncSession, job: GenerationJob) -> None:
+    trace = (job.params or {}).get("trace") or {}
+    ctx = ExecutionContext(
+        **{key: trace.get(key) for key in ("user_id", "canvas_id", "creative_role", "prompt_version")},
+        request_id=trace.get("request_id") or job.id,
+        run_id=trace.get("run_id") or job.id,
+        project_id=job.project_id,
+        workflow_run_id=job.workflow_run_id,
+        workflow_step_id=job.workflow_step_id,
+    )
+    token = set_execution_context(ctx)
+    try:
+        await _process_job_in_context(session, job)
+    finally:
+        reset_execution_context(token)
+
+
+async def _process_job_in_context(session: AsyncSession, job: GenerationJob) -> None:
     if job.provider and not await provider_circuit_service.allow_request(session, job.provider, job.model):
         await job_service.requeue_for_poll(session, job, delay_seconds=30)
         await session.commit()

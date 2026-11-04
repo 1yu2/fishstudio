@@ -282,6 +282,36 @@ def test_bootstrap_is_idempotent(mig_env):
     assert revision == "0026"
 
 
+def test_concurrent_startup_is_serialized_by_advisory_lock(mig_env, monkeypatch):
+    """多副本同时启动：startup lock 串行化，空库上并发 bootstrap 都成功且不重复建表。
+
+    无锁时并发 CREATE TABLE 会撞 pg_type_typname_nsp_index 唯一约束，失败的
+    uvicorn 子进程退出（0.1 多副本验证实测）。
+    """
+    import app.db.init_db as init_db
+
+    monkeypatch.setattr(init_db, "engine", mig_env.engine)
+    timeline: list[tuple[str, int]] = []
+
+    async def _starter(index: int):
+        async with init_db._startup_lock():
+            timeline.append(("enter", index))
+            await mig_env.bootstrap_and_upgrade()
+            timeline.append(("exit", index))
+
+    async def _run():
+        await asyncio.gather(*(_starter(i) for i in range(3)))
+
+    asyncio.run(_run())
+
+    # 每个进入之后紧跟它自己的退出：临界区互不重叠
+    assert [event for event, _ in timeline] == ["enter", "exit"] * 3
+    assert all(timeline[i][1] == timeline[i + 1][1] for i in range(0, 6, 2))
+    tables, revision = _tables_and_revision()
+    assert EXPECTED_TABLES <= tables
+    assert revision == "0026"
+
+
 def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
     """0007～0010 可降至 0006 再回升，既有项目数据不丢失。"""
     from sqlalchemy import text
@@ -379,3 +409,91 @@ def test_model_route_tiers_upgrade_and_downgrade(mig_env):
     assert asyncio.run(_exec("SELECT purpose, primary_deployment FROM model_routes")) == [
         ("shot_video", "seedance")
     ]
+
+
+def test_bootstrap_refreshes_untouched_stale_rows_only(mig_env, monkeypatch):
+    """旧安装：无密钥时写入的禁用占位行、已失效的旧默认模型，在配置密钥后被刷新；管理员改过的行不动。"""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.db.models import ModelDeployment, ModelRoute
+    from app.model_runtime.deployment_config import DeploymentInput, config_hash
+    from app.services import model_deployment_bootstrap as bootstrap
+
+    for name in (
+        "OPENAI_API_KEY",
+        "MINIMAX_API_KEY",
+        "LOCAL_H3_ENABLED",
+        "LOCAL_H3_BASE_URL",
+        "DASHSCOPE_API_KEY",
+        "TENCENT_AI3D_API_KEY",
+        "VOLCANO_API_KEY",
+        "VOLCANO_BASE_URL",
+        "VOLCANO_VIDEO_MODEL",
+        "VOLCANO_IMAGE_MODEL",
+        "VOLCANO_REFERENCE_VIDEO_MODEL",
+        "VOLCANO_USE_DMXAPI",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def _row(payload: DeploymentInput, **overrides):
+        values = {**payload.model_dump(), **overrides}
+        return ModelDeployment(
+            **values, revision=overrides.pop("revision", 1), config_hash=config_hash(payload)
+        )
+
+    async def _run():
+        await mig_env.bootstrap_and_upgrade()
+        maker = async_sessionmaker(mig_env.engine, expire_on_commit=False)
+        # 1) 旧安装：没有密钥时 bootstrap 写入禁用占位 volcano-video（1-5-pro）
+        old_specs = {spec.payload.slug: spec.payload for spec in bootstrap.legacy_deployment_specs()}
+        monkeypatch.setenv("VOLCANO_API_KEY", "test-key")
+        new_specs = {spec.payload.slug: spec.payload for spec in bootstrap.legacy_deployment_specs()}
+        async with maker() as session:
+            session.add(_row(old_specs["volcano-video"]))
+            # 旧默认图片模型，管理员从未修改
+            session.add(_row(new_specs["volcano-image"], model="seedream-4.5"))
+            # 管理员改过的聊天部署（revision 2），即便模型名过时也不能动
+            session.add(
+                ModelDeployment(
+                    **{**new_specs["volcano-chat"].model_dump(), "model": "admin-picked"},
+                    revision=2,
+                    config_hash="x",
+                )
+            )
+            session.add(
+                ModelRoute(
+                    purpose="shot_video",
+                    tier="final",
+                    modality="video",
+                    primary_deployment="volcano-video",
+                    fallback_deployments=[],
+                    enabled=True,
+                    revision=1,
+                )
+            )
+            await session.commit()
+        async with maker() as session:
+            await bootstrap.bootstrap_legacy_deployments(session)
+        async with maker() as session:
+            rows = {row.slug: row for row in (await session.execute(select(ModelDeployment))).scalars()}
+            route = (await session.execute(select(ModelRoute))).scalar_one()
+            return rows, route
+
+    rows, route = asyncio.run(_run())
+    assert old_placeholder_refreshed(rows["volcano-video"])
+    assert rows["volcano-image"].model == "doubao-seedream-5-0-flash-260915"
+    assert rows["volcano-image"].revision == 2
+    assert rows["volcano-chat"].model == "admin-picked"
+    assert rows["volcano-chat"].revision == 2
+    assert "volcano-video-reference" in rows
+    assert route.fallback_deployments == ["volcano-video-reference"]
+
+
+def old_placeholder_refreshed(row) -> bool:
+    return (
+        row.enabled is True
+        and row.driver == "ark_video"
+        and row.model == "doubao-seedance-1-0-pro-fast-251015"
+        and row.revision == 2
+    )

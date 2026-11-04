@@ -213,6 +213,15 @@ async def retry_job(
         key = f"{base_key}:{n}"
         n += 1
 
+    # 重试沿用原运行，但触发请求与操作者更新为当前上下文。
+    old_trace = (job.params or {}).get("trace") or {}
+    current_trace = job_service.trace_from_context()
+    retry_trace = {
+        **old_trace,
+        "run_id": old_trace.get("run_id") or job.id,
+        "request_id": current_trace["request_id"],
+        "user_id": current_trace["user_id"],
+    }
     new_job = GenerationJob(
         project_id=job.project_id,
         shot_id=job.shot_id,
@@ -221,7 +230,7 @@ async def retry_job(
         operation=job.operation,
         provider=job.provider,
         model=job.model,
-        params={**(job.params or {}), "retry_of_job_id": job.id},
+        params={**(job.params or {}), "retry_of_job_id": job.id, "trace": retry_trace},
         idempotency_key=key,
         status="pending",
         logical_job_key=job.logical_job_key or "",

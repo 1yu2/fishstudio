@@ -102,7 +102,7 @@ async def save_graph(
 ):
     canvas = await _owned(session, canvas_id, user)
     try:
-        await service.save_graph(session, canvas, body.graph, body.revision)
+        await service.save_graph(session, canvas, body.graph, body.revision, user_id=user.id)
     except service.CanvasConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except service.CanvasError as error:
@@ -152,7 +152,7 @@ async def run_node(
 ):
     canvas = await _owned(session, canvas_id, user)
     try:
-        job = await service.run_node(session, canvas, node_id, body)
+        job = await service.run_node(session, canvas, node_id, body, user_id=user.id)
     except service.CanvasError as error:
         await session.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -178,6 +178,7 @@ async def upload(
             filename=file.filename or "upload",
             content_type=file.content_type or "",
             data=data,
+            user_id=user.id,
         )
     except service.CanvasError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

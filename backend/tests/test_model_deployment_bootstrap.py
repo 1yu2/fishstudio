@@ -65,7 +65,10 @@ class FakeSession:
         self.commits = 0
 
     async def execute(self, _statement):
-        return _ScalarResult(self.slugs)
+        # 已存在的 Deployment 视为管理员改过（revision 2），bootstrap 不得刷新
+        return _ScalarResult(
+            [SimpleNamespace(slug=slug, revision=2, enabled=True, model="custom") for slug in self.slugs]
+        )
 
     async def get(self, _model, key):
         assert key == BOOTSTRAP_SETTING_KEY

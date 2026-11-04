@@ -1,4 +1,4 @@
-# 本地开发 Stack：postgres + backend + frontend
+# 本地开发 Stack：postgres + redis + backend + worker + frontend
 #
 # 最小开发（推荐，本机运行前后端）：docker compose up -d postgres
 # 完整容器化（仅做镜像验收时）：  docker compose up -d --build
@@ -8,6 +8,42 @@
 # 重新构建：docker compose up -d --build
 #
 # 生产部署：docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+x-backend-common: &backend-common
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  image: fishstudio-backend:latest
+  restart: unless-stopped
+  # 1) env_file 加载 LLM 厂商 key 等敏感配置
+  # 2) environment 覆盖 DATABASE_URL / 认证 / CORS（compose 里 environment 优先级高于 env_file）
+  # 本地开发可能只维护根 .env；backend/.env 不存在时不阻断 Compose 解析。
+  env_file:
+    - path: ./backend/.env
+      required: false
+  environment: &backend-env
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-fishstudio}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-in-prod-min-16-chars}
+    JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-10080}
+    ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}
+    CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    LOG_FORMAT: ${LOG_FORMAT:-console}
+    ENVIRONMENT: ${ENVIRONMENT:-dev}
+    SENTRY_DSN: ${SENTRY_DSN:-}
+    SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+    BASE_URL: ${BASE_URL:-http://localhost:8007}
+  volumes:
+    # 用户上传 + 生成产物 + 旧迁移备份 —— bind 到宿主机已有目录，复用本地数据
+    - ./backend/storage:/app/storage
+    # 工作空间记忆 markdown 文件（用户可能手工编辑）
+    - ./backend/workspace:/app/workspace
+    # 日志（方便宿主机查看）
+    - ./backend/logs:/app/logs
+  networks:
+    - fishstudio
 
 services:
   postgres:
@@ -34,46 +70,47 @@ services:
     networks:
       - fishstudio
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    image: fishstudio-backend:latest
-    container_name: fishstudio-backend
+  redis:
+    image: redis:7-alpine
+    container_name: fishstudio-redis
     restart: unless-stopped
+    # 仅做通知层（job 唤醒 + 跨进程 WebSocket 广播），不持久化
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - fishstudio
+
+  backend:
+    <<: *backend-common
+    container_name: fishstudio-backend
     depends_on:
       postgres:
         condition: service_healthy
-    # 1) env_file 加载 LLM 厂商 key 等敏感配置
-    # 2) environment 覆盖 DATABASE_URL / 认证 / CORS（compose 里 environment 优先级高于 env_file）
-    # 本地开发可能只维护根 .env；backend/.env 不存在时不阻断 Compose 解析。
-    env_file:
-      - path: ./backend/.env
-        required: false
+      redis:
+        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-fishstudio}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-in-prod-min-16-chars}
-      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-10080}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      LOG_FORMAT: ${LOG_FORMAT:-console}
-      ENVIRONMENT: ${ENVIRONMENT:-dev}
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
-      BASE_URL: ${BASE_URL:-http://localhost:8007}
-    volumes:
-      # 用户上传 + 生成产物 + 旧迁移备份 —— bind 到宿主机已有目录，复用本地数据
-      - ./backend/storage:/app/storage
-      # 工作空间记忆 markdown 文件（用户可能手工编辑）
-      - ./backend/workspace:/app/workspace
-      # 日志（方便宿主机查看）
-      - ./backend/logs:/app/logs
+      <<: *backend-env
+      # 生成任务由独立 worker 容器执行；API 进程（--workers N）不再各自内嵌 worker
+      EMBEDDED_WORKER: "false"
     ports:
       - "${BACKEND_PORT:-8007}:8000"
-    networks:
-      - fishstudio
+
+  # 生成任务 worker：与 backend 同镜像，可 `docker compose up -d --scale worker=N` 水平扩展
+  worker:
+    <<: *backend-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["python", "-m", "app.worker.generation_worker"]
+    # 镜像内 HEALTHCHECK 探测 HTTP :8000，worker 不监听端口
+    healthcheck:
+      disable: true
 
   frontend:
     build:

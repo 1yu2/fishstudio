@@ -471,7 +471,7 @@ class _FakeSnapshot:
         return tuple(item for item in self.items.values() if modality in (None, item.modality))
 
 
-class _FakeSession:
+class _RouteSession:
     def __init__(self, routes):
         self.routes = routes
 
@@ -495,9 +495,9 @@ def _with_catalog(monkeypatch, items):
 
 def test_image_model_problem_explains_missing_setup(monkeypatch):
     _with_catalog(monkeypatch, {})
-    assert asyncio.run(service.image_model_problem(_FakeSession({}))) == service.NO_IMAGE_MODEL
-    assert "图片编辑" in asyncio.run(service.image_model_problem(_FakeSession({}), edit=True))
-    assert "不可用" in asyncio.run(service.image_model_problem(_FakeSession({}), "seedream"))
+    assert asyncio.run(service.image_model_problem(_RouteSession({}))) == service.NO_IMAGE_MODEL
+    assert "图片编辑" in asyncio.run(service.image_model_problem(_RouteSession({}), edit=True))
+    assert "不可用" in asyncio.run(service.image_model_problem(_RouteSession({}), "seedream"))
 
 
 def test_image_model_problem_accepts_route_fallback_and_explicit_model(monkeypatch):
@@ -506,7 +506,7 @@ def test_image_model_problem_accepts_route_fallback_and_explicit_model(monkeypat
         {"primary": _image_item(available=False), "backup": _image_item(), "off": _image_item(enabled=False)},
     )
     route = SimpleNamespace(enabled=True, primary_deployment="primary", fallback_deployments=["backup"])
-    session = _FakeSession({("image_generation", "final"): route})
+    session = _RouteSession({("image_generation", "final"): route})
     assert asyncio.run(service.image_model_problem(session)) == ""  # 主模型缺密钥，备用可用
     assert asyncio.run(service.image_model_problem(session, "backup")) == ""
     assert "不可用" in asyncio.run(service.image_model_problem(session, "off"))
@@ -517,4 +517,212 @@ def test_image_model_problem_accepts_route_fallback_and_explicit_model(monkeypat
 def test_image_model_problem_allows_mock_mode(monkeypatch):
     _with_catalog(monkeypatch, {})
     monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "true")
-    assert asyncio.run(service.image_model_problem(_FakeSession({}))) == ""
+    assert asyncio.run(service.image_model_problem(_RouteSession({}))) == ""
+
+
+# ── 画布行为反馈（Eval L3）────────────────────────────────────────────────
+
+
+class _FakeSession:
+    """不连库的最小会话：记录 add 的对象，get 从 artifacts 里取。"""
+
+    def __init__(self, artifacts):
+        self.artifacts = artifacts
+        self.added = []
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        pass
+
+    async def get(self, model, key):
+        return self.artifacts.get(key)
+
+    def begin_nested(self):
+        class _Ctx:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return _Ctx()
+
+
+def _fake_canvas(selected=None):
+    graph = {"nodes": [_node("img", "image", **({"selected": selected} if selected else {}))], "edges": []}
+    return SimpleNamespace(id="c1", project_id="p1", owner_id=7, graph=graph, revision=1)
+
+
+def _save(session, canvas, selected):
+    graph = {"nodes": [_node("img", "image", selected=selected)], "edges": []}
+    return asyncio.run(service.save_graph(session, canvas, graph, canvas.revision, user_id=7))
+
+
+def test_save_graph_records_selected_only_on_change():
+    session = _FakeSession(
+        {"A": SimpleNamespace(id="A", project_id="p1"), "B": SimpleNamespace(id="B", project_id="p1")}
+    )
+    canvas = _fake_canvas()
+    _save(session, canvas, "A")
+    _save(session, canvas, "A")  # 没变化：不记录
+    _save(session, canvas, "B")
+    assert [(f.artifact_id, f.action, f.step_id, f.user_id) for f in session.added] == [
+        ("A", "selected", None, 7),
+        ("B", "selected", None, 7),
+    ]
+
+
+def test_save_graph_ignores_foreign_project_artifact():
+    session = _FakeSession({"X": SimpleNamespace(id="X", project_id="other")})
+    canvas = _fake_canvas()
+    _save(session, canvas, "X")
+    _save(session, canvas, "missing")
+    assert session.added == []
+    assert canvas.revision == 3  # 保存本身照常成功
+
+
+def test_save_graph_survives_feedback_failure(monkeypatch):
+    async def boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.services.feedback_service.record_canvas_feedback", boom)
+    session = _FakeSession({})
+    canvas = _fake_canvas()
+    result = _save(session, canvas, "A")
+    assert result.revision == 2 and result.graph["nodes"][0]["data"]["selected"] == "A"
+
+
+@requires_pg
+def test_canvas_feedback_regenerate_replace_and_stats(pg, monkeypatch):
+    from sqlalchemy import select
+
+    from app.db.models import Artifact, ArtifactFeedback, GenerationJob
+    from app.services import feedback_service
+
+    async def fake_plan(session, **kwargs):
+        return {}
+
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", fake_plan)
+
+    async def _feedback(s, canvas):
+        rows = (
+            (
+                await s.execute(
+                    select(ArtifactFeedback)
+                    .where(ArtifactFeedback.project_id == canvas.project_id)
+                    .order_by(ArtifactFeedback.created_at, ArtifactFeedback.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [(f.action, f.artifact_id) for f in rows]
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            await service.save_graph(
+                s, canvas, {"nodes": [_node("img", "image"), _node("up", "image")], "edges": []}, revision=1
+            )
+            req = service.NodeRunRequest(kind="image", prompt="定妆", model="ark-seedream", count=2)
+            first = await service.run_node(s, canvas, "img", req)
+            after_first = await _feedback(s, canvas)  # 首次运行不记录
+
+            first.status = "succeeded"
+            arts = []
+            for index in range(2):
+                art = Artifact(
+                    project_id=canvas.project_id, job_id=first.id, type="image", storage_key=f"i/{index}.png"
+                )
+                s.add(art)
+                arts.append(art)
+            await s.flush()
+            await service.save_graph(
+                s,
+                canvas,
+                {"nodes": [_node("img", "image", selected=arts[0].id), _node("up", "image")], "edges": []},
+                revision=canvas.revision,
+            )
+            second = await service.run_node(s, canvas, "img", req)  # 已有成功结果 -> regenerated
+            await service.upload(
+                s, canvas, node_id="img", filename="a.png", content_type="image/png", data=b"png"
+            )  # 已有生成结果 -> replaced
+            await service.upload(
+                s, canvas, node_id="up", filename="b.png", content_type="image/png", data=b"png"
+            )  # 无生成结果 -> 不记录
+            second.status = "succeeded"
+            s.add(
+                Artifact(project_id=canvas.project_id, job_id=second.id, type="image", storage_key="i/2.png")
+            )
+            await s.flush()
+            stats = await feedback_service.canvas_adoption_stats(s, canvas.project_id)
+            return after_first, await _feedback(s, canvas), arts, stats
+
+    after_first, rows, arts, stats = asyncio.run(_run())
+
+    assert after_first == []
+    assert sorted(rows) == sorted(
+        [("selected", arts[0].id), ("regenerated", arts[0].id), ("replaced", arts[0].id)]
+    )
+    # 3 张成功产物、1 张被选中，所在节点共生成 2 次
+    assert stats["total_results"] == 3 and stats["selected_count"] == 1
+    assert stats["adoption_rate"] == pytest.approx(1 / 3)
+    assert stats["avg_generations_per_selected"] == 2
+
+
+@requires_pg
+def test_canvas_feedback_db_failure_does_not_block_main_flow(pg, monkeypatch):
+    """反馈写入在真实库上 flush 失败时：保存 / 运行仍成功提交，没有残留反馈行。"""
+    from sqlalchemy import func, select, text
+
+    from app.db.models import Artifact, ArtifactFeedback, GenerationJob, NodeCanvas
+    from app.services import feedback_service
+
+    real = feedback_service.record_canvas_feedback
+
+    async def failing(session, **kwargs):
+        await real(session, **kwargs)  # 先写入一行并 flush
+        await session.execute(text("SELECT 1/0"))  # 再让数据库报错，整个 savepoint 应回滚
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            await service.save_graph(s, canvas, {"nodes": [_node("img", "image")], "edges": []}, revision=1)
+            req = service.NodeRunRequest(kind="image", prompt="定妆", model="ark-seedream", count=1)
+            first = await service.run_node(s, canvas, "img", req, user_id=owner.id)
+            first.status = "succeeded"
+            art = Artifact(project_id=canvas.project_id, job_id=first.id, type="image", storage_key="i/0.png")
+            s.add(art)
+            await s.commit()
+            canvas_id, art_id = canvas.id, art.id
+
+            monkeypatch.setattr("app.services.feedback_service.record_canvas_feedback", failing)
+            canvas = await s.get(NodeCanvas, canvas_id)
+            await service.save_graph(
+                s,
+                canvas,
+                {"nodes": [_node("img", "image", selected=art_id)], "edges": []},
+                revision=canvas.revision,
+                user_id=owner.id,
+            )
+            await service.run_node(s, canvas, "img", req, user_id=owner.id)  # 触发 regenerated 失败
+            await service.upload(
+                s, canvas, node_id="img", filename="a.png", content_type="image/png", data=b"png"
+            )  # 触发 replaced 失败
+            await s.commit()
+
+        async with pg() as s:
+            canvas = await s.get(NodeCanvas, canvas_id)
+            jobs = (await s.execute(select(func.count()).select_from(GenerationJob))).scalar_one()
+            feedback = (await s.execute(select(func.count()).select_from(ArtifactFeedback))).scalar_one()
+            return canvas, jobs, feedback
+
+    canvas, jobs, feedback = asyncio.run(_run())
+
+    assert canvas.graph["nodes"][0]["data"]["selected"] and canvas.revision == 3
+    assert jobs == 2
+    assert feedback == 0

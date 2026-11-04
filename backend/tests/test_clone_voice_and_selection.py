@@ -219,17 +219,28 @@ async def test_clone_voice_quote_confirm_is_persistent_and_one_time(monkeypatch,
     monkeypatch.setattr(cost_service, "reserve_budget", reserve_budget)
 
     issued = await series_router.get_clone_voice_quote("p1", "a1", "ref1", session=session, user=user)
-    result = await series_router.create_clone_voice_job(
-        "p1",
-        "a1",
-        series_router.CloneVoiceRequest(
-            reference_audio_artifact_id="ref1",
-            voice_name="角色音色",
-            confirmed_quote_id=issued["quote_id"],
-        ),
-        session=session,
-        user=user,
+    from app.services.execution_context import (
+        ExecutionContext,
+        reset_execution_context,
+        set_execution_context,
     )
+
+    ctx = ExecutionContext.new_ids(user_id=str(user.id))
+    token = set_execution_context(ctx)
+    try:
+        result = await series_router.create_clone_voice_job(
+            "p1",
+            "a1",
+            series_router.CloneVoiceRequest(
+                reference_audio_artifact_id="ref1",
+                voice_name="角色音色",
+                confirmed_quote_id=issued["quote_id"],
+            ),
+            session=session,
+            user=user,
+        )
+    finally:
+        reset_execution_context(token)
 
     quote_id = series_router._parse_clone_quote_token(issued["quote_id"])
     quote = session.get_map[("CloneVoiceQuoteRecord", quote_id)]
@@ -240,6 +251,9 @@ async def test_clone_voice_quote_confirm_is_persistent_and_one_time(monkeypatch,
     assert isinstance(quote, CloneVoiceQuoteRecord)
     assert quote.consumed_at is not None and quote.consumed_job_id == result["job_id"]
     assert len(jobs) == len(runs) == len(steps) == len(usage) == 1
+    assert jobs[0].params["trace"]["run_id"] == ctx.run_id
+    assert jobs[0].params["trace"]["request_id"] == ctx.request_id
+    assert jobs[0].params["trace"]["user_id"] == str(user.id)
     assert Decimal(jobs[0].params["quote_snapshot"]["price"]) == Decimal("2")
     assert runs[0].estimated_cost == Decimal(jobs[0].params["estimated_cost"]) == Decimal("2")
     assert usage[0].estimated_cost == Decimal(jobs[0].params["estimated_cost"])

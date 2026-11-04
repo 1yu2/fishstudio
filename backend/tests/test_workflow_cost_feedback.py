@@ -487,10 +487,12 @@ class TestCostQuoteAndBudget:
 
         by_op = {i.operation: i for i in quote.items}
         assert by_op["generate_video"].unit_count == 2  # 2 shots (R7 per-shot)
-        assert Decimal(by_op["generate_video"].subtotal) == Decimal("5.000000")
+        assert Decimal(by_op["generate_video"].subtotal) == Decimal(
+            "0.960498"
+        )  # 2 × 5s@720p，4.20/百万Token（含 +1 帧与 1.05 余量）
         assert by_op["generate_image"].unit_count == 2
         assert by_op["render_episode"].subtotal == "0"
-        assert Decimal(quote.total) == Decimal("5.400000")
+        assert Decimal(quote.total) == Decimal("1.200498")  # 视频 0.960498 + 图片 2×0.12
         assert quote.price_table_version == pricing.PRICE_TABLE_VERSION
         assert quote.quote_id
 
@@ -661,7 +663,7 @@ class TestReserveBudget:
             model="",
             params={"candidate_count": 2},
         )
-        assert cost_service.estimate_job_retry_cost(img) == Decimal("0.400000")
+        assert cost_service.estimate_job_retry_cost(img) == Decimal("0.240000")
         render = SimpleNamespace(operation="render_episode", provider="", model="", params={})
         assert cost_service.estimate_job_retry_cost(render) == Decimal("0")
 
@@ -1078,7 +1080,10 @@ class TestLogicalJobKey:
         class _PlanSession(_FakeSession):
             async def execute(self, stmt):
                 # _get_or_create_job 查 idempotency_key：一律不存在 → 新建
-                return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: None, all=lambda: []))
+                return SimpleNamespace(
+                    scalar_one_or_none=lambda: None,
+                    scalars=lambda: SimpleNamespace(first=lambda: None, all=lambda: []),
+                )
 
         from app.db.models import WorkflowRun, WorkflowStep
 

@@ -119,6 +119,9 @@ class ArkVideoProvider(VideoProvider):
             return False
         if req.reference_videos or req.reference_audios or req.source_video:
             return False
+        # 方舟不允许参考图与首/尾帧混用（400 InvalidParameter），路由阶段直接拒绝。
+        if req.reference_images and (req.first_frame or req.last_frame):
+            return False
         return len(req.reference_images) <= self.max_reference_images
 
     # ── 请求构造 ───────────────────────────────────────────────────────────
@@ -183,7 +186,10 @@ class ArkVideoProvider(VideoProvider):
             )
             if self.camera_fixed is not None:
                 payload["camera_fixed"] = bool(self.camera_fixed)
-        payload["generate_audio"] = self.generate_audio
+        # Seedance 1.0 系列（如 1.0 Pro Fast）不支持音频生成，带该参数可能被方舟拒绝，
+        # 只对 1.5 及以后的模型下发。
+        if "seedance-1-0" not in model:
+            payload["generate_audio"] = self.generate_audio
         payload["return_last_frame"] = self.return_last_frame
         if self.service_tier != "default":
             payload["service_tier"] = self.service_tier

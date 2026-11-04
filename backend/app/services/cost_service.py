@@ -27,7 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BudgetAlert, StoryboardRevision, WorkflowRun, WorkflowStep
 from app.providers.pricing import (
+    DEFAULT_VOLCANO_IMAGE_MODEL,
     PRICE_TABLE_VERSION,
+    TTS_PRICE_PER_10K_CHARS,
     estimate_image_cost,
     estimate_video_cost,
 )
@@ -35,9 +37,8 @@ from app.services import job_planner
 
 logger = logging.getLogger(__name__)
 
-# TTS 单价占位（未入 pricing 价格表，待供应商刊例确认后接管）
-TTS_PRICE_PER_SECOND = Decimal("0.05")
 VIDEO_FALLBACK_PRICE_PER_SECOND = Decimal("0.50")  # H3 768P 兜底 ¥0.50/秒
+# TTS 按输入字符计费（百炼 qwen3-tts-flash：0.8 元 / 万字符）；秒数估算仅用于时间线时长。
 _TTS_CHARS_PER_SECOND = 5
 QUOTE_TTL_MINUTES = 30
 
@@ -53,13 +54,13 @@ def _resolve_image_provider_model() -> tuple[str, str]:
     providers = available_image_providers()
     if providers:
         p = providers[0]
-        model = "seedream-4.5"
+        model = DEFAULT_VOLCANO_IMAGE_MODEL
         if isinstance(p, VolcanoImageProvider):
             from app.tools import volcano_image_generation as vig
 
             model = vig.VOLCANO_IMAGE_MODEL
         return p.name, model
-    return "volcano_image", "seedream-4.5"
+    return "volcano_image", DEFAULT_VOLCANO_IMAGE_MODEL
 
 
 def _image_unit_price() -> Optional[Decimal]:
@@ -169,6 +170,16 @@ def _estimate_tts_seconds(text: str) -> int:
     return max(1, round(len(text.strip()) / _TTS_CHARS_PER_SECOND))
 
 
+def tts_char_count(text: str) -> int:
+    """TTS 计费字符数：去首尾空白后的字符数。"""
+    return len((text or "").strip())
+
+
+def tts_cost(characters: int) -> Decimal:
+    """按字符数估算 TTS 成本（CNY）。"""
+    return (TTS_PRICE_PER_10K_CHARS * characters / Decimal(10_000)).quantize(Decimal("0.000001"))
+
+
 async def _run_pending_job_steps(session: AsyncSession, run: WorkflowRun) -> list[WorkflowStep]:
     """该 run 未完成的 creates_jobs steps（succeeded/skipped/canceled 不再计价）。"""
     stmt = select(WorkflowStep).where(
@@ -217,6 +228,14 @@ def _shot_tts_seconds(shot: Any) -> int:
             if text.strip():
                 seconds += _estimate_tts_seconds(text)
     return seconds
+
+
+def _shot_tts_chars(shot: Any) -> int:
+    chars = 0
+    for tracks in (shot.dialogue_tracks or [], shot.narration_tracks or []):
+        for track in tracks or []:
+            chars += tts_char_count((track or {}).get("text") or "")
+    return chars
 
 
 async def _estimate_step_item(
@@ -294,14 +313,13 @@ async def _estimate_step_item(
             subtotal=str(subtotal) if subtotal is not None else "unavailable",
         )
     if step.node_type == "shot.audio.generate":
-        seconds = sum(_shot_tts_seconds(s) for s in shots)
-        subtotal = (TTS_PRICE_PER_SECOND * seconds).quantize(Decimal("0.000001"))
+        chars = sum(_shot_tts_chars(s) for s in shots)
         return CostQuoteItem(
             step_node_key=step.node_key,
             operation=operation,
-            unit_count=seconds,
-            unit_price=str(TTS_PRICE_PER_SECOND),
-            subtotal=str(subtotal),
+            unit_count=chars,
+            unit_price=str(TTS_PRICE_PER_10K_CHARS),
+            subtotal=str(tts_cost(chars)),
         )
     return None
 
@@ -330,6 +348,7 @@ async def _compute_input_payload(
                         "id": s.id,
                         "duration_ms": s.duration_ms,
                         "tts_seconds": _shot_tts_seconds(s),
+                        "tts_chars": _shot_tts_chars(s),
                     }
                 )
         payload_steps.append(
@@ -513,7 +532,7 @@ def estimate_job_retry_cost(job: Any) -> Decimal:
     - generate_video：按 job.provider/model/resolution/duration_ms 走价格表重估
       （无价格条目用 H3 768P 兜底价；params.price_snapshot 只作审计留痕，不直接当金额）；
     - generate_image：IMAGE_PRICE_PER_PIECE × candidate_count；
-    - tts：文本估算秒数 × TTS_PRICE_PER_SECOND；
+    - tts：文本字符数 × TTS_PRICE_PER_10K_CHARS / 10000；
     - render_episode 等本地/未知操作：0（不预留）。
     """
     params = job.params or {}
@@ -529,9 +548,9 @@ def estimate_job_retry_cost(job: Any) -> Decimal:
     if job.operation == "generate_image":
         return estimate_image_cost(
             job.provider or "volcano_image",
-            job.model or "seedream-4.5",
+            job.model or DEFAULT_VOLCANO_IMAGE_MODEL,
             count=int(params.get("candidate_count", 1)),
         ) or Decimal("0")
     if job.operation == "tts":
-        return TTS_PRICE_PER_SECOND * _estimate_tts_seconds(params.get("text") or "")
+        return tts_cost(tts_char_count(params.get("text") or ""))
     return Decimal("0")

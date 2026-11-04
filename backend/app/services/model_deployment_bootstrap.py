@@ -13,15 +13,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import mock_providers_enabled
 from app.db.models import ModelDeployment, Setting
 from app.model_runtime.deployment_config import DeploymentInput, config_hash
+from app.providers.pricing import DEFAULT_VOLCANO_IMAGE_MODEL, IMAGE_PRICE_TABLE, env_image_price
 
 logger = logging.getLogger(__name__)
 
 BOOTSTRAP_VERSION = 2
+REFERENCE_VIDEO_MODEL_DEFAULT = "doubao-seedance-2-0-mini-260615"
+# 旧版 bootstrap 写入、方舟账号已无法访问的默认模型（0.8 实测 InvalidEndpointOrModel.NotFound）
+OBSOLETE_DEFAULT_MODELS = {"doubao-seedance-1-5-pro", "seedream-4.5"}
 BOOTSTRAP_SETTING_KEY = "model_deployment_bootstrap_version"
 
 
 def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
+
+
+def _image_pricing(model: str) -> dict[str, str]:
+    """图片部署定价：价格表 > VOLCANO_IMAGE_PRICE_CNY > 空（unavailable，绝不按 0 计）。"""
+    unit = IMAGE_PRICE_TABLE.get(("volcano_image", model)) or env_image_price()
+    if unit is None:
+        return {}
+    return {"currency": "CNY", "output_per_image": str(unit), "source": "volcengine-ark-2026-11"}
 
 
 def _enabled(name: str) -> bool:
@@ -71,18 +83,19 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             pricing={},
             priority=110,
         )
+        image_model = _env("VOLCANO_IMAGE_MODEL", DEFAULT_VOLCANO_IMAGE_MODEL)
         add(
-            ("VOLCANO_API_KEY", "VOLCANO_BASE_URL", "VOLCANO_IMAGE_MODEL"),
+            ("VOLCANO_API_KEY", "VOLCANO_BASE_URL", "VOLCANO_IMAGE_MODEL", "VOLCANO_IMAGE_PRICE_CNY"),
             name="Volcano Image",
             slug="volcano-image",
             driver="volcano_image",
             modality="image",
-            model=_env("VOLCANO_IMAGE_MODEL", "seedream-4.5"),
+            model=image_model,
             base_url=base_url,
             credential_ref="env:VOLCANO_API_KEY",
             config={},
             capabilities={"operations": ["generate", "edit"]},
-            pricing={"currency": "CNY", "output_per_image": "0.20"},
+            pricing=_image_pricing(image_model),
         )
         via_dmxapi = "dmxapi.cn" in base_url.lower() or _enabled("VOLCANO_USE_DMXAPI")
         add(
@@ -92,15 +105,50 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             # 直连方舟使用原生异步 Adapter；DMXAPI 代理协议不同，仍走旧 Driver。
             driver="volcano_video" if via_dmxapi else "ark_video",
             modality="video",
-            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
+            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-0-pro-fast-251015"),
             base_url=base_url,
             credential_ref="env:VOLCANO_API_KEY",
             config={"protocol": "volcano"} if via_dmxapi else {},
-            capabilities={"min_duration": 4, "max_duration": 12},
-            # 占位价，待在模型服务页按方舟刊例改为 output_per_million_tokens。
-            pricing={"currency": "CNY", "output_per_second": "0.50"},
+            # 1.0 Pro Fast 仅支持文生视频与首帧图生视频，时长 2-12 秒。
+            capabilities={"modes": ["text", "first_frame"], "min_duration": 2, "max_duration": 12},
+            # 方舟官方刊例：在线推理 4.20 元 / 百万 Token。
+            pricing={
+                "currency": "CNY",
+                "output_per_million_tokens": "4.20",
+                "source": "volcengine-ark-2026-11",
+            },
             priority=120,
         )
+        # Seedance 2.0 mini：支持参考图与首尾帧，1.0 pro-fast 不支持的请求落到它（直连方舟才有）。
+        # VOLCANO_REFERENCE_VIDEO_MODEL 显式设为空串即关闭该部署。
+        reference_model = os.getenv("VOLCANO_REFERENCE_VIDEO_MODEL", REFERENCE_VIDEO_MODEL_DEFAULT).strip()
+        if reference_model and not via_dmxapi:
+            add(
+                ("VOLCANO_API_KEY", "VOLCANO_BASE_URL", "VOLCANO_REFERENCE_VIDEO_MODEL"),
+                name="Seedance 2.0 Mini (Volcano Ark)",
+                slug="volcano-video-reference",
+                driver="ark_video",
+                modality="video",
+                model=reference_model,
+                base_url=base_url,
+                credential_ref="env:VOLCANO_API_KEY",
+                config={},
+                # 实测：时长 4-15 秒，仅 480p/720p；参考图与首尾帧不能在同一请求混用。
+                capabilities={
+                    "modes": ["text", "first_frame", "first_last_frame", "reference"],
+                    "min_duration": 4,
+                    "max_duration": 15,
+                    "resolutions": ["480p", "720p"],
+                    "max_reference_images": 9,
+                },
+                # 方舟官方刊例：23 元 / 百万 Token（无输入视频）。
+                pricing={
+                    "currency": "CNY",
+                    "output_per_million_tokens": "23",
+                    "source": "volcengine-ark-2026-11",
+                },
+                priority=125,
+            )
     else:
         # 保留旧 Runtime 的未配置火山视频占位：管理页显示“未配置”，
         # 测试/显式 Mock 模式仍可锁定该协议后在执行前回退到 Mock。
@@ -110,12 +158,16 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
             slug="volcano-video",
             driver="volcano_video",
             modality="video",
-            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-5-pro"),
+            model=_env("VOLCANO_VIDEO_MODEL", "doubao-seedance-1-0-pro-fast-251015"),
             base_url=_env("VOLCANO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
             credential_ref="env:VOLCANO_API_KEY",
             config={"protocol": "volcano"},
-            capabilities={"min_duration": 4, "max_duration": 12},
-            pricing={"currency": "CNY", "output_per_second": "0.50"},
+            capabilities={"modes": ["text", "first_frame"], "min_duration": 2, "max_duration": 12},
+            pricing={
+                "currency": "CNY",
+                "output_per_million_tokens": "4.20",
+                "source": "volcengine-ark-2026-11",
+            },
             priority=120,
             enabled=False,
         )
@@ -183,17 +235,18 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
         )
     if _env("DASHSCOPE_API_KEY"):
         add(
-            ("DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL"),
+            ("DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL", "QWEN_TTS_MODEL"),
             name="Qwen TTS",
             slug="qwen-tts",
             driver="qwen_tts",
             modality="speech",
-            model="qwen-tts",
+            model=_env("QWEN_TTS_MODEL", "qwen3-tts-flash"),
             base_url=_env("DASHSCOPE_BASE_URL"),
             credential_ref="env:DASHSCOPE_API_KEY",
             config={},
             capabilities={},
-            pricing={},
+            # 百炼官方刊例：0.8 元 / 1 万输入字符，输出免费。
+            pricing={"currency": "CNY", "per_10k_characters": "0.80", "source": "aliyun-bailian-2026-11"},
         )
     if _env("TENCENT_AI3D_API_KEY"):
         add(
@@ -214,18 +267,65 @@ def legacy_deployment_specs() -> list[BootstrapSpec]:
     return specs
 
 
+async def _append_to_final_video_route(session: AsyncSession, slug: str) -> None:
+    """已有 shot_video final Route 不会被 bootstrap_default_routes 改动；新插入的视频部署只追加到 fallback 末尾。"""
+    from app.db.models import ModelRoute
+
+    route = (
+        await session.execute(
+            select(ModelRoute).where(ModelRoute.purpose == "shot_video", ModelRoute.tier == "final")
+        )
+    ).scalar_one_or_none()
+    if route is None:
+        return
+    current = list(route.fallback_deployments or [])
+    if slug == route.primary_deployment or slug in current:
+        return
+    # 重新赋值新列表，确保 JSONB 变更被检测到；只追加，不删除/重排。
+    route.fallback_deployments = [*current, slug]
+    route.revision = (route.revision or 1) + 1
+    logger.info("bootstrap appended deployment=%s to shot_video fallback", slug)
+
+
+def _is_stale_bootstrap_row(row: ModelDeployment, payload: DeploymentInput) -> bool:
+    """管理员从未改过（revision == 1）的 bootstrap 行，且仍是未配置占位或已失效的旧默认模型。"""
+    if row.revision != 1:
+        return False
+    placeholder_now_configured = not row.enabled and payload.enabled
+    return placeholder_now_configured or row.model in OBSOLETE_DEFAULT_MODELS
+
+
+def _refresh_bootstrap_row(row: ModelDeployment, payload: DeploymentInput) -> None:
+    previous = row.model
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    row.revision += 1
+    row.config_hash = config_hash(payload)
+    logger.info(
+        "bootstrap refreshed untouched deployment slug=%s model %s -> %s", row.slug, previous, row.model
+    )
+
+
 async def bootstrap_legacy_deployments(session: AsyncSession) -> int:
     """仅插入缺失 slug；永不覆盖管理员修改过的 Deployment。"""
-    existing = set((await session.execute(select(ModelDeployment.slug))).scalars().all())
+    rows = {row.slug: row for row in (await session.execute(select(ModelDeployment))).scalars().all()}
+    existing = set(rows)
     inserted = 0
     for spec in legacy_deployment_specs():
         payload = spec.payload
         if payload.slug in existing:
+            row = rows.get(payload.slug)
+            if row is not None and _is_stale_bootstrap_row(row, payload):
+                _refresh_bootstrap_row(row, payload)
+                if payload.modality == "video" and payload.enabled:
+                    await _append_to_final_video_route(session, payload.slug)
             continue
         row = ModelDeployment(**payload.model_dump(), revision=1, config_hash=config_hash(payload))
         session.add(row)
         existing.add(payload.slug)
         inserted += 1
+        if payload.modality == "video" and payload.enabled:
+            await _append_to_final_video_route(session, payload.slug)
         logger.info(
             "bootstrap model deployment slug=%s driver=%s sources=%s",
             payload.slug,
