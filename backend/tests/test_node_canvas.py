@@ -726,3 +726,107 @@ def test_canvas_feedback_db_failure_does_not_block_main_flow(pg, monkeypatch):
     assert canvas.graph["nodes"][0]["data"]["selected"] and canvas.revision == 3
     assert jobs == 2
     assert feedback == 0
+
+
+# ── 基于这张修改（edit_of）────────────────────────────────────────────────
+
+
+def test_edit_fields_change_request_fingerprint():
+    base = service.NodeRunRequest(kind="image", prompt="x")
+    edited = service.NodeRunRequest(kind="image", prompt="x", edit_of="a1", edit_instruction="换表情")
+    other = service.NodeRunRequest(kind="image", prompt="x", edit_of="a2", edit_instruction="换表情")
+    assert len({service.request_fingerprint(item) for item in (base, edited, other)}) == 3
+    with pytest.raises(ValueError):
+        service.NodeRunRequest(kind="image", edit_instruction="长" * 501)
+
+
+@requires_pg
+def test_edit_of_validation_references_order_and_runs(pg, monkeypatch):
+    from app.db.models import Artifact
+
+    async def image_ready(session, model="", *, edit=False):
+        return ""
+
+    monkeypatch.setattr(service, "image_model_problem", image_ready)
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            other = await service.create_canvas(s, owner, title="other")
+            await service.save_graph(s, canvas, {"nodes": [_node("img", "image")], "edges": []}, revision=1)
+            base = await service.upload(
+                s, canvas, node_id="img", filename="a.png", content_type="image/png", data=b"png"
+            )
+            ref = await service.upload(
+                s, canvas, node_id="img", filename="r.png", content_type="image/png", data=b"png"
+            )
+            foreign = await service.upload(
+                s, other, node_id="x", filename="x.png", content_type="image/png", data=b"png"
+            )
+            video = Artifact(project_id=canvas.project_id, type="video", storage_key="videos/v.mp4")
+            s.add(video)
+            await s.flush()
+
+            for bad in (foreign.id, video.id, "missing"):
+                with pytest.raises(service.CanvasError, match="要修改的图片不存在"):
+                    await service.run_node(
+                        s, canvas, "img", service.NodeRunRequest(kind="image", prompt="改", edit_of=bad)
+                    )
+
+            job = await service.run_node(
+                s,
+                canvas,
+                "img",
+                service.NodeRunRequest(
+                    kind="image",
+                    prompt="表情再冷一点",
+                    edit_of=base.id,
+                    edit_instruction="表情再冷一点",
+                    reference_artifact_ids=[ref.id, base.id],
+                    count=2,
+                ),
+            )
+            # 没有 edit_of 的普通任务不带这两个字段
+            plain = await service.run_node(
+                s, canvas, "img", service.NodeRunRequest(kind="image", prompt="普通生成")
+            )
+            job.status = "succeeded"
+            s.add(
+                Artifact(
+                    project_id=canvas.project_id, job_id=job.id, type="image", storage_key="images/e.png"
+                )
+            )
+            await s.flush()
+            runs = await service.node_runs(s, canvas)
+            quote = await service.quote_node(
+                s, canvas, service.NodeRunRequest(kind="image", prompt="改", edit_of=base.id)
+            )
+            return job, plain, base, ref, runs, quote
+
+    job, plain, base, ref, runs, quote = asyncio.run(_run())
+
+    # edit_of 排第一并去重：source_image 是被修改的图
+    assert job.params["source_image"] == base.storage_key
+    assert job.params["edit_of"] == base.id and job.params["edit_instruction"] == "表情再冷一点"
+    assert "edit_of" not in plain.params
+    results = {item["artifact_id"]: item for item in runs["nodes"]["img"]["results"]}
+    edited = [item for item in results.values() if item.get("edit_of")]
+    assert len(edited) == 1 and edited[0]["edit_of"] == base.id
+    assert edited[0]["edit_instruction"] == "表情再冷一点"
+    assert quote["kind"] == "image"
+
+
+@requires_pg
+def test_available_models_reports_edit_problem_separately(pg, monkeypatch):
+    async def problem(session, model="", *, edit=False):
+        return "编辑不可用" if edit else ""
+
+    monkeypatch.setattr(service, "image_model_problem", problem)
+
+    async def _run():
+        async with pg() as s:
+            return await service.available_models(s)
+
+    models = asyncio.run(_run())
+    assert models["image_problem"] == "" and models["image_edit_problem"] == "编辑不可用"

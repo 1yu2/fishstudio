@@ -286,6 +286,9 @@ class NodeRunRequest(BaseModel):
     last_frame_artifact_id: Optional[str] = None
     # 幂等标识：前端每次点击生成一个，自动重试复用；不传则保持旧行为（每次都是新任务）
     client_request_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    # 基于某张图修改（仅 kind=image）：要修改的图片 artifact id；会放在参考图第一位，走图片编辑路由
+    edit_of: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    edit_instruction: str = Field(default="", max_length=500, description="用户写的修改要求原文，仅用于记录")
 
 
 # 批量报价时，尚未生成的上游节点用 “pending:节点id” 占位（只用于估价，不会写进任务）
@@ -371,6 +374,11 @@ def resolve_node_request(
     own = str(data.get("prompt") or "").strip()
     prompt = "\n".join(part for part in (upstream_prompt, own) if part)
 
+    def with_suffix(label: str, value: Any) -> str:
+        """景别 / 运镜写在提示词末尾（空则不加）；blockers 仍按未追加前的提示词判断。"""
+        text_value = str(value or "").strip()
+        return "\n".join(part for part in (prompt, f"{label}：{text_value}" if text_value else "") if part)
+
     if node["type"] == "image":
         references: list[str] = []
         for item in incoming("reference"):
@@ -385,7 +393,7 @@ def resolve_node_request(
             blockers.append("写提示词，或连入一个文本节点")
         return {
             "kind": "image",
-            "prompt": prompt,
+            "prompt": with_suffix("景别", data.get("shot_size")),
             "model": data.get("model") or "",
             "aspect_ratio": aspect_ratio,
             "count": _num(data.get("count"), 1),
@@ -401,7 +409,7 @@ def resolve_node_request(
         blockers.append("写提示词，或连入首帧图片")
     return {
         "kind": "video",
-        "prompt": prompt,
+        "prompt": with_suffix("运镜", data.get("camera")),
         "model": data.get("model") or "",
         "aspect_ratio": aspect_ratio,
         "duration": _num(data.get("duration"), 5),
@@ -549,6 +557,16 @@ async def _default_image_model(session: AsyncSession, edit: bool) -> str:
     return route.primary_deployment if route else ""
 
 
+async def _reference_ids(session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequest) -> list[str]:
+    """图片请求的参考图列表；基于某张图修改时，被修改的图排第一位（去重），因此走图片编辑路由。"""
+    if not req.edit_of:
+        return list(req.reference_artifact_ids)
+    artifact = await session.get(Artifact, req.edit_of)
+    if artifact is None or artifact.project_id != canvas.project_id or artifact.type != "image":
+        raise CanvasError("要修改的图片不存在")
+    return [req.edit_of, *(item for item in req.reference_artifact_ids if item != req.edit_of)]
+
+
 async def quote_node_with_budget(
     session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequest, *, quote_only: bool = False
 ) -> tuple[dict[str, Any], Decimal]:
@@ -568,7 +586,9 @@ async def quote_node_with_budget(
             else Decimal(0)
         )
         return quote, cloud
-    slug = req.model or await _default_image_model(session, edit=bool(req.reference_artifact_ids))
+    slug = req.model or await _default_image_model(
+        session, edit=bool(req.reference_artifact_ids or req.edit_of)
+    )
     price = _image_price(slug, req.count)
     quote = {"kind": "image", "model": slug, "estimated_cost": float(price) if price is not None else None}
     return quote, price or Decimal(0)
@@ -663,7 +683,7 @@ async def _create_node_job(
             raise CanvasError("图片节点需要提示词")
         references = [
             await _storage_key(session, canvas, artifact_id, "image")
-            for artifact_id in req.reference_artifact_ids
+            for artifact_id in await _reference_ids(session, canvas, req)
         ]
         problem = await image_model_problem(session, req.model, edit=bool(references))
         if problem:
@@ -683,6 +703,7 @@ async def _create_node_job(
                 # 有参考图时以第一张为参考生成（图片编辑用途），保持形象一致
                 "source_image": references[0] if references else None,
                 "deployment": req.model or None,
+                **({"edit_of": req.edit_of, "edit_instruction": req.edit_instruction} if req.edit_of else {}),
                 budget_service.ESTIMATE_PARAM: str(estimate),
             },
             idempotency_key=idem_key,
@@ -807,6 +828,9 @@ async def node_runs(session: AsyncSession, canvas: NodeCanvas) -> dict[str, Any]
                     "url": asset_service.artifact_url(artifact),
                     "tier": (job.params or {}).get("video_tier"),
                     "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
+                    # 基于某张图修改产生的结果带上来源，供分镜页画出修改链
+                    "edit_of": (job.params or {}).get("edit_of"),
+                    "edit_instruction": (job.params or {}).get("edit_instruction"),
                 }
             )
     uploads = [
@@ -912,7 +936,13 @@ async def available_models(session: AsyncSession) -> dict[str, Any]:
         if route is None and tier != "final":
             route = await session.get(ModelRoute, (purpose, "final"))
         defaults[key] = route.primary_deployment if route else ""
-    return {**out, "defaults": defaults, "image_problem": await image_model_problem(session)}
+    return {
+        **out,
+        "defaults": defaults,
+        "image_problem": await image_model_problem(session),
+        # 基于某张图修改（edit_of）走图片编辑路由，与普通生成的默认模型不同，单独给出原因
+        "image_edit_problem": await image_model_problem(session, edit=True),
+    }
 
 
 # ── Copilot：想法 → 角色与镜头 ────────────────────────────────────────────

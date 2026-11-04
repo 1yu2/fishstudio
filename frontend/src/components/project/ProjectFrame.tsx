@@ -1,6 +1,7 @@
 import { ArrowLeft, Sparkles } from 'lucide-react'
 import { Link, Outlet, useLocation, useParams } from 'react-router-dom'
 import type { ProjectSummary, StepKey, WorkspaceStep } from '../../api/workspace'
+import type { ProjectOutletContext } from './outletContext'
 import { paths } from '../../routePaths'
 import { yuan, yuanCap } from '../workspace/format'
 import { STEPS, stepMeta } from './steps'
@@ -79,6 +80,11 @@ export default function ProjectFrame() {
   const stepsTarget = paths.projectStep(canvasId, summary?.active_step ?? 'script')
   const next = current ? STEPS[STEPS.findIndex((step) => step.key === current.key) + 1] : undefined
   const hint = summary?.next_hint
+  // 分镜页要全部镜头完成才能去配音；摘要没回来之前也先禁用
+  const remainingShots = summary ? summary.shots_total - summary.shots_done : 0
+  const storyboardBlocked = current?.key === 'storyboard' && (!summary || summary.shots_total === 0 || remainingShots > 0)
+  const blockedNote = !summary ? '' : summary.shots_total === 0 ? '还没有镜头' : `还有 ${remainingShots} 个镜头没完成`
+  const outletContext: ProjectOutletContext = { summary, loading, refreshSummary: retry }
 
   if (notFound) {
     return (
@@ -147,7 +153,7 @@ export default function ProjectFrame() {
       {!canvasView && <StepNav canvasId={canvasId} current={current?.key} summary={summary} />}
 
       <div className={`pf-body${canvasView ? ' pf-body--canvas' : ''}`}>
-        <Outlet />
+        <Outlet context={outletContext} />
       </div>
 
       {!canvasView && (
@@ -160,7 +166,15 @@ export default function ProjectFrame() {
               </>
             )}
           </span>
-          {current?.nextLabel && next && (
+          {current?.nextLabel && next && storyboardBlocked && (
+            <span className="pf-next-wrap">
+              {blockedNote && <span className="pf-next-note">{blockedNote}</span>}
+              <button type="button" className="pf-next" disabled>
+                {current.nextLabel}
+              </button>
+            </span>
+          )}
+          {current?.nextLabel && next && !storyboardBlocked && (
             <Link to={paths.projectStep(canvasId, next.key)} className="pf-next">
               {current.nextLabel}
             </Link>

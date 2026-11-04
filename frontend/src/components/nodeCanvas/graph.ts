@@ -7,8 +7,8 @@ import type { CanvasNodeType, CanvasRuns, NodeJob, NodeResult, RunRequest, Split
 export type InputHandle = 'prompt' | 'reference' | 'first_frame' | 'last_frame'
 
 export interface TextData { label?: string; text?: string }
-export interface ImageData { label?: string; prompt?: string; model?: string; count?: number; selected?: string }
-export interface VideoData { label?: string; prompt?: string; model?: string; duration?: number; tier?: VideoTier; selected?: string }
+export interface ImageData { label?: string; prompt?: string; model?: string; count?: number; selected?: string; shot_size?: string; order?: number }
+export interface VideoData { label?: string; prompt?: string; model?: string; duration?: number; tier?: VideoTier; selected?: string; camera?: string; order?: number }
 
 /** 每种节点接受哪些输入端口，以及每个端口接受的上游类型。 */
 export const INPUTS: Record<CanvasNodeType, Partial<Record<InputHandle, CanvasNodeType>>> = {
@@ -81,6 +81,11 @@ export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: Stor
   const upstreamPrompt = incoming('prompt').map((item) => String((item.data as TextData).text || '').trim()).filter(Boolean).join('\n')
   const own = String((node.data as ImageData).prompt || '').trim()
   const prompt = [upstreamPrompt, own].filter(Boolean).join('\n')
+  // 景别 / 运镜追加在提示词末尾（空则不加）；blockers 仍按追加前的提示词判断，与后端 resolve_node_request 一致
+  const withSuffix = (suffixLabel: string, value: unknown) => {
+    const text = String(value ?? '').trim()
+    return [prompt, text ? `${suffixLabel}：${text}` : ''].filter(Boolean).join('\n')
+  }
 
   if (node.type === 'image') {
     const data = node.data as ImageData
@@ -93,7 +98,7 @@ export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: Stor
     return {
       upstreamPrompt,
       blockers,
-      request: { kind: 'image', prompt, model: data.model || '', aspect_ratio: aspectRatio, count: data.count || 1, reference_artifact_ids: references },
+      request: { kind: 'image', prompt: withSuffix('景别', data.shot_size), model: data.model || '', aspect_ratio: aspectRatio, count: data.count || 1, reference_artifact_ids: references },
     }
   }
   const data = node.data as VideoData
@@ -106,7 +111,7 @@ export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: Stor
     upstreamPrompt,
     blockers,
     request: {
-      kind: 'video', prompt, model: data.model || '', aspect_ratio: aspectRatio, duration: data.duration || 5, tier: data.tier || 'preview',
+      kind: 'video', prompt: withSuffix('运镜', data.camera), model: data.model || '', aspect_ratio: aspectRatio, duration: data.duration || 5, tier: data.tier || 'preview',
       first_frame_artifact_id: first, last_frame_artifact_id: last,
     },
   }

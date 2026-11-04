@@ -116,6 +116,49 @@
         "request": {"kind": "video", "prompt": "雨夜\n慢推镜头\n女店员", "model": "seedance", "aspect_ratio": "9:16", "duration": 5, "tier": "preview", "first_frame_artifact_id": null, "last_frame_artifact_id": null},
         "blockers": []
       }
+    },
+    {
+      "name": "image appends shot size after prompt; blank shot size adds nothing",
+      "nodes": [
+        {"id": "t", "type": "text", "data": {"text": "雪夜"}},
+        {"id": "a", "type": "image", "data": {"prompt": "狐妖回头", "shot_size": "近景"}},
+        {"id": "b", "type": "image", "data": {"prompt": "竹林", "shot_size": "  "}}
+      ],
+      "edges": [{"source": "t", "target": "a", "targetHandle": "prompt"}],
+      "results": {},
+      "aspect_ratio": "9:16",
+      "node_id": "a",
+      "expected": {
+        "request": {"kind": "image", "prompt": "雪夜\n狐妖回头\n景别：近景", "model": "", "aspect_ratio": "9:16", "count": 1, "reference_artifact_ids": []},
+        "blockers": []
+      }
+    },
+    {
+      "name": "image blank shot size is not appended",
+      "nodes": [{"id": "b", "type": "image", "data": {"prompt": "竹林", "shot_size": "  "}}],
+      "edges": [],
+      "results": {},
+      "aspect_ratio": "9:16",
+      "node_id": "b",
+      "expected": {
+        "request": {"kind": "image", "prompt": "竹林", "model": "", "aspect_ratio": "9:16", "count": 1, "reference_artifact_ids": []},
+        "blockers": []
+      }
+    },
+    {
+      "name": "video appends camera movement after prompt",
+      "nodes": [
+        {"id": "k", "type": "image", "data": {"selected": "fa"}},
+        {"id": "v", "type": "video", "data": {"prompt": "转身", "camera": "缓慢推近", "duration": 4}}
+      ],
+      "edges": [{"source": "k", "target": "v", "targetHandle": "first_frame"}],
+      "results": {"k": ["fa"]},
+      "aspect_ratio": "9:16",
+      "node_id": "v",
+      "expected": {
+        "request": {"kind": "video", "prompt": "转身\n运镜：缓慢推近", "model": "", "aspect_ratio": "9:16", "duration": 4, "tier": "preview", "first_frame_artifact_id": "fa", "last_frame_artifact_id": null},
+        "blockers": []
+      }
     }
   ]
 }
