@@ -1,0 +1,345 @@
+"""工作台总览：当前用户所有节点画布的进度、在跑任务、待确认与失败项（只读聚合）。
+
+数据来自 NodeCanvas（图 JSON）、GenerationJob（params 里的 canvas_id / canvas_node_id）、
+Artifact、UsageEvent 与 budget_service；全部按“批量一次查询”取出后在内存里分组，不对项目 N+1。
+
+定义：
+- running：状态 pending / queued / leased / running 的画布任务（一个任务一条）。
+- failed：节点**最新**一个任务失败；之后又成功（或又在跑）的不算。
+- needs_review：图片 / 视频节点最新任务成功，且节点没有 selected（no_selection），
+  或最新成功结果比当前 selected 的产物更新（new_result）。
+- finished_this_week：最近 7 天成功的渲染类任务（operation 以 render 开头，如 render_episode）。
+- 管理员也只看自己的数据（owner_id == 当前用户）。
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any, Optional
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Artifact, GenerationJob, NodeCanvas, SeriesProject, UsageEvent, User
+from app.services import budget_service
+from app.services.cost_report_service import _effective_cost
+
+MAX_PROJECTS = 20
+MAX_LIST = 20
+RUNNING_STATUSES = ("pending", "queued", "leased", "running")
+CANVAS_OPERATIONS = ("generate_image", "generate_video")
+NODE_KIND_LABEL = {"text": "文本", "image": "图片", "video": "视频"}
+STEP_LABELS = (
+    ("script", "剧本"),
+    ("characters", "角色"),
+    ("storyboard", "分镜"),
+    ("voice", "配音"),
+    ("final", "成片"),
+)
+
+
+def _money(value: Any) -> str:
+    return f"{Decimal(str(value or 0)):.2f}"
+
+
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
+
+
+def _node_label(node: dict[str, Any]) -> str:
+    label = str((node.get("data") or {}).get("label") or "").strip()
+    return label or NODE_KIND_LABEL.get(node.get("type"), "节点")
+
+
+def _readable_error(error: str) -> str:
+    """任务错误取第一行并截断；没有错误文本时给通用提示。"""
+    first = (error or "").strip().splitlines()[0:1]
+    text = first[0].strip() if first else ""
+    return text[:120] or "生成失败，请重试"
+
+
+def _display_status(status: str, external_task_id: str) -> str:
+    """pending + 外部任务 ID 是已提交给供应商的任务，按生成中展示。"""
+    if status in ("leased", "running") or (status == "pending" and external_task_id):
+        return "running"
+    return "queued"
+
+
+def _steps(shots_done: int, shots_total: int, has_script: bool) -> list[dict[str, str]]:
+    """五步进度。目前画布只有镜头数据：剧本看文本节点，分镜看镜头完成数，其余待后续任务补全。"""
+    done = {
+        "script": has_script,
+        "characters": False,
+        "storyboard": shots_total > 0 and shots_done >= shots_total,
+        "voice": False,
+        "final": False,
+    }
+    # 角色 / 配音 / 成片目前没有数据，不会被选为进行中；
+    # 有镜头：分镜未完成 → 分镜进行中，分镜完成 → 配音进行中；没有镜头：先剧本再分镜
+    if shots_total > 0:
+        active = "voice" if done["storyboard"] else "storyboard"
+    else:
+        active = "storyboard" if has_script else "script"
+    steps: list[dict[str, str]] = []
+    for key, label in STEP_LABELS:
+        status = "done" if done[key] else "active" if key == active else "todo"
+        text = f"{label} {shots_done}/{shots_total}" if key == "storyboard" and shots_total else label
+        steps.append({"key": key, "status": status, "label": text})
+    return steps
+
+
+def _next_hint(failed: int, review: int, shots_done: int, shots_total: int) -> str:
+    if failed:
+        return f"处理 {failed} 个失败镜头"
+    if review:
+        return f"为 {review} 个镜头选图"
+    if shots_total == 0:
+        return "添加第一个镜头"
+    if shots_done < shots_total:
+        return "继续生成剩余镜头"
+    return "去配音"
+
+
+async def overview(session: AsyncSession, user: User) -> dict[str, Any]:
+    # 统计覆盖该用户全部画布；只取需要的列，避免载入整行
+    canvases = (
+        await session.execute(
+            select(
+                NodeCanvas.id,
+                NodeCanvas.project_id,
+                NodeCanvas.title,
+                NodeCanvas.aspect_ratio,
+                NodeCanvas.updated_at,
+                NodeCanvas.graph,
+            )
+            .where(NodeCanvas.owner_id == user.id)
+            .order_by(NodeCanvas.updated_at.desc())
+        )
+    ).all()
+    project_ids = [canvas.project_id for canvas in canvases]
+    by_project = {canvas.project_id: canvas for canvas in canvases}
+
+    jobs: list[Any] = []
+    artifacts: list[Any] = []
+    costs: dict[str, Decimal] = {}
+    if project_ids:
+        node_id = GenerationJob.params["canvas_node_id"].astext
+        jobs = (
+            await session.execute(
+                select(
+                    GenerationJob.id,
+                    GenerationJob.project_id,
+                    GenerationJob.status,
+                    GenerationJob.progress,
+                    GenerationJob.error,
+                    GenerationJob.external_task_id,
+                    GenerationJob.operation,
+                    GenerationJob.created_at,
+                    node_id.label("node_id"),
+                )
+                .where(
+                    GenerationJob.project_id.in_(project_ids),
+                    GenerationJob.operation.in_(CANVAS_OPERATIONS),
+                    node_id.isnot(None),
+                )
+                .order_by(GenerationJob.created_at.desc())
+            )
+        ).all()
+        artifacts = (
+            await session.execute(
+                select(
+                    Artifact.id,
+                    Artifact.project_id,
+                    Artifact.job_id,
+                    Artifact.type,
+                    Artifact.created_at,
+                    Artifact.artifact_metadata["canvas_node_id"].astext.label("upload_node_id"),
+                ).where(Artifact.project_id.in_(project_ids), Artifact.type.in_(("image", "video")))
+            )
+        ).all()
+        costs = {
+            row.project_id: Decimal(row.total or 0)
+            for row in (
+                await session.execute(
+                    select(UsageEvent.project_id, func.sum(_effective_cost()).label("total"))
+                    .where(UsageEvent.project_id.in_(project_ids))
+                    .group_by(UsageEvent.project_id)
+                )
+            ).all()
+        }
+
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    finished_this_week = (
+        await session.scalar(
+            select(func.count())
+            .select_from(GenerationJob)
+            .join(SeriesProject, SeriesProject.id == GenerationJob.project_id)
+            .where(
+                SeriesProject.user_id == user.id,
+                GenerationJob.operation.like("render%"),
+                GenerationJob.status == "succeeded",
+                func.coalesce(GenerationJob.finished_at, GenerationJob.updated_at) >= week_ago,
+            )
+        )
+        or 0
+    )
+
+    # 任务按创建时间倒序，首个即该节点最新任务
+    latest_job: dict[tuple[str, str], Any] = {}
+    job_node: dict[str, tuple[str, str]] = {}
+    for job in jobs:
+        key = (job.project_id, job.node_id)
+        latest_job.setdefault(key, job)
+        job_node[job.id] = key
+    succeeded_jobs = {job.id for job in jobs if job.status == "succeeded"}
+
+    artifact_time = {artifact.id: artifact.created_at for artifact in artifacts}
+    # 节点的成功结果：成功任务的产物 + 上传到该节点的素材
+    node_results: dict[tuple[str, str], list[Any]] = defaultdict(list)
+    for artifact in artifacts:
+        if artifact.job_id in succeeded_jobs:
+            node_results[job_node[artifact.job_id]].append(artifact)
+        elif not artifact.job_id and artifact.upload_node_id:
+            node_results[(artifact.project_id, artifact.upload_node_id)].append(artifact)
+
+    images_by_project: dict[str, list[Any]] = defaultdict(list)
+    for artifact in artifacts:
+        if artifact.type == "image":
+            images_by_project[artifact.project_id].append(artifact)
+
+    review_by_project: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    failed_by_project: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    stats: dict[str, dict[str, Any]] = {}
+    for canvas in canvases:
+        nodes = (canvas.graph or {}).get("nodes", [])
+        media = [node for node in nodes if node.get("type") in ("image", "video")]
+        videos = [node for node in media if node["type"] == "video"]
+        shot_nodes = videos or [node for node in media if node["type"] == "image"]
+        has_script = any(
+            node.get("type") == "text" and str((node.get("data") or {}).get("text") or "").strip()
+            for node in nodes
+        )
+        selected_ids: list[str] = []
+        for node in media:
+            key = (canvas.project_id, node["id"])
+            label = _node_label(node)
+            latest = latest_job.get(key)
+            selected = (node.get("data") or {}).get("selected")
+            if selected in artifact_time:
+                selected_ids.append(selected)
+            if latest is None:
+                continue
+            if latest.status == "failed":
+                failed_by_project[canvas.project_id].append(
+                    {
+                        "job_id": latest.id,
+                        "canvas_id": canvas.id,
+                        "project_title": canvas.title,
+                        "node_label": label,
+                        "error": _readable_error(latest.error),
+                    }
+                )
+            elif latest.status == "succeeded":
+                generated = [a for a in node_results.get(key, []) if a.job_id]
+                if not generated:
+                    continue
+                newest = max(a.created_at for a in generated)
+                reason = None
+                if selected not in artifact_time:
+                    reason = "no_selection"
+                elif newest > artifact_time[selected]:
+                    reason = "new_result"
+                if reason:
+                    review_by_project[canvas.project_id].append(
+                        {
+                            "canvas_id": canvas.id,
+                            "project_title": canvas.title,
+                            "node_id": node["id"],
+                            "node_label": label,
+                            "reason": reason,
+                        }
+                    )
+        # 封面：优先最近的选中图，其次最近一张成功生成的图片
+        images = {a.id: a.created_at for a in images_by_project[canvas.project_id]}
+        chosen = [aid for aid in selected_ids if aid in images]
+        generated = [a.id for a in images_by_project[canvas.project_id] if a.job_id in succeeded_jobs]
+        pool = chosen or generated
+        cover = max(pool, key=lambda aid: images[aid]) if pool else None
+        done = sum(1 for node in shot_nodes if node_results.get((canvas.project_id, node["id"])))
+        stats[canvas.project_id] = {
+            "cover": cover,
+            "shots_total": len(shot_nodes),
+            "shots_done": done,
+            "has_script": has_script,
+        }
+
+    projects = []
+    for canvas in canvases[:MAX_PROJECTS]:
+        info = stats[canvas.project_id]
+        failed = len(failed_by_project.get(canvas.project_id, []))
+        review = len(review_by_project.get(canvas.project_id, []))
+        projects.append(
+            {
+                "canvas_id": canvas.id,
+                "project_id": canvas.project_id,
+                "title": canvas.title,
+                "aspect_ratio": canvas.aspect_ratio,
+                "updated_at": _iso(canvas.updated_at),
+                "cover_artifact_id": info["cover"],
+                "total_cost": _money(costs.get(canvas.project_id)),
+                "shots_total": info["shots_total"],
+                "shots_done": info["shots_done"],
+                "steps": _steps(info["shots_done"], info["shots_total"], info["has_script"]),
+                "next_hint": _next_hint(failed, review, info["shots_done"], info["shots_total"]),
+            }
+        )
+
+    running_jobs = [job for job in jobs if job.status in RUNNING_STATUSES]
+    node_labels = {
+        (canvas.project_id, node["id"]): (_node_label(node), node.get("type", ""))
+        for canvas in canvases
+        for node in (canvas.graph or {}).get("nodes", [])
+    }
+    running = []
+    for job in reversed(running_jobs):  # jobs 按创建时间倒序，反过来 = 先提交的在前
+        canvas = by_project[job.project_id]
+        label, kind = node_labels.get((job.project_id, job.node_id), ("节点", ""))
+        running.append(
+            {
+                "job_id": job.id,
+                "canvas_id": canvas.id,
+                "project_title": canvas.title,
+                "node_label": label,
+                "kind": "video" if job.operation == "generate_video" else "image",
+                "status": _display_status(job.status, job.external_task_id),
+                "progress": max(0, min(100, job.progress or 0)),
+                "created_at": _iso(job.created_at),
+            }
+        )
+
+    # 列表按画布最近更新顺序合并
+    order = [canvas.project_id for canvas in canvases]
+    needs_review = [item for pid in order for item in review_by_project.get(pid, [])]
+    failed_items = [item for pid in order for item in failed_by_project.get(pid, [])]
+
+    budget = await budget_service.status(session, user.id)
+    return {
+        "budget": {
+            "cap": _money(budget["cap"]) if budget["cap"] is not None else None,
+            "spent_today": _money(budget["spent"]),
+            "in_flight": _money(budget["in_flight"]),
+            "remaining": _money(budget["remaining"]) if budget["remaining"] is not None else None,
+        },
+        "counts": {
+            "running": len(running),
+            "needs_review": len(needs_review),
+            "finished_this_week": int(finished_this_week),
+            "failed": len(failed_items),
+        },
+        "projects": projects,
+        "running": running[:MAX_LIST],
+        "needs_review": needs_review[:MAX_LIST],
+        "failed": failed_items[:MAX_LIST],
+    }

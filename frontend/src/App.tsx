@@ -60,7 +60,7 @@ function App() {
   return (
     <div className="app">
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <AppRoutes theme={theme} onToggleTheme={toggleTheme} onSetTheme={setTheme} />
+        <AppRoutes theme={theme} onToggleTheme={toggleTheme} />
       </BrowserRouter>
       <Toaster />
       <ConfirmHost />
