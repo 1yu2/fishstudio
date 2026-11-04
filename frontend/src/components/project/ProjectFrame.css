@@ -53,6 +53,9 @@
 .pf-next-wrap { margin-left: auto; display: inline-flex; align-items: center; gap: 12px; }
 .pf-next-wrap .pf-next { margin-left: 0; border: 0; cursor: pointer; font-family: inherit; }
 .pf-next:disabled { opacity: 0.45; cursor: not-allowed; background: var(--fill-primary); }
+.pf-next .pf-spin { margin-right: 6px; animation: pf-spin 0.9s linear infinite; }
+@keyframes pf-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pf-next .pf-spin { animation: none; } }
 .pf-next-note { font-size: 13px; color: var(--text-secondary); }
 
 .pf-placeholder { max-width: 560px; margin: 48px auto; padding: 0 20px; }

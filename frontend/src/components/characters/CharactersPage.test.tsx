@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { libraryApi, type LibraryCharacter } from '../../api/library'
 import { ConflictError, nodeCanvasApi, type CanvasRuns, type StoredNode } from '../../api/nodeCanvas'
@@ -370,5 +370,41 @@ describe('Character library panel', () => {
     fireEvent.change(within(dialog).getByLabelText('角色图'), { target: { files: [big] } })
     expect(within(dialog).getByRole('alert')).toHaveTextContent('10MB')
     expect(within(dialog).getByRole('button', { name: '上传' })).toBeDisabled()
+  })
+})
+
+describe('CharactersPage footer', () => {
+  function renderWithFrame(setFooter: ReturnType<typeof vi.fn>) {
+    const context = { summary: null, loading: false, refreshSummary: vi.fn(), setFooter }
+    return render(
+      <MemoryRouter initialEntries={['/studio/c1/characters']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <Routes>
+          <Route path="/studio/:canvasId" element={<Outlet context={context} />}>
+            <Route path="characters" element={<CharactersPage />} />
+            <Route path="storyboard" element={<h1>STORYBOARD</h1>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+  }
+  const lastFooter = (setFooter: ReturnType<typeof vi.fn>) => setFooter.mock.calls.filter((call) => call[0]).pop()?.[0]
+
+  it('blocks going to the storyboard until every character is final, naming who is pending', async () => {
+    const setFooter = vi.fn()
+    const { unmount } = renderWithFrame(setFooter)
+    await screen.findByText('本集角色 · 3')
+    await waitFor(() => expect(lastFooter(setFooter)).toMatchObject({ label: '角色定好了，去分镜 →', disabled: true, note: '书生、老和尚还没定稿' }))
+    unmount()
+    expect(setFooter).toHaveBeenLastCalledWith(null)
+  })
+
+  it('enables the footer when all characters are final and navigates to the storyboard', async () => {
+    setupApi({ nodes: [character('fox', '狐妖', { selected: 'f2' })], runs: { nodes: { fox: { jobs: [], results: [result('f2')] } }, active_jobs: 0, spent: 0 } })
+    const setFooter = vi.fn()
+    renderWithFrame(setFooter)
+    await screen.findByText('本集角色 · 1')
+    await waitFor(() => expect(lastFooter(setFooter)).toMatchObject({ disabled: false }))
+    lastFooter(setFooter).onClick()
+    expect(await screen.findByRole('heading', { name: 'STORYBOARD' })).toBeInTheDocument()
   })
 })

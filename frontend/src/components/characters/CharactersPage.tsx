@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
-import { useOutletContext, useParams } from 'react-router-dom'
+import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { libraryApi } from '../../api/library'
+import { paths } from '../../routePaths'
 import type { ProjectOutletContext } from '../project/outletContext'
 import { toast } from '../ui/Toast'
 import CharacterCard from './CharacterCard'
@@ -30,6 +31,23 @@ export default function CharactersPage() {
     if (first.current) { first.current = false; return }
     refreshSummary?.()
   }, [data.revision, data.signature, refreshSummary])
+
+  // 底栏：所有角色定稿后才能去分镜；没有角色时不拦
+  const navigate = useNavigate()
+  const setFooter = outlet?.setFooter
+  const pending = useMemo(() => characters.filter((item) => !item.finalized).map((item) => item.name), [characters])
+  const goNext = useRef<() => void>(() => undefined)
+  goNext.current = () => {
+    void data.flushThen().then(() => navigate(paths.projectStep(canvasId, 'storyboard'))).catch((reason) => {
+      toast(reason instanceof Error ? reason.message : '保存失败，请重试', 'error')
+    })
+  }
+  const footerNote = pending.length ? `${pending.slice(0, 2).join('、')}${pending.length > 2 ? ` 等 ${pending.length} 个角色` : ''}还没定稿` : ''
+  useEffect(() => {
+    if (!data.loaded) return
+    setFooter?.({ label: '角色定好了，去分镜 →', onClick: () => goNext.current(), disabled: pending.length > 0 || data.locked, note: footerNote || undefined })
+  }, [setFooter, data.loaded, data.locked, pending.length, footerNote])
+  useEffect(() => () => setFooter?.(null), [setFooter])
 
   const create = (value: { name: string; description: string }) => {
     data.update((current) => ({ ...current, nodes: [...current.nodes, newCharacterNode(current.nodes, current.edges, value.name, value.description)] }))

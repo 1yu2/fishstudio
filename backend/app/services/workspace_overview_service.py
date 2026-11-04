@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Artifact, GenerationJob, NodeCanvas, SeriesProject, UsageEvent, User
-from app.services import budget_service, character_library_service
+from app.services import budget_service, canvas_script_service, character_library_service
 from app.services.cost_report_service import _effective_cost
 
 MAX_PROJECTS = 20
@@ -148,6 +148,8 @@ class _Collected(NamedTuple):
 async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
     """按给定画布一次性查出 jobs / artifacts / cost，并在内存里算出各项目的镜头统计、失败与待确认。"""
     project_ids = [canvas.project_id for canvas in canvases]
+    # 有结构化剧本（至少一块非空）的画布，一次批量查出
+    scripted = await canvas_script_service.scripted_canvas_ids(session, [canvas.id for canvas in canvases])
 
     jobs: list[Any] = []
     artifacts: list[Any] = []
@@ -234,7 +236,7 @@ async def _collect(session: AsyncSession, canvases: list[Any]) -> _Collected:
         }
         videos = [node for node in media if node["type"] == "video"]
         shot_nodes = videos or [n for n in media if n["type"] == "image" and n["id"] not in character_ids]
-        has_script = any(
+        has_script = canvas.id in scripted or any(
             node.get("type") == "text" and str((node.get("data") or {}).get("text") or "").strip()
             for node in nodes
         )
