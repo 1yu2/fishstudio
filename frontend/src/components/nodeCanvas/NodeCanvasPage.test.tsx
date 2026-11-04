@@ -219,6 +219,17 @@ describe('NodeCanvasPage', () => {
     expect(screen.getByText('确认运行').closest('button')).toBeDisabled()
   })
 
+  it('falls back to the old counting when the server sends an older quote shape', async () => {
+    withImageJob('succeeded')
+    const { runnable_count: _r, waiting_count: _w, blocking_count: _b, ...old } = batchQuote
+    api.batchQuote.mockResolvedValue({ ...old, unavailable_nodes: [{ node_id: 'vid-1', label: '推门', reason: '未配置价格' }] })
+    renderPage()
+    fireEvent.click(await screen.findByText('全部运行'))
+    expect(await screen.findByText(/将运行 2 个节点/)).toBeInTheDocument()
+    expect(screen.getByText('价格未知（未计入合计）')).toBeInTheDocument()
+    expect(screen.getByText('确认运行').closest('button')).not.toBeDisabled()
+  })
+
   it('counts only runnable nodes and blocks confirm while a node must be fixed first', async () => {
     withImageJob('succeeded')
     api.batchQuote.mockResolvedValueOnce({ ...batchQuote, runnable_count: 1, waiting_count: 1 })

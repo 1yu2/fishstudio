@@ -478,6 +478,56 @@ def test_video_batch_with_every_image_missing_is_rejected(pg, monkeypatch):
 
 
 @requires_pg
+def test_quote_does_not_count_nodes_behind_a_stalled_upstream(pg, monkeypatch):
+    monkeypatch.setattr("app.model_runtime.video.resolve_video_plan", _plan(provider="local_h3"))
+
+    async def _run():
+        async with pg() as s:
+            owner = await _user(s)
+            canvas = await service.create_canvas(s, owner, title="t")
+            graph = {
+                "nodes": [
+                    _node("x", "image", prompt="x"),
+                    _node("a", "image", prompt="a"),
+                    _node("b", "image", prompt="b"),
+                ],
+                "edges": [_edge("x", "a", "reference"), _edge("a", "b", "reference")],
+            }
+            await service.save_graph(s, canvas, graph, revision=1)
+            # 只跑 a 及下游的画面：a 缺批次外的 x，b 依赖 a，两者都不会提交
+            request = batches.BatchRunRequest(
+                client_request_id="r1", scope="downstream", node_id="a", kinds=["image"]
+            )
+            quote = await batches.batch_quote(s, canvas, request)
+            with pytest.raises(service.CanvasError, match="没有可以运行的节点"):
+                await batches.create_batch(s, canvas, request)
+            return quote
+
+    quote = asyncio.run(_run())
+    assert (quote["runnable_count"], quote["waiting_count"], quote["blocking_count"]) == (0, 2, 0)
+    reasons = {item["node_id"]: item for item in quote["unavailable_nodes"]}
+    assert reasons["b"]["runs"] is False and "上游" in reasons["b"]["reason"]
+
+
+def test_legacy_video_routing_errors_become_routing_errors(monkeypatch):
+    from app.model_runtime import video
+    from app.model_runtime.video import VideoRoutingError
+
+    class _Empty:
+        def list(self, modality):
+            return []
+
+    async def no_route(session, purpose, tier):
+        return None
+
+    monkeypatch.setattr(video, "get_catalog", lambda: type("C", (), {"snapshot": _Empty()})())
+    monkeypatch.setattr("app.services.model_route_service.get_effective_route", no_route)
+    with pytest.raises(VideoRoutingError) as caught:
+        asyncio.run(video.resolve_video_plan(None, duration=99))
+    assert caught.value.code == "no_candidate"
+
+
+@requires_pg
 def test_video_routing_errors_reach_the_quote_in_plain_words(pg, monkeypatch):
     from app.model_runtime.video import VideoRoutingError
 

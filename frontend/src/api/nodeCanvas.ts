@@ -144,14 +144,14 @@ export interface BatchQuote {
   estimated_total: number
   /** 计入每日预算的云端部分 */
   billable_total: number
-  /** 真正会提交任务的节点数 */
-  runnable_count: number
+  /** 真正会提交任务的节点数（旧版服务端没有以下三个字段） */
+  runnable_count?: number
   /** 分段运行时缺上游结果、会先跳过的节点数 */
-  waiting_count: number
+  waiting_count?: number
   /** 要先处理、否则整个批次无法运行的节点数 */
-  blocking_count: number
+  blocking_count?: number
   /** runs=true 只是价格未知、照常运行；blocks_batch=true 要先处理才能运行 */
-  unavailable_nodes: { node_id: string; label: string; reason: string; runs: boolean; blocks_batch: boolean }[]
+  unavailable_nodes: { node_id: string; label: string; reason: string; runs?: boolean; blocks_batch?: boolean }[]
   budget: { cap: number | null; remaining: number | null }
   exceeds_budget: boolean
 }

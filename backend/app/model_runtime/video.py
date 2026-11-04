@@ -149,9 +149,15 @@ async def resolve_video_plan(
             )
         # 兼容期：Catalog 为空（尚未迁移到模型服务配置）时沿用旧的静态路由。
         policy = "explicit" if explicit_deployment else provider_policy
-        return resolve_video_routing(
-            policy, resolution, duration=duration, explicit_provider=explicit_deployment
-        )
+        try:
+            return resolve_video_routing(
+                policy, resolution, duration=duration, explicit_provider=explicit_deployment
+            )
+        except VideoRoutingError:
+            raise
+        except ValueError as error:
+            # 旧静态路由抛普通 ValueError：统一成 VideoRoutingError，调用方才能给出可读原因
+            raise VideoRoutingError(str(error)) from error
     if not route.enabled:
         raise VideoRoutingError(f"视频用途 Route 已停用: {VIDEO_PURPOSE}/{route.tier}", code="route_disabled")
 

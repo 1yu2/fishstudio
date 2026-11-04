@@ -255,6 +255,10 @@ async def _quote_plan(
             quote_results[node_id] = [f"{canvas_service.PENDING_PREFIX}{node_id}"]
     by_id = {node["id"]: node for node in graph.get("nodes", [])}
     kinds_by_id = {node_id: node["type"] for node_id, node in by_id.items()}
+    kinds = effective_kinds(request)
+    preds = _predecessors(graph, set(order))
+    # 不会提交、但也不拦整个批次的节点（分段运行缺批次外上游）；它的批次内下游推进时同样会被 blocked
+    stalled: set[str] = set()
     items: list[dict[str, Any]] = []
     total = Decimal(0)
     billable = Decimal(0)
@@ -270,10 +274,21 @@ async def _quote_plan(
             "reason": "",
             "blockers": [],
             "upstream_missing_only": False,
+            "blocks_batch": False,
+            "waits_upstream": False,
         }
         items.append(item)
         if node_id in skipped:
             item["estimated_cost"] = 0.0
+            continue
+        stalled_up = [up for up in preds.get(node_id, []) if up in stalled]
+        if stalled_up:
+            # order 是拓扑序，上游已判定过；报价用的占位结果不会真的产生
+            upstream = canvas_service.node_label(by_id[stalled_up[0]])
+            item.update(
+                unavailable=True, waits_upstream=True, reason=f"上游「{upstream}」这次不会运行，先跳过"
+            )
+            stalled.add(node_id)
             continue
         missing: list[str] = []
         fields, blockers = canvas_service.resolve_node_request(
@@ -284,9 +299,17 @@ async def _quote_plan(
             outside = len(missing) == len(blockers) and all(
                 up not in order and kinds_by_id.get(up) in RUNNABLE for up in missing
             )
+            # 分段运行时，缺的只是批次外上游结果的节点自己先跳过（blocked），不拦整个批次
+            blocks_batch = not (kinds and outside)
             item.update(
-                unavailable=True, reason="；".join(blockers), blockers=blockers, upstream_missing_only=outside
+                unavailable=True,
+                reason="；".join(blockers),
+                blockers=blockers,
+                upstream_missing_only=outside,
+                blocks_batch=blocks_batch,
             )
+            if not blocks_batch:
+                stalled.add(node_id)
             continue
         try:
             quote, cloud = await canvas_service.quote_node_with_budget(
@@ -295,7 +318,7 @@ async def _quote_plan(
         except (CanvasError, ValidationError) as error:
             # 路由 / 参数问题：这个节点实际也跑不起来，和输入缺失一样当作不能运行
             message = str(error).splitlines()[0]
-            item.update(unavailable=True, reason=message, blockers=[message])
+            item.update(unavailable=True, reason=message, blockers=[message], blocks_batch=True)
             continue
         item["model"] = quote.get("model")
         if quote["estimated_cost"] is None:
@@ -304,11 +327,8 @@ async def _quote_plan(
         item["estimated_cost"] = quote["estimated_cost"]
         total += Decimal(str(quote["estimated_cost"]))
         billable += cloud
-    kinds = effective_kinds(request)
-    for item in items:
-        # 分段运行时，缺的只是批次外上游结果的节点自己先跳过（blocked），不拦整个批次
-        item["blocks_batch"] = bool(item["blockers"]) and not (kinds and item["upstream_missing_only"])
     pending = [item for item in items if item["status"] == "pending"]
+    will_run = [item for item in pending if not item["blockers"] and not item["waits_upstream"]]
     cap, remaining = await _remaining_budget(session, canvas.owner_id)
     return {
         "graph": graph,
@@ -319,8 +339,8 @@ async def _quote_plan(
         "estimated_total": float(total),
         "billable_total": float(billable),
         # 真正会提交任务的节点数；缺上游先跳过的、拦住整个批次的分别计数
-        "runnable_count": sum(1 for item in pending if not item["blockers"]),
-        "waiting_count": sum(1 for item in pending if item["blockers"] and not item["blocks_batch"]),
+        "runnable_count": len(will_run),
+        "waiting_count": sum(1 for item in pending if item["node_id"] in stalled),
         "blocking_count": sum(1 for item in pending if item["blocks_batch"]),
         "unavailable_nodes": [
             {
@@ -328,7 +348,7 @@ async def _quote_plan(
                 "label": item["label"],
                 "reason": item["reason"],
                 # runs=True：只是价格未知，照常运行；blocks_batch=True：要先处理才能运行整个批次
-                "runs": not item["blockers"],
+                "runs": not item["blockers"] and not item["waits_upstream"],
                 "blocks_batch": item["blocks_batch"],
             }
             for item in items
