@@ -1,6 +1,6 @@
 import type { MouseEvent } from 'react'
 import { ProtectedImage } from '../common/ProtectedMedia'
-import type { FinalState } from '../../api/final'
+import type { FinalState, QcIssue } from '../../api/final'
 import { blockStyle, clock, seekSeconds } from './timelineLayout'
 
 interface Props {
@@ -8,10 +8,15 @@ interface Props {
   /** 播放位置（毫秒），画播放头 */
   currentMs: number
   onSeek: (seconds: number) => void
+  /** 出片检查发现的问题片段（只读小标记）：黑屏 / 冻帧 / 静音 */
+  markers?: QcIssue[]
 }
 
+export const MARKER_LABEL: Record<string, string> = { black_segments: '黑屏', frozen_segments: '画面静止', silent_segments: '静音' }
+
 /** 只读多轨时间线：画面 / 配音 / 字幕 / BGM 四条轨道，块按时间比例排布；点击轨道跳转播放位置。 */
-export default function Timeline({ state, currentMs, onSeek }: Props) {
+export default function Timeline({ state, currentMs, onSeek, markers = [] }: Props) {
+  const segments = markers.filter((item) => item.code in MARKER_LABEL && item.start_ms !== undefined && item.end_ms !== undefined)
   const total = state.total_ms
   const { shots, voices, subtitles, bgm } = state.timeline
   const click = (event: MouseEvent<HTMLDivElement>) => {
@@ -55,6 +60,9 @@ export default function Timeline({ state, currentMs, onSeek }: Props) {
             <span className="fn-block__text">{bgm.name}</span>
           </div>
         ), '没有背景音乐', !bgm)}
+        {segments.length > 0 && track('qc', '检查', segments.map((item, index) => (
+          <div key={`${item.code}-${item.start_ms}-${index}`} data-testid="qc-marker" className={`fn-marker fn-marker--${item.code.replace('_segments', '')}`} style={blockStyle(item.start_ms ?? 0, item.end_ms ?? 0, total)} title={`${MARKER_LABEL[item.code]} · ${item.message}`} />
+        )), '', false)}
       </div>
     </section>
   )

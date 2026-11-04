@@ -55,6 +55,11 @@ DEFAULT_ASPECT = "9:16"
 SHORT_SIDE = {"720p": 720, "1080p": 1080}
 ProgressCallback = Callable[[int], Awaitable[None]]
 
+# AIGC 显式标识：半透明“AI 生成”角标 PNG（带透明背景），ffmpeg overlay 叠到右上角，运行时不依赖字体
+AIGC_BADGE_PATH = BASE_DIR / "app" / "assets" / "aigc_badge.png"
+BADGE_HEIGHT_RATIO = 0.065  # 角标高度占画面短边的比例（宽约为高的 2.6 倍）
+BADGE_MARGIN_RATIO = 0.03  # 距右上角的安全边距占短边的比例；字幕在底部，不会相撞
+
 
 # ─────────────────────────────────────────
 # 纯函数（便于测试）
@@ -279,6 +284,36 @@ def build_audio_mix_filter(
     return ";".join(parts + [mix]), "[aout]"
 
 
+def badge_geometry(width: int, height: int) -> tuple[int, int]:
+    """角标高度与边距（像素）：随画面短边缩放，高度取偶数。"""
+    short = min(width, height)
+    return max(2, round(short * BADGE_HEIGHT_RATIO / 2) * 2), max(2, round(short * BADGE_MARGIN_RATIO))
+
+
+def build_badge_filter(video_in: str, badge_index: int, width: int, height: int, out: str = "[vout]") -> str:
+    """把角标（第 badge_index 个输入）缩放后叠到 video_in 的右上角；返回 filter_complex 片段。"""
+    badge_h, margin = badge_geometry(width, height)
+    return (
+        f"[{badge_index}:v]scale=-2:{badge_h}[badge];"
+        f"{video_in}[badge]overlay=x=W-w-{margin}:y={margin}:format=auto{out}"
+    )
+
+
+def build_aigc_metadata(produce_id: str, reserved_code1: str = "") -> dict[str, dict[str, str]]:
+    """AIGC 隐式标识（《人工智能生成合成内容标识办法》元数据要素）。"""
+    return {
+        "AIGC": {
+            "Label": "1",
+            "ContentProducer": "FishStudio",
+            "ProduceID": produce_id,
+            "ReservedCode1": reserved_code1,
+            "ContentPropagator": "",
+            "PropagateID": "",
+            "ReservedCode2": "",
+        }
+    }
+
+
 # ─────────────────────────────────────────
 # ffmpeg 执行
 # ─────────────────────────────────────────
@@ -471,12 +506,15 @@ async def render_timeline(
     job_id: Optional[str] = None,
     artifact_meta: Optional[dict[str, Any]] = None,
     on_progress: Optional[ProgressCallback] = None,
+    aigc_label: bool = False,
+    aigc_reserved_code: str = "",
 ) -> dict:
     """直接渲染 EDL，不依赖 Shot；可附带画布对应的 episode 归属。
 
     short_side：输出短边（720 / 1080）；export_srt=False 时 SRT 不单独保存（烧录失败退化时仍会保存）；
     job_id 写到视频产物上；artifact_meta 并入视频 / SRT 产物的 metadata（如 canvas_node_id）；
-    on_progress(0..100) 在各阶段结束时回调。
+    on_progress(0..100) 在各阶段结束时回调；aigc_label=True 时全程叠加“AI 生成”角标，并把隐式标识
+    写进 MP4 元数据（ProduceID 取 job_id，没有则取输出文件名；ReservedCode1 取 aigc_reserved_code）。
     """
     if render_mode not in ("preview", "final"):
         raise ValueError(f"非法 render_mode: {render_mode}")
@@ -505,6 +543,8 @@ async def render_timeline(
         job_id=job_id,
         artifact_meta=artifact_meta,
         on_progress=on_progress,
+        aigc_label=aigc_label,
+        aigc_reserved_code=aigc_reserved_code,
     )
 
 
@@ -542,6 +582,8 @@ async def _render(
     job_id: Optional[str] = None,
     artifact_meta: Optional[dict[str, Any]] = None,
     on_progress: Optional[ProgressCallback] = None,
+    aigc_label: bool = False,
+    aigc_reserved_code: str = "",
 ) -> dict:
     """共用 normalize、拼接、混音、字幕和产物封装流程。"""
     if not shots and not timeline:
@@ -796,6 +838,10 @@ async def _render(
             if stats:
                 loudnorm = build_linear_loudnorm(stats)
 
+        aigc_meta = build_aigc_metadata(job_id or final_path.stem, aigc_reserved_code) if aigc_label else None
+        if aigc_label and not AIGC_BADGE_PATH.is_file():
+            raise RuntimeError(f"AIGC 角标资源缺失: {AIGC_BADGE_PATH}")
+
         def _encode_args(burn: bool) -> list[str]:
             args = list(base_args)
             filters: list[str] = []
@@ -806,15 +852,33 @@ async def _render(
                 maps += ["-map", aout]
             else:
                 maps += ["-map", "1:a"]
+            video_src = "[0:v]"
             if burn:
-                filters.append(f"[0:v]subtitles={_filter_path(burn_path)}[vout]")
+                filters.append(f"[0:v]subtitles={_filter_path(burn_path)}[vsub]")
+                video_src = "[vsub]"
+            if aigc_label:
+                # 角标是最后一个输入（0 是 concat，其后是各音频，没有音频时多一个 anullsrc）
+                badge_index = 1 + len(audio_files) + (0 if audio_specs else 1)
+                args += ["-i", str(AIGC_BADGE_PATH)]
+                filters.append(build_badge_filter(video_src, badge_index, width, height))
+                maps += ["-map", "[vout]"]
+            elif burn:
+                filters[-1] = filters[-1].replace("[vsub]", "[vout]")
                 maps += ["-map", "[vout]"]
             else:
                 maps += ["-map", "0:v"]
             if filters:
                 args += ["-filter_complex", ";".join(filters)]
             args += maps + ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
-            args += ["-c:a", "aac", "-shortest", "-movflags", "+faststart", str(final_path)]
+            args += ["-c:a", "aac", "-shortest"]
+            if aigc_meta is not None:
+                # 隐式标识：comment 与自定义 aigc 标签各写一份 JSON（use_metadata_tags 才会保留自定义标签）
+                payload = json.dumps(aigc_meta, ensure_ascii=False, separators=(",", ":"))
+                args += ["-metadata", f"comment={payload}", "-metadata", f"aigc={payload}"]
+                args += ["-movflags", "use_metadata_tags+faststart"]
+            else:
+                args += ["-movflags", "+faststart"]
+            args.append(str(final_path))
             return args
 
         # 画布 EDL 没有审批流程里的导出档位，字幕烧录只看调用方参数
@@ -871,6 +935,7 @@ async def _render(
             "render_mode": render_mode,
             "is_publishable": is_publishable,
             "placeholder_shots": placeholder_shots,
+            "aigc_label": bool(aigc_meta),
             **extra_meta,
         },
     )
@@ -911,6 +976,8 @@ async def _render(
                 "placeholder": input_keys[i] is None,
                 # 产物来源：selected（用户选定）| latest（最新成功）| placeholder（黑场）
                 "artifact_selection": artifact_selections[i],
+                # 图片素材在成片里是静帧（出片检查据此排除冻帧误报）
+                "still": bool(shot_videos[i] is not None and shot_videos[i].type == "image"),
                 "artifact_id": shot_videos[i].id if shot_videos[i] else None,
                 "artifact_hash": shot_videos[i].content_hash if shot_videos[i] else "",
                 "source_in_ms": timeline_clips[i].source_in_ms if timeline else 0,
@@ -930,6 +997,7 @@ async def _render(
         "subtitle_tracks": timeline.spec.get("subtitle_tracks", []) if timeline else [],
         "overlay_tracks": timeline.spec.get("overlay_tracks", []) if timeline else [],
         "export": {"codec": "h264/aac", "container": "mp4", "renderer": "ffmpeg"},
+        "aigc": {"badge": bool(aigc_meta), "metadata": aigc_meta},
     }
     if source:
         manifest["source"] = source
@@ -953,4 +1021,5 @@ async def _render(
         "manifest": manifest,
         "duration_ms": total_ms,
         "subtitles_burned": subtitles_burned,
+        "aigc": manifest["aigc"],
     }
