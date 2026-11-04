@@ -1,13 +1,16 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { Film, ImageIcon, ListEnd, Loader2, Play, RotateCcw, Square, Type, Upload } from 'lucide-react'
+import { Clapperboard, Film, ImageIcon, ListEnd, Loader2, Play, RotateCcw, Square, Type, Upload } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { CanvasModel, CanvasNodeType, Quote, StoredNode } from '../../api/nodeCanvas'
 import { ProtectedImage, ProtectedVideo } from '../common/ProtectedMedia'
+import { finalApi, type FinalState } from '../../api/final'
+import { paths } from '../../routePaths'
 import { useCanvas } from './context'
 import { ShotGroupNode } from './ShotGroupNode'
 import { ACTIVE, HANDLE_LABELS, statusText, INPUTS, latestJob, resolveInputs, selectedResult, type ImageData, type InputHandle, type TextData, type VideoData } from './graph'
 
-const ICONS = { text: Type, image: ImageIcon, video: Film }
+const ICONS = { text: Type, image: ImageIcon, video: Film, episode: Clapperboard }
 
 function money(value: number | null | undefined) {
   return value === null || value === undefined ? '未配置价格' : `¥${value.toFixed(value < 1 ? 3 : 2)}`
@@ -181,4 +184,45 @@ export const VideoNode = memo(function VideoNode({ id, data, selected }: NodePro
   </Shell>
 })
 
-export const nodeTypes = { text: TextNode, image: ImageNode, video: VideoNode, shotGroup: ShotGroupNode }
+/** 成片节点要显示的摘要：进入画布时取一次，之后跟着 runs 变化防抖刷新（不单独轮询）。 */
+function useFinalSummary(canvasId: string, runs: unknown, graphKey: string) {
+  const [state, setState] = useState<FinalState | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      finalApi.get(canvasId).then((value) => { if (!cancelled) setState(value) }).catch(() => undefined)
+    }, 1500)  // 略长于画布自动保存的防抖：接口读的是已保存的画布
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [canvasId, runs, graphKey])
+  return state
+}
+
+/** 成片节点：没有输入输出，按镜头顺序自动收集全部镜头；设置和渲染都在成片页。 */
+export const EpisodeNode = memo(function EpisodeNode({ id, data, selected }: NodeProps) {
+  const { canvasId, runs, nodes, edges } = useCanvas()
+  // 镜头相关的图指纹：镜头 / 配音节点、顺序、选用结果、首帧与 voice 连线变化时刷新摘要
+  const graphKey = useMemo(() => JSON.stringify([
+    nodes.filter((node) => node.type !== 'text' && node.type !== 'episode').map((node) => {
+      const data = node.data as { order?: unknown; selected?: unknown }
+      return [node.id, node.type, data.order ?? null, data.selected ?? null]
+    }),
+    edges.filter((edge) => edge.targetHandle === 'first_frame' || edge.targetHandle === 'voice').map((edge) => [edge.source, edge.target, edge.targetHandle]),
+  ]), [nodes, edges])
+  const final = useFinalSummary(canvasId, runs, graphKey)
+  const value = data as { label?: string }
+  const shots = final?.timeline.shots.length ?? 0
+  const voices = final?.timeline.voices.length ?? 0
+  return <section className={`nc-node nc-node--episode${selected ? ' nc-node--selected' : ''}`} aria-label="成片" data-node-id={id}>
+    <header className="nc-node__head">
+      <Clapperboard size={14} />
+      <span className="nc-node__title">{value.label || '成片 · 第 1 集'}</span>
+    </header>
+    <p className="nc-episode__summary">
+      {final ? `按镜头顺序收集 ${shots} 个镜头 · ${voices} 句配音 · ${final.timeline.bgm ? 'BGM' : '无 BGM'}` : '按镜头顺序收集全部镜头'}
+    </p>
+    {final?.stale && <p className="nc-episode__stale" role="status">素材已变更，需要重新渲染</p>}
+    <Link className="nc-run nodrag nc-episode__go" to={paths.projectStep(canvasId, 'final')}>去成片</Link>
+  </section>
+})
+
+export const nodeTypes = { text: TextNode, image: ImageNode, video: VideoNode, episode: EpisodeNode, shotGroup: ShotGroupNode }

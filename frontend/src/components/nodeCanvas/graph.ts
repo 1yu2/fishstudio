@@ -19,6 +19,8 @@ export const INPUTS: Record<CanvasNodeType, Partial<Record<InputHandle, CanvasNo
   text: {},
   image: { prompt: 'text', reference: 'image' },
   video: { prompt: 'text', first_frame: 'image', last_frame: 'image' },
+  // 成片节点：自动收集全部镜头，没有输入输出
+  episode: {},
 }
 
 export const HANDLE_LABELS: Record<InputHandle, string> = {
@@ -124,7 +126,7 @@ export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: Stor
 export function label(node: StoredNode): string {
   const text = String((node.data as TextData).label || '').trim()
   if (text) return text
-  return node.type === 'text' ? '文本' : node.type === 'image' ? '图片' : '视频'
+  return node.type === 'text' ? '文本' : node.type === 'image' ? '图片' : node.type === 'episode' ? '成片' : '视频'
 }
 
 export function newId(prefix: CanvasNodeType): string {
@@ -144,6 +146,7 @@ export function edgeId(source: string, target: string, handle: string): string {
 export function defaultData(type: CanvasNodeType): Record<string, unknown> {
   if (type === 'text') return { label: '', text: '' }
   if (type === 'image') return { label: '', prompt: '', model: '', count: 1 }
+  if (type === 'episode') return { label: '成片 · 第 1 集' }
   return { label: '', prompt: '', model: '', duration: 5, tier: 'preview' }
 }
 

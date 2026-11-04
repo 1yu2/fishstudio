@@ -1,6 +1,6 @@
 import { apiFetch, getToken } from '../api'
 
-export type CanvasNodeType = 'text' | 'image' | 'video'
+export type CanvasNodeType = 'text' | 'image' | 'video' | 'episode'
 export type VideoTier = 'preview' | 'final'
 
 export interface CanvasSummary {

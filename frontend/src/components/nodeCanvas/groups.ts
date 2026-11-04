@@ -21,6 +21,7 @@ export const DEFAULT_SIZE: Record<StoredNode['type'], { width: number; height: n
   text: { width: 280, height: 230 },
   image: { width: 280, height: 520 },
   video: { width: 280, height: 580 },
+  episode: { width: 220, height: 160 },
 }
 /** 分组框相对成员外框的内边距、顶部标题栏高度 */
 export const GROUP_PADDING = 24

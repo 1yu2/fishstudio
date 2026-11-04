@@ -78,6 +78,12 @@
 .nc-node--text .nc-node__head svg { color: #8b5cf6; }
 .nc-node--image .nc-node__head svg { color: #0891b2; }
 .nc-node--video .nc-node__head svg { color: #ea580c; }
+.nc-node--episode { width: 220px; padding-bottom: 12px; }
+.nc-node--episode .nc-node__head svg { color: var(--accent); }
+.nc-node__title { font-weight: 600; color: var(--text-primary); }
+.nc-episode__summary { margin: 10px 10px 0; color: var(--text-secondary); }
+.nc-episode__stale { margin: 8px 10px 0; padding: 4px 8px; border-radius: var(--radius-sm); background: var(--status-warn-soft); color: var(--status-warn); }
+.nc-episode__go { margin: 10px 10px 0; text-decoration: none; }
 .nc-node__label { flex: 1; min-width: 0; border: none; background: transparent; color: var(--text-primary); font-weight: 600; font-size: 13px; padding: 0; }
 .nc-node__label:focus { outline: none; }
 .nc-node__foot { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }

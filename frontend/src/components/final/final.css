@@ -1,0 +1,72 @@
+/* 成片页：颜色全部来自 styles/tokens.css */
+.fn { display: flex; flex-direction: column; gap: 20px; padding: 20px; color: var(--text-primary); font-size: 14px; line-height: 1.5; }
+.fn button, .fn select, .fn input { font-family: inherit; }
+.fn :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fn-message { padding: 48px 20px; text-align: center; color: var(--text-secondary); }
+.fn-spin { animation: fn-spin 0.9s linear infinite; }
+@keyframes fn-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .fn-spin { animation: none; } }
+
+.fn-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-primary); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.fn-btn:hover:not(:disabled) { border-color: var(--accent); }
+.fn-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.fn-btn--primary { border-color: transparent; background: var(--fill-primary); color: var(--text-on-primary); }
+.fn-btn--primary:hover:not(:disabled) { background: var(--fill-primary-hover); border-color: transparent; }
+.fn-link { display: inline-flex; align-items: center; padding: 0; border: 0; background: none; color: var(--accent); font-size: 13px; cursor: pointer; text-decoration: none; }
+.fn-link:hover { color: var(--accent-hover); }
+
+.fn-top { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+.fn-preview { flex: 1 1 360px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.fn-preview video, .fn-preview .protected-media { width: 100%; max-height: 56vh; border-radius: var(--radius-lg); background: var(--surface-2); object-fit: contain; }
+.fn-preview__empty { display: flex; align-items: center; justify-content: center; min-height: 240px; border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text-secondary); }
+.fn-preview__meta { font-size: 12px; color: var(--text-secondary); }
+
+.fn-settings { flex: 0 1 320px; min-width: 260px; display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.fn-settings h2, .fn-timeline h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.fn-group { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; border: 0; }
+.fn-group legend { padding: 0; margin-bottom: 4px; font-size: 12px; color: var(--text-secondary); }
+.fn-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.fn-check--soon, .fn-soon { color: var(--text-tertiary); }
+.fn-soon { margin: 0; font-size: 12px; }
+.fn-inline { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.fn-inline select { height: 30px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-primary); padding: 0 8px; }
+.fn-bgm { display: flex; align-items: center; gap: 8px; }
+.fn-bgm__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.fn-slider { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+/* 只读时间线 */
+.fn-timeline { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.fn-timeline__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.fn-timeline__total { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.fn-timeline__body { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.fn-track { display: flex; align-items: center; gap: 0; }
+.fn-track__label { flex: 0 0 56px; font-size: 12px; color: var(--text-secondary); }
+.fn-track__lane { position: relative; flex: 1; height: 44px; border-radius: var(--radius-sm); background: var(--surface-2); overflow: hidden; cursor: pointer; }
+.fn-track:nth-child(n + 3) .fn-track__lane { height: 28px; }
+.fn-track__empty { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 8px; font-size: 12px; color: var(--text-tertiary); }
+.fn-block { position: absolute; top: 2px; bottom: 2px; box-sizing: border-box; border-radius: 4px; overflow: hidden; display: flex; align-items: center; border: 1px solid var(--surface); }
+.fn-block--shot { background: var(--accent-soft); }
+.fn-block--shot img, .fn-block--shot .protected-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.fn-block--missing { background: var(--status-failed-soft); }
+.fn-block__tag { position: relative; margin: 2px; padding: 0 5px; border-radius: 4px; background: var(--fill-primary); color: var(--text-on-primary); font-size: 11px; align-self: flex-start; }
+.fn-block__text { padding: 0 6px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fn-block--voice { background: var(--status-running-soft); color: var(--status-running); }
+.fn-block--narration { background: var(--status-warn-soft); color: var(--status-warn); }
+.fn-block--subtitle { background: var(--surface); color: var(--text-primary); border-color: var(--border); }
+.fn-block--bgm { background: var(--status-done-soft); color: var(--status-done); }
+.fn-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--status-failed); pointer-events: none; z-index: 2; }
+
+.fn-issues { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.fn-issue { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius-md); font-size: 13px; }
+.fn-issue--problem { background: var(--status-failed-soft); color: var(--status-failed); }
+.fn-issue--warning { background: var(--status-warn-soft); color: var(--status-warn); }
+.fn-issue span { flex: 1; }
+
+.fn-actions { display: flex; flex-direction: column; gap: 10px; }
+.fn-actions__row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.fn-reason { font-size: 12px; color: var(--text-secondary); }
+.fn-stale { margin: 0; padding: 8px 12px; border-radius: var(--radius-md); background: var(--status-warn-soft); color: var(--status-warn); font-size: 13px; }
+.fn-error { margin: 0; padding: 8px 12px; border-radius: var(--radius-md); background: var(--status-failed-soft); color: var(--status-failed); font-size: 13px; }
+.fn-progress { position: relative; height: 24px; border-radius: var(--radius-md); background: var(--track); overflow: hidden; }
+.fn-progress > span { position: absolute; inset: 0 auto 0 0; background: var(--status-running-soft); border-right: 2px solid var(--status-running); }
+.fn-progress > em { position: relative; display: block; padding: 0 10px; font-style: normal; font-size: 12px; line-height: 24px; color: var(--status-running); }

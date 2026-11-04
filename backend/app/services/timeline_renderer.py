@@ -11,7 +11,8 @@
 4. 音频：dialogue_tracks / narration_tracks 里带 "audio_storage_key" 的轨按
    （镜头偏移 + track.start_ms）adelay 后 amix 混到全局时间轴；没有音频文件就跳过
    （MVP：TTS 产物由别的流程生成后回填该字段）。BGM 给定时以 bgm_volume_db 降音量混入，
-   整体单遍 loudnorm 响度标准化（sidechain ducking 太复杂，MVP 不做）。
+   整体单遍 loudnorm 响度标准化（-14 LUFS）。EDL 路径的 BGM 支持循环 / 截断到全片长度、
+   首尾淡入淡出，以及在人声区间用 volume 逐帧表达式压低（ducking）。
 5. 字幕：subtitle_tracks → SRT（全局时间轴）；burn_subtitles 时用 subtitles 滤镜烧录，
    依赖 libass，烧录失败退化为不烧录（manifest.subtitles_burned=False，SRT 单独交付）。
 6. 输出 storage/videos/episode_<id>_<uuid8>.mp4 + manifest.json，登记 Artifact。
@@ -20,12 +21,14 @@
 import asyncio
 import json
 import logging
+import math
+import re
 import subprocess
 import tempfile
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal, Optional, Sequence
+from typing import Any, Awaitable, Callable, Literal, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +51,9 @@ ASPECT_SPECS = {
     "1:1": (720, 720),
 }
 DEFAULT_ASPECT = "9:16"
+# 清晰度档位 → 输出短边
+SHORT_SIDE = {"720p": 720, "1080p": 1080}
+ProgressCallback = Callable[[int], Awaitable[None]]
 
 
 # ─────────────────────────────────────────
@@ -141,29 +147,123 @@ def build_concat_file_list(paths: Sequence[str]) -> str:
     return "".join(f"file '{p}'\n" for p in paths)
 
 
-def build_audio_mix_filter(audio_inputs: Sequence[dict[str, Any]], bgm_volume_db: float) -> tuple[str, str]:
+# 成片响度目标 -14 LUFS、真峰值上限 -1.5 dBTP。LRA 放宽到 30：先测量再按固定增益线性归一
+# （见 _measure_loudness），不让 loudnorm 的动态模式把被压低的 BGM 段又拉回去
+LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=30"
+# 压低 BGM 的深度（dB）：比无人声段低 14 dB，留出余量满足“至少低 10 dB”
+DEFAULT_DUCK_DB = 14.0
+DUCK_RAMP_S = 0.2
+BGM_FADE_MS = 1500
+
+
+def output_size(aspect: str, short_side: int = 720) -> tuple[int, int]:
+    """画幅 + 短边 → (宽, 高)，宽高取偶数（yuv420p 要求）。短边 720 时与 ASPECT_SPECS 一致。"""
+    if short_side == 720 and aspect in ASPECT_SPECS:
+        return ASPECT_SPECS[aspect]
+    try:
+        w, h = (int(part) for part in aspect.split(":"))
+    except ValueError:
+        return ASPECT_SPECS[DEFAULT_ASPECT] if short_side == 720 else output_size(DEFAULT_ASPECT, short_side)
+    if w >= h:
+        height, width = short_side, short_side * w / h
+    else:
+        width, height = short_side, short_side * h / w
+    return round(width / 2) * 2, round(height / 2) * 2
+
+
+def merge_ranges(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """合并重叠 / 相邻的区间（ms），丢弃空区间。"""
+    merged: list[list[int]] = []
+    for start, end in sorted((s, e) for s, e in ranges if e > s):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
+def _max_tree(terms: list[str]) -> str:
+    """把多个表达式用 max() 平衡嵌套，避免表达式嵌套过深。"""
+    if len(terms) == 1:
+        return terms[0]
+    mid = len(terms) // 2
+    return f"max({_max_tree(terms[:mid])},{_max_tree(terms[mid:])})"
+
+
+def build_duck_expression(ranges_ms: Sequence[tuple[int, int]], depth_db: float = DEFAULT_DUCK_DB) -> str:
+    """volume 滤镜的逐帧增益表达式：区间内压低 depth_db dB，区间边缘各 DUCK_RAMP_S 秒平滑过渡。
+
+    ranges_ms 是以该音频起点为 0 的人声区间；没有区间时返回 "1"（不压低）。
+    """
+    merged = merge_ranges(ranges_ms)
+    if not merged:
+        return "1"
+    r = DUCK_RAMP_S
+    terms = [
+        f"min(clip((t-{s / 1000 - r:.3f})/{r},0,1),clip(({e / 1000 + r:.3f}-t)/{r},0,1))" for s, e in merged
+    ]
+    depth = 1 - 10 ** (-abs(depth_db) / 20)
+    return f"1-{depth:.4f}*{_max_tree(terms)}"
+
+
+def _fade_filters(total_s: float, fade_in_ms: int, fade_out_ms: int) -> list[str]:
+    filters: list[str] = []
+    half = max(total_s / 2, 0.05)
+    if fade_in_ms:
+        filters.append(f"afade=t=in:st=0:d={min(fade_in_ms / 1000, half):.3f}")
+    if fade_out_ms:
+        d = min(fade_out_ms / 1000, half)
+        filters.append(f"afade=t=out:st={max(0.0, total_s - d):.3f}:d={d:.3f}")
+    return filters
+
+
+def build_audio_mix_filter(
+    audio_inputs: Sequence[dict[str, Any]],
+    bgm_volume_db: float,
+    total_ms: Optional[int] = None,
+    loudnorm: str = LOUDNORM,
+) -> tuple[str, str]:
     """构造音频混音 filter_complex。
 
-    audio_inputs: [{"input_index": int, "delay_ms": int, "is_bgm": bool}]
+    audio_inputs: [{"input_index": int, "delay_ms": int, "is_bgm": bool, ...}]
     （input_index 为该音频文件在 ffmpeg 命令行中的 -i 序号）
+    可选键：source_in_ms / source_out_ms / volume_db / fade_in_ms / fade_out_ms /
+    duck_ranges（clip 内部时间的人声区间 ms）/ duck_db / loop（输入已 -stream_loop，需截到全片长度）。
+    没有 volume_db 的 BGM 用 bgm_volume_db。total_ms 给定时，输出补静音 / 截断到恰好这个长度。
+    loudnorm 是响度归一滤镜字符串（默认单遍动态；两遍线性归一时由调用方带上测量值）。
     返回 (filter_complex, mixed_audio_label)。
     """
     parts: list[str] = []
     labels: list[str] = []
+    total_s = (total_ms or 0) / 1000
     for n, spec in enumerate(audio_inputs):
         label = f"a{n}"
         filters: list[str] = []
-        if spec.get("is_bgm"):
-            filters.append(f"volume={bgm_volume_db}dB")
+        delay = max(0, int(spec.get("delay_ms") or 0))
         source_in = max(0, int(spec.get("source_in_ms") or 0))
         source_out = spec.get("source_out_ms")
         if source_in or source_out:
             end = f":end={max(source_in + 1, int(source_out)) / 1000:.3f}" if source_out else ""
             filters.append(f"atrim=start={source_in / 1000:.3f}{end}")
             filters.append("asetpts=PTS-STARTPTS")
-        if spec.get("volume_db") is not None:
-            filters.append(f"volume={float(spec['volume_db']):.2f}dB")
-        delay = max(0, int(spec.get("delay_ms") or 0))
+        if spec.get("loop") and total_ms:
+            # 循环输入是无限长：截到“全片长度 - 起点”，之后淡出才对得上片尾
+            filters.append(f"atrim=end={max(0.05, total_s - delay / 1000):.3f}")
+            filters.append("asetpts=PTS-STARTPTS")
+        gain = spec.get("volume_db")
+        if gain is None and spec.get("is_bgm"):
+            gain = bgm_volume_db
+        if gain is not None:
+            filters.append(f"volume={float(gain)}dB")
+        if total_ms and (spec.get("fade_in_ms") or spec.get("fade_out_ms")):
+            filters += _fade_filters(
+                max(0.05, total_s - delay / 1000),
+                int(spec.get("fade_in_ms") or 0),
+                int(spec.get("fade_out_ms") or 0),
+            )
+        if spec.get("duck_ranges"):
+            expr = build_duck_expression(spec["duck_ranges"], float(spec.get("duck_db") or DEFAULT_DUCK_DB))
+            filters.append(f"volume=volume='{expr}':eval=frame:precision=float")
         if delay:
             filters.append(f"adelay={delay}|{delay}")
         if not filters:
@@ -171,7 +271,11 @@ def build_audio_mix_filter(audio_inputs: Sequence[dict[str, Any]], bgm_volume_db
             filters.append("acopy")
         parts.append(f"[{spec['input_index']}:a]" + ",".join(filters) + f"[{label}]")
         labels.append(f"[{label}]")
-    mix = "".join(labels) + f"amix=inputs={len(labels)}:duration=longest,loudnorm[aout]"
+    # normalize=0：各路按原电平相加（对白之间不重叠，BGM 压低深度才可预期），整体电平交给 loudnorm
+    tail = f"{loudnorm},aresample=48000"
+    if total_ms:
+        tail += f",apad=whole_dur={total_s:.3f},atrim=end={total_s:.3f}"
+    mix = "".join(labels) + f"amix=inputs={len(labels)}:duration=longest:normalize=0,{tail}[aout]"
     return ";".join(parts + [mix]), "[aout]"
 
 
@@ -195,6 +299,39 @@ def _run_ffmpeg(args: list[str], timeout: int = 600) -> None:
     if proc.returncode != 0:
         tail = proc.stderr.decode("utf-8", errors="replace")[-2000:]
         raise RuntimeError(f"ffmpeg 失败 (code {proc.returncode}): {tail}")
+
+
+def _measure_loudness(args: list[str]) -> Optional[dict[str, str]]:
+    """跑一遍只输出音频的 loudnorm 分析，返回测量值；全静音 / 解析失败返回 None（调用方退回单遍动态）。"""
+    proc = subprocess.run([_ffmpeg_exe(), "-y", *args], capture_output=True, timeout=600)
+    if proc.returncode != 0:
+        tail = proc.stderr.decode("utf-8", errors="replace")[-2000:]
+        raise RuntimeError(f"ffmpeg 失败 (code {proc.returncode}): {tail}")
+    text = proc.stderr.decode("utf-8", errors="replace")
+    blocks = re.findall(r"\{[^{}]*\"input_i\"[^{}]*\}", text)
+    if not blocks:
+        return None
+    try:
+        stats = json.loads(blocks[-1])
+        if not all(
+            math.isfinite(float(stats[key])) for key in ("input_i", "input_tp", "input_lra", "input_thresh")
+        ):
+            return None
+        return {
+            key: str(stats[key])
+            for key in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+        }
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def build_linear_loudnorm(stats: dict[str, str]) -> str:
+    """用测量值构造两遍线性 loudnorm（固定增益，保持 BGM 压低的电平差）。"""
+    return (
+        f"{LOUDNORM}:measured_I={stats['input_i']}:measured_TP={stats['input_tp']}"
+        f":measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}"
+        f":offset={stats['target_offset']}:linear=true"
+    )
 
 
 # ─────────────────────────────────────────
@@ -329,8 +466,18 @@ async def render_timeline(
     bgm_volume_db: float = -18.0,
     render_mode: Literal["preview", "final"] = "preview",
     episode_id: Optional[str] = None,
+    short_side: int = 720,
+    export_srt: bool = True,
+    job_id: Optional[str] = None,
+    artifact_meta: Optional[dict[str, Any]] = None,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> dict:
-    """直接渲染 EDL，不依赖 Shot；可附带画布对应的 episode 归属。"""
+    """直接渲染 EDL，不依赖 Shot；可附带画布对应的 episode 归属。
+
+    short_side：输出短边（720 / 1080）；export_srt=False 时 SRT 不单独保存（烧录失败退化时仍会保存）；
+    job_id 写到视频产物上；artifact_meta 并入视频 / SRT 产物的 metadata（如 canvas_node_id）；
+    on_progress(0..100) 在各阶段结束时回调。
+    """
     if render_mode not in ("preview", "final"):
         raise ValueError(f"非法 render_mode: {render_mode}")
     validated = timeline_service.validate_spec(spec)
@@ -353,7 +500,27 @@ async def render_timeline(
         render_mode=render_mode,
         export_profile="preview",
         source="edl",
+        short_side=short_side,
+        export_srt=export_srt,
+        job_id=job_id,
+        artifact_meta=artifact_meta,
+        on_progress=on_progress,
     )
+
+
+def _filter_path(path: Path) -> str:
+    """滤镜参数里的文件路径转义（\\ ' : , [ ] ;）。"""
+    out = str(path)
+    for char in ("\\", "'", ":", ",", "[", "]", ";"):
+        out = out.replace(char, "\\" + char)
+    return out
+
+
+def _audio_duration_ms(artifact: Artifact) -> Optional[int]:
+    if artifact.duration_ms:
+        return int(artifact.duration_ms)
+    value = (artifact.artifact_metadata or {}).get("duration_ms")
+    return int(value) if isinstance(value, (int, float)) and value > 0 else None
 
 
 async def _render(
@@ -370,12 +537,25 @@ async def _render(
     render_mode: str,
     export_profile: str,
     source: Optional[str] = None,
+    short_side: int = 720,
+    export_srt: bool = True,
+    job_id: Optional[str] = None,
+    artifact_meta: Optional[dict[str, Any]] = None,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> dict:
     """共用 normalize、拼接、混音、字幕和产物封装流程。"""
     if not shots and not timeline:
         raise ValueError(f"episode {episode_id} 没有可渲染的镜头")
+
+    async def progress(value: int) -> None:
+        if on_progress is not None:
+            await on_progress(value)
+
     timeline_clips = timeline_service.video_clips(timeline.spec) if timeline else []
     timeline_artifacts: list[Artifact] = []
+    # 时间线上每个镜头的实际起点（间隙补黑场、重叠顺延）与它前面要补的黑场时长
+    effective_starts: list[int] = []
+    gaps: list[int] = []
     if timeline:
         if not timeline_clips:
             raise ValueError("TimelineRevision 没有视频 clip")
@@ -385,10 +565,15 @@ async def _render(
             raise ValueError(str(exc)) from exc
         shot_map = {shot.id: shot for shot in shots}
         rendered_shots: list[Any] = []
+        cursor = 0
         for index, clip in enumerate(timeline_clips):
             artifact = await session.get(Artifact, clip.artifact_id)
             shot_source = shot_map.get(clip.shot_id or "")
             duration = max(1, round((clip.source_out_ms - clip.source_in_ms) / clip.speed))
+            start = max(clip.timeline_start_ms, cursor)
+            gaps.append(start - cursor)
+            effective_starts.append(start)
+            cursor = start + duration
             rendered_shots.append(
                 SimpleNamespace(
                     id=clip.shot_id or clip.id,
@@ -405,9 +590,9 @@ async def _render(
 
     # 画幅：参数 > 第一镜头 aspect_ratio > 默认竖版
     aspect = output_aspect or (shots[0].aspect_ratio if shots else "") or DEFAULT_ASPECT
-    width, height = ASPECT_SPECS.get(aspect, ASPECT_SPECS[DEFAULT_ASPECT])
-    fps = DEFAULT_FPS
-    offsets = [clip.timeline_start_ms for clip in timeline_clips] if timeline else compute_shot_offsets(shots)
+    width, height = output_size(aspect, short_side)
+    fps = (timeline.spec.get("fps") if timeline else None) or DEFAULT_FPS
+    offsets = effective_starts if timeline else compute_shot_offsets(shots)
     total_ms = max(offset + max(0, int(shot.duration_ms or 0)) for shot, offset in zip(shots, offsets))
 
     # 收集每个镜头的视频产物（选定产物优先，回退最新；来源记入 manifest）
@@ -425,40 +610,138 @@ async def _render(
     if render_mode == "final":
         missing = find_missing_shot_videos(shots, shot_videos, STORAGE_DIR)
         if missing:
+            if source == "edl":
+                numbers = [
+                    str(i + 1) for i, shot in enumerate(shots) if shot.id in missing or shot_videos[i] is None
+                ]
+                raise ValueError(f"镜头 {'、'.join(numbers)} 的视频文件不存在")
             raise ValueError(f"final 渲染要求所有镜头都有视频产物，缺失 {len(missing)} 个: {missing}")
+
+    # 音频输入：先于任何 ffmpeg 编码收集并检查文件，缺文件时不浪费视频编码时间
+    audio_files: list[Path] = []
+    audio_specs: list[dict[str, Any]] = []
+    voice_ranges: list[tuple[int, int]] = []
+    for shot, offset in zip(shots, offsets):
+        for key in ("dialogue_tracks", "narration_tracks"):
+            for track in _tracks_of(shot, key):
+                # MVP：TTS 产物由别的流程生成后回填 track["audio_storage_key"]
+                storage_key = track.get("audio_storage_key")
+                if not storage_key:
+                    continue
+                path = STORAGE_DIR / storage_key
+                if not path.is_file():
+                    continue
+                audio_files.append(path)
+                audio_specs.append(
+                    {
+                        "input_index": len(audio_files),  # 0 是 concat.mp4
+                        "delay_ms": offset + int(track.get("start_ms") or 0),
+                        "is_bgm": False,
+                    }
+                )
+    if timeline:
+        for track in timeline.spec.get("audio_tracks", []):
+            for clip in track.get("clips", []):
+                artifact = await session.get(Artifact, clip.get("artifact_id"))
+                label = clip.get("label") or "音频"
+                if artifact is None or artifact.project_id != project_id:
+                    raise ValueError(f"timeline audio artifact not found: {clip.get('artifact_id')}")
+                path = STORAGE_DIR / artifact.storage_key
+                if not path.is_file():
+                    if source == "edl":
+                        raise ValueError(f"{label}的音频文件不存在")
+                    raise ValueError(f"timeline audio file missing: {artifact.id}")
+                audio_files.append(path)
+                keyframes = clip.get("volume_keyframes") or []
+                kind = clip.get("kind")
+                start = int(clip.get("timeline_start_ms") or 0)
+                source_in = int(clip.get("source_in_ms") or 0)
+                source_out = clip.get("source_out_ms")
+                length = (
+                    int(source_out) - source_in
+                    if source_out
+                    else (_audio_duration_ms(artifact) or 0) - source_in
+                )
+                if kind in ("dialogue", "narration") and length > 0:
+                    voice_ranges.append((start, start + length))
+                ducking = clip.get("ducking") or {}
+                audio_specs.append(
+                    {
+                        "input_index": len(audio_files),
+                        "delay_ms": start,
+                        "source_in_ms": source_in,
+                        "source_out_ms": source_out,
+                        "volume_db": keyframes[0].get("volume_db", 0) if keyframes else None,
+                        "is_bgm": kind == "bgm",
+                        # BGM 比全片短时循环（输入层 -stream_loop），比全片长时在滤镜里截断
+                        "loop": kind == "bgm",
+                        "fade_in_ms": int(clip.get("fade_in_ms") or 0),
+                        "fade_out_ms": int(clip.get("fade_out_ms") or 0),
+                        "duck_enabled": bool(ducking.get("enabled")),
+                        "duck_db": ducking.get("duck_db"),
+                        "ducking": ducking,
+                        "edit": clip.get("edit", "normal"),
+                    }
+                )
+    for spec_item in audio_specs:
+        if spec_item.pop("duck_enabled", False):
+            start = spec_item["delay_ms"]
+            spec_item["duck_ranges"] = [
+                (max(0, s - start), e - start) for s, e in merge_ranges(voice_ranges) if e > start
+            ]
+    bgm_used = False
+    if bgm_storage_key:
+        bgm_path = STORAGE_DIR / bgm_storage_key
+        if bgm_path.is_file():
+            audio_files.append(bgm_path)
+            audio_specs.append({"input_index": len(audio_files), "delay_ms": 0, "is_bgm": True})
+            bgm_used = True
+        else:
+            logger.warning(f"BGM 文件不存在，跳过: {bgm_storage_key}")
 
     placeholder_shots: list[str] = []
     input_keys: list[Optional[str]] = []
     norm_filter = build_normalize_filter(width, height, fps)
+    encode_video = ["-an", "-c:v", "libx264", "-pix_fmt", "yuv420p"]
 
     with tempfile.TemporaryDirectory(prefix="timeline_") as tmp:
         tmpdir = Path(tmp)
 
-        # 1) 逐镜头 normalize（缺产物 → 黑场占位）
+        # 1) 逐镜头 normalize（缺产物 → 黑场占位；图片素材 → 静帧；镜头之间的间隙补黑场）
         normalized: list[str] = []
         for i, (shot, artifact) in enumerate(zip(shots, shot_videos)):
+            if timeline and gaps[i] > 0:
+                gap_out = tmpdir / f"gap_{i:03d}.mp4"
+                normalized.append(str(gap_out))
+                await asyncio.to_thread(
+                    _run_ffmpeg,
+                    [*build_black_placeholder_args(gaps[i], width, height, fps), *encode_video, str(gap_out)],
+                )
             out = tmpdir / f"shot_{i:03d}.mp4"
             normalized.append(str(out))
             if artifact is not None and (STORAGE_DIR / artifact.storage_key).is_file():
                 input_keys.append(artifact.storage_key)
                 clip = timeline_clips[i] if timeline else None
                 speed_filter = f"setpts=(PTS-STARTPTS)/{clip.speed:.8f}," if clip else ""
-                args = [
+                if artifact.type == "image":
+                    # 静帧：循环一张图片到镜头时长
+                    source_args = ["-loop", "1", "-framerate", str(fps)]
+                else:
                     # -stream_loop -1：素材短于镜头时长时循环补足（-t 只截不补）
-                    "-stream_loop",
-                    "-1",
-                    *(["-ss", f"{clip.source_in_ms / 1000:.3f}"] if clip else []),
+                    source_args = [
+                        "-stream_loop",
+                        "-1",
+                        *(["-ss", f"{clip.source_in_ms / 1000:.3f}"] if clip else []),
+                    ]
+                args = [
+                    *source_args,
                     "-i",
                     str(STORAGE_DIR / artifact.storage_key),
                     "-t",
                     f"{max(1, shot.duration_ms) / 1000:.3f}",
                     "-vf",
                     speed_filter + norm_filter,
-                    "-an",
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
+                    *encode_video,
                     str(out),
                 ]
             else:
@@ -466,14 +749,11 @@ async def _render(
                 input_keys.append(None)
                 args = [
                     *build_black_placeholder_args(shot.duration_ms, width, height, fps),
-                    "-an",
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
+                    *encode_video,
                     str(out),
                 ]
             await asyncio.to_thread(_run_ffmpeg, args)
+            await progress(5 + round(65 * (i + 1) / len(shots)))
 
         # 2) concat demuxer 顺序拼接（规格已统一，-c copy）
         list_file = tmpdir / "concat.txt"
@@ -483,62 +763,9 @@ async def _render(
             _run_ffmpeg,
             ["-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(concat_out)],
         )
+        await progress(75)
 
-        # 3) 收集音频输入（对白/旁白轨 + BGM）
-        audio_files: list[Path] = []
-        audio_specs: list[dict[str, Any]] = []
-        for shot, offset in zip(shots, offsets):
-            for key in ("dialogue_tracks", "narration_tracks"):
-                for track in _tracks_of(shot, key):
-                    # MVP：TTS 产物由别的流程生成后回填 track["audio_storage_key"]
-                    storage_key = track.get("audio_storage_key")
-                    if not storage_key:
-                        continue
-                    path = STORAGE_DIR / storage_key
-                    if not path.is_file():
-                        continue
-                    audio_files.append(path)
-                    audio_specs.append(
-                        {
-                            "input_index": len(audio_files),  # 0 是 concat.mp4
-                            "delay_ms": offset + int(track.get("start_ms") or 0),
-                            "is_bgm": False,
-                        }
-                    )
-        if timeline:
-            for track in timeline.spec.get("audio_tracks", []):
-                for clip in track.get("clips", []):
-                    artifact = await session.get(Artifact, clip.get("artifact_id"))
-                    if artifact is None or artifact.project_id != project_id:
-                        raise ValueError(f"timeline audio artifact not found: {clip.get('artifact_id')}")
-                    path = STORAGE_DIR / artifact.storage_key
-                    if not path.is_file():
-                        raise ValueError(f"timeline audio file missing: {artifact.id}")
-                    audio_files.append(path)
-                    keyframes = clip.get("volume_keyframes") or []
-                    audio_specs.append(
-                        {
-                            "input_index": len(audio_files),
-                            "delay_ms": int(clip.get("timeline_start_ms") or 0),
-                            "source_in_ms": int(clip.get("source_in_ms") or 0),
-                            "source_out_ms": clip.get("source_out_ms"),
-                            "volume_db": keyframes[0].get("volume_db", 0) if keyframes else 0,
-                            "is_bgm": clip.get("kind") == "bgm",
-                            "ducking": clip.get("ducking") or {},
-                            "edit": clip.get("edit", "normal"),
-                        }
-                    )
-        bgm_used = False
-        if bgm_storage_key:
-            bgm_path = STORAGE_DIR / bgm_storage_key
-            if bgm_path.is_file():
-                audio_files.append(bgm_path)
-                audio_specs.append({"input_index": len(audio_files), "delay_ms": 0, "is_bgm": True})
-                bgm_used = True
-            else:
-                logger.warning(f"BGM 文件不存在，跳过: {bgm_storage_key}")
-
-        # 4) 混音 + 可选字幕烧录（libass 不可用时退化为不烧录）
+        # 3) 混音 + 可选字幕烧录（libass 不可用时退化为不烧录）
         uid = uuid.uuid4().hex[:8]
         output_name = f"episode_{episode_id}" if episode_id else f"timeline_{uid}"
         final_path = VIDEOS_DIR / f"{output_name}_{uid}.mp4"
@@ -547,26 +774,40 @@ async def _render(
         srt_text = build_timeline_srt(timeline.spec) if timeline else build_srt(list(zip(shots, offsets)))
         srt_rel = f"videos/{output_name}_sub.srt"
         srt_path = STORAGE_DIR / srt_rel
+        burn_path = tmpdir / "burn.srt"
         subtitles_burned = False
 
         base_args: list[str] = ["-i", str(concat_out)]
-        for p in audio_files:
-            base_args += ["-i", str(p)]
+        for path, spec_item in zip(audio_files, audio_specs):
+            base_args += (["-stream_loop", "-1"] if spec_item.get("loop") else []) + ["-i", str(path)]
         if not audio_specs:
             base_args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+
+        # 先测一遍整体响度，再用固定增益归一到 -14 LUFS（动态模式会把被压低的 BGM 段重新拉高）
+        loudnorm = LOUDNORM
+        if audio_specs:
+            measure_fc, measure_out = build_audio_mix_filter(
+                audio_specs, bgm_volume_db, total_ms, loudnorm=f"{LOUDNORM}:print_format=json"
+            )
+            stats = await asyncio.to_thread(
+                _measure_loudness,
+                [*base_args, "-filter_complex", measure_fc, "-map", measure_out, "-vn", "-f", "null", "-"],
+            )
+            if stats:
+                loudnorm = build_linear_loudnorm(stats)
 
         def _encode_args(burn: bool) -> list[str]:
             args = list(base_args)
             filters: list[str] = []
             maps: list[str] = []
             if audio_specs:
-                fc, aout = build_audio_mix_filter(audio_specs, bgm_volume_db)
+                fc, aout = build_audio_mix_filter(audio_specs, bgm_volume_db, total_ms, loudnorm=loudnorm)
                 filters.append(fc)
                 maps += ["-map", aout]
             else:
                 maps += ["-map", "1:a"]
             if burn:
-                filters.append(f"[0:v]subtitles={srt_path}[vout]")
+                filters.append(f"[0:v]subtitles={_filter_path(burn_path)}[vout]")
                 maps += ["-map", "[vout]"]
             else:
                 maps += ["-map", "0:v"]
@@ -585,7 +826,7 @@ async def _render(
         burn_subtitles = bool(profile.get("burn_subtitles", burn_subtitles))
         want_burn = burn_subtitles and bool(srt_text.strip())
         if want_burn:
-            srt_path.write_text(srt_text, encoding="utf-8")
+            burn_path.write_text(srt_text, encoding="utf-8")
             try:
                 await asyncio.to_thread(_run_ffmpeg, _encode_args(burn=True))
                 subtitles_burned = True
@@ -594,24 +835,30 @@ async def _render(
                 logger.warning(f"字幕烧录失败，退化为不烧录: {e}")
         if not subtitles_burned:
             await asyncio.to_thread(_run_ffmpeg, _encode_args(burn=False))
+        await progress(95)
 
-    # 5) SRT 与 manifest 建档
-    if srt_text.strip():
+    # 4) SRT 与 manifest 建档
+    extra_meta = dict(artifact_meta or {})
+    srt_artifact_id: Optional[str] = None
+    # 烧录失败退化时 SRT 是字幕的唯一交付形式，不受 export_srt 开关影响
+    if srt_text.strip() and (export_srt or (want_burn and not subtitles_burned)):
         srt_path.write_text(srt_text, encoding="utf-8")
-        await asset_service.create_artifact(
+        srt_artifact = await asset_service.create_artifact(
             session,
             project_id=project_id,
             type="subtitle",
             storage_key=srt_rel,
             mime_type="application/x-subrip",
-            meta={"episode_id": episode_id, "burned": subtitles_burned},
+            meta={"episode_id": episode_id, "burned": subtitles_burned, **extra_meta},
         )
+        srt_artifact_id = srt_artifact.id
 
     # final 模式前面已校验齐全；is_publishable 仅 final 且无占位镜头时为 True
     is_publishable = render_mode == "final" and not placeholder_shots
     video_artifact = await asset_service.create_artifact(
         session,
         project_id=project_id,
+        job_id=job_id,
         type="video",
         storage_key=f"videos/{final_path.name}",
         mime_type="video/mp4",
@@ -624,6 +871,7 @@ async def _render(
             "render_mode": render_mode,
             "is_publishable": is_publishable,
             "placeholder_shots": placeholder_shots,
+            **extra_meta,
         },
     )
 
@@ -674,7 +922,7 @@ async def _render(
         ],
         "placeholder_shots": placeholder_shots,
         "subtitles": {
-            "srt_storage_key": srt_rel if srt_text.strip() else None,
+            "srt_storage_key": srt_rel if srt_artifact_id else None,
             "subtitles_burned": subtitles_burned,
         },
         "bgm": {"storage_key": bgm_storage_key if bgm_used else None, "volume_db": bgm_volume_db},
@@ -700,7 +948,9 @@ async def _render(
 
     return {
         "artifact_id": video_artifact.id,
+        "srt_artifact_id": srt_artifact_id,
         "storage_key": video_artifact.storage_key,
         "manifest": manifest,
         "duration_ms": total_ms,
+        "subtitles_burned": subtitles_burned,
     }
