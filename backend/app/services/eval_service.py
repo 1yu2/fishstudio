@@ -8,6 +8,8 @@ import math
 from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import func, select
@@ -44,48 +46,86 @@ def _canonical_hash(value: Any) -> str:
     ).hexdigest()
 
 
-def _dataset_payload(shot_count: int) -> tuple[dict[str, Any], dict[str, Any]]:
-    shots = [
-        {
-            "key": f"shot-{index + 1}",
-            "character": "anchor-a",
-            "wardrobe": "costume-v1",
-            "scene": "room-a",
-            "action": "enter-and-look",
-            "duration_ms": 4000,
-        }
-        for index in range(shot_count)
-    ]
-    return (
-        {"schema_version": 1, "shots": shots, "seed": 20260917},
-        {"required_metrics": list(QUALITY_DIMENSIONS), "min_score": 0.7, "aspect_ratio": "9:16"},
-    )
+# 基准集 v1：ViStoryBench（MIT）中 19 个公版故事的分镜文本 + FishStudio 生成的原创角色设定图。
+# 由 scripts/benchmark/build_vistory.py 生成；设定图存放在 storage/benchmarks/vistory/（不入库）。
+BENCHMARK_FILE = Path(__file__).resolve().parent.parent / "eval_data" / "vistory_v1.json"
+# 早期占位基准（固定 3/8 镜头的假数据），保留历史 EvalRun 的外键，但不再对外列出。
+RETIRED_KEYS = ("short-drama-3-shot", "short-drama-8-shot")
+
+
+@lru_cache(maxsize=1)
+def benchmark_stories() -> tuple[dict[str, Any], ...]:
+    data = json.loads(BENCHMARK_FILE.read_text(encoding="utf-8"))
+    return tuple({**story, "source": data["source"]} for story in data["stories"])
+
+
+def _dataset_payload(story: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    inputs = {
+        "schema_version": 2,
+        "source": story["source"],
+        "source_id": story["source_id"],
+        "characters": story["characters"],
+        "shots": story["shots"],
+    }
+    constraints = {
+        "required_metrics": list(QUALITY_DIMENSIONS),
+        "min_score": 0.7,
+        "aspect_ratio": story["aspect_ratio"],
+        "shot_count": len(story["shots"]),
+    }
+    return inputs, constraints
 
 
 async def seed_benchmarks(session: AsyncSession) -> list[BenchmarkDataset]:
-    rows = []
-    for count in (3, 8):
-        key = f"short-drama-{count}-shot"
-        existing = await session.scalar(
-            select(BenchmarkDataset).where(BenchmarkDataset.key == key, BenchmarkDataset.version == 1)
+    """幂等写入基准集，返回当前 active 的基准。
+
+    内容（content_hash）变化时不改旧行：旧版本标记 retired，新内容以 version+1 写入，
+    这样历史 EvalRun 始终指向它当时评测的那份数据。旧占位基准一律 retired。
+    """
+    stories = benchmark_stories()
+    rows = (
+        (
+            await session.execute(
+                select(BenchmarkDataset).where(
+                    BenchmarkDataset.key.in_([story["key"] for story in stories] + list(RETIRED_KEYS))
+                )
+            )
         )
-        if existing:
-            rows.append(existing)
+        .scalars()
+        .all()
+    )
+    latest: dict[str, BenchmarkDataset] = {}
+    for row in rows:
+        if row.key in RETIRED_KEYS:
+            row.status = "retired"
+        elif row.key not in latest or row.version > latest[row.key].version:
+            latest[row.key] = row
+
+    active = []
+    for story in stories:
+        inputs, constraints = _dataset_payload(story)
+        content_hash = _canonical_hash({"input": inputs, "expected": constraints})
+        current = latest.get(story["key"])
+        if current is not None and current.content_hash == content_hash:
+            current.status = "active"
+            active.append(current)
             continue
-        inputs, constraints = _dataset_payload(count)
+        if current is not None:
+            current.status = "retired"
         row = BenchmarkDataset(
-            key=key,
-            version=1,
-            name=f"固定 {count} 镜头短剧基准",
-            shot_count=count,
+            key=story["key"],
+            version=current.version + 1 if current is not None else 1,
+            name=f"{story['name']}（ViStoryBench #{story['source_id']}）",
+            shot_count=len(story["shots"]),
             input_payload=inputs,
             expected_constraints=constraints,
-            content_hash=_canonical_hash({"input": inputs, "expected": constraints}),
+            content_hash=content_hash,
+            status="active",
         )
         session.add(row)
-        rows.append(row)
+        active.append(row)
     await session.commit()
-    return rows
+    return active
 
 
 def percentile(values: list[float], percent: float) -> Optional[float]:
@@ -152,6 +192,8 @@ async def create_eval_run(
     project_id: Optional[str] = None,
     created_by: Optional[int] = None,
 ) -> EvalRun:
+    if dataset.status != "active":
+        raise ValueError(f"benchmark {dataset.key} v{dataset.version} 已停用")
     if len(samples) != dataset.shot_count:
         raise ValueError(f"benchmark 需要 {dataset.shot_count} 个镜头样本")
     metrics, reasons, score, explanation = aggregate_samples(samples)

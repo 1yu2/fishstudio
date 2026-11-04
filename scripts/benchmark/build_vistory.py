@@ -1,0 +1,190 @@
+"""Build benchmark v1 from ViStoryBench (MIT) story text + our own generated character sheets.
+
+ViStoryBench's own character reference images are stills from copyrighted films/animations, so only
+the story text is used; character sheets are generated from each character's text description.
+
+  python scripts/benchmark/build_vistory.py data              # write backend/app/eval_data/vistory_v1.json
+  python scripts/benchmark/build_vistory.py images --cap 10   # generate missing sheets (paid, Seedream)
+
+Images go to backend/storage/benchmarks/vistory/ (gitignored) and are referenced by storage key.
+"""
+
+import argparse
+import json
+import re
+import sys
+import unicodedata
+from decimal import Decimal
+from pathlib import Path
+
+import httpx
+
+ROOT = Path(__file__).resolve().parents[2]
+DATA_FILE = ROOT / "backend/app/eval_data/vistory_v1.json"
+STORAGE = ROOT / "backend/storage"
+SOURCE = "https://huggingface.co/datasets/ViStoryBench/ViStoryBench/resolve/main/ViStoryBench/{id}/story.json"
+
+# Public-domain stories with cartoon / animal characters (no real-person likeness, no modern IP).
+STORY_IDS = [
+    "09", "17", "18", "29", "44", "45", "46", "47", "48", "56",
+    "57", "58", "61", "62", "63", "68", "69", "76", "78",
+]  # fmt: skip
+MAX_SHEETS_PER_STORY = 3
+MIN_APPEARANCES = 2
+SHOT_DURATION_MS = 4000
+IMAGE_MODEL = "doubao-seedream-5-0-flash-260915"
+IMAGE_PRICE = Decimal("0.12")
+# A few ViStoryBench descriptions copy well-known film costumes; replace them with original designs.
+PROMPT_OVERRIDES = {
+    ("09", "Snow White"): "白雪公主，黑色长卷发，皮肤白皙，脸颊红润，年轻美丽的公主。身穿酒红色天鹅绒长裙，"
+    "领口和袖口绣着银色雪花纹样，披一件浅灰色毛边斗篷，发间别着一枚白色山茶花发饰。",
+    ("17", "Aladdin"): "阿拉丁，黑色卷发、棕色眼睛的少年，皮肤被阳光晒成小麦色，笑容灿烂。头缠一条橙色旧头巾，"
+    "穿打着补丁的土黄色长袖短袍，腰系绿色布带，脚穿磨旧的皮凉鞋。",
+    ("17", "Sorcerer"): "来自远方的魔法师，瘦高的中年男子，灰白山羊胡，眼神阴鸷。身穿深绿色长袍，"
+    "外罩绣有星纹的黑色斗篷，头戴尖顶毡帽，手持一根弯曲的乌木手杖。",
+    ("17", "Princess"): "苏丹的公主，黑色长发编成发辫，棕色眼睛，皮肤白皙，气质高贵。"
+    "身穿珊瑚红色绣金长裙，披一条半透明的米白色头纱，额前坠着一颗绿松石。",
+    # The original text ("上半身裸露") is rejected by Seedream's input moderation.
+    ("76", "Maui's Brother"): "毛伊的哥哥，身材高大的波利尼西亚青年，黑发浓密，皮肤黝黑，神情中带着不屑和嘲笑。"
+    "身穿深褐色无袖树皮布短上衣和及膝草裙，肩披编织草绳，手臂上有几何纹样纹身。",
+    # The original text gives no clothing, and the model draws them nude / in a sheer dress.
+    ("48", "Man"): "神创造的第一个男人，年轻健壮，棕色短发，神情纯真。身穿用宽大绿叶和藤蔓编成的及膝长袍，赤脚。",
+    ("48", "Woman"): "神创造的第一个女人，年轻温柔，栗色及腰长发，神情纯真。身穿用花瓣和绿叶编成的不透明及踝长裙，"
+    "发间插着白色小花，赤脚。",
+}
+SHEET_STYLE = "原创角色设定图，单人全身正面站立，纯白背景，无文字，二次元国漫风格，线条干净。"
+
+
+def _slug(text: str) -> str:
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-") or "character"
+
+
+def _story(story_id: str) -> dict:
+    response = httpx.get(SOURCE.format(id=story_id), follow_redirects=True, timeout=60)
+    response.raise_for_status()
+    return json.loads(response.content.decode("utf-8-sig"))
+
+
+def build_story(story_id: str, raw: dict) -> dict:
+    characters = []
+    ranked = sorted(raw["Characters"].values(), key=lambda c: -int(c.get("num_of_appearances") or 0))
+    sheets = 0
+    for character in ranked:
+        key = _slug(character["name_en"])
+        main = sheets < MAX_SHEETS_PER_STORY and int(character.get("num_of_appearances") or 0) >= MIN_APPEARANCES
+        sheets += main
+        characters.append(
+            {
+                "key": key,
+                "name": character["name_ch"],
+                "name_en": character["name_en"],
+                "kind": character["tag"],
+                "prompt": PROMPT_OVERRIDES.get((story_id, character["name_en"]), character["prompt_ch"]),
+                "appearances": int(character.get("num_of_appearances") or 0),
+                "reference_image": f"benchmarks/vistory/{story_id}/{key}.jpeg" if main else None,
+            }
+        )
+    by_en = {c["name_en"]: c["key"] for c in characters}
+    shots = [
+        {
+            "key": f"shot-{shot['index']}",
+            "plot": shot["Plot Correspondence"]["ch"],
+            "setting": shot["Setting Description"]["ch"],
+            "camera": shot["Shot Perspective Design"]["ch"],
+            "description": shot["Static Shot Description"]["ch"],
+            "characters": [by_en[name] for name in shot["Characters Appearing"]["en"] if name in by_en],
+            "duration_ms": SHOT_DURATION_MS,
+        }
+        for shot in raw["Shots"]
+    ]
+    return {
+        "key": f"vistory-{story_id}",
+        "name": raw["Story_type"]["ch"],
+        "source_id": story_id,
+        "aspect_ratio": "9:16",
+        "characters": characters,
+        "shots": shots,
+    }
+
+
+def write_data() -> None:
+    stories = [build_story(story_id, _story(story_id)) for story_id in STORY_IDS]
+    payload = {
+        "schema_version": 2,
+        "source": {
+            "name": "ViStoryBench",
+            "url": "https://huggingface.co/datasets/ViStoryBench/ViStoryBench",
+            "license": "MIT",
+            "note": "Story text and storyboards only; character sheets are generated by FishStudio.",
+        },
+        "stories": stories,
+    }
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DATA_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    sheets = sum(1 for s in stories for c in s["characters"] if c["reference_image"])
+    shots = sum(len(s["shots"]) for s in stories)
+    print(f"wrote {DATA_FILE.relative_to(ROOT)}: {len(stories)} stories, {shots} shots, {sheets} sheets")
+
+
+def _env_value(name: str, env_files: list[Path]) -> str:
+    from dotenv import dotenv_values
+
+    for path in env_files:
+        value = (dotenv_values(path).get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def generate_images(cap: Decimal, env_files: list[Path]) -> None:
+    key = _env_value("VOLCANO_API_KEY", env_files)
+    if not key:
+        sys.exit(f"VOLCANO_API_KEY not found in {[str(p) for p in env_files]}")
+    base = (_env_value("VOLCANO_BASE_URL", env_files) or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+    client = httpx.Client(base_url=base, headers={"Authorization": f"Bearer {key}"}, timeout=180)
+    data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    spent = Decimal("0")
+    for story in data["stories"]:
+        for character in story["characters"]:
+            target = character["reference_image"] and STORAGE / character["reference_image"]
+            if not target or target.exists():
+                continue
+            if spent + IMAGE_PRICE > cap:
+                sys.exit(f"stopping: next image would exceed cap {cap} (spent {spent})")
+            response = client.post(
+                "/images/generations",
+                json={
+                    "model": IMAGE_MODEL,
+                    "prompt": f"{character['prompt']}\n{SHEET_STYLE}",
+                    "size": "1440x2560",
+                    "response_format": "url",
+                    "watermark": False,
+                },
+            )
+            if response.status_code != 200:
+                print(f"FAILED {story['key']}/{character['key']}: {response.status_code} {response.text[:200]}")
+                continue
+            spent += IMAGE_PRICE
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(httpx.get(response.json()["data"][0]["url"], timeout=120).content)
+            print(f"ok {story['key']}/{character['key']} ({character['name']}) spent={spent}")
+    print(f"done, spent {spent} CNY")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=["data", "images"])
+    parser.add_argument("--cap", type=Decimal, default=Decimal("10"), help="max CNY to spend on images")
+    parser.add_argument(
+        "--env-file", type=Path, action="append", help="file(s) holding VOLCANO_API_KEY (default: .env, backend/.env)"
+    )
+    args = parser.parse_args()
+    if args.command == "data":
+        write_data()
+    else:
+        generate_images(args.cap, args.env_file or [ROOT / ".env", ROOT / "backend/.env"])
+
+
+if __name__ == "__main__":
+    main()
