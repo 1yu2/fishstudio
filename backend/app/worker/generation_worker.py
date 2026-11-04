@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import mock_providers_enabled
 from app.db.database import SessionLocal
-from app.db.models import GenerationJob, RegenerationRequest, SeriesProject, WorkflowRun
+from app.db.models import Artifact, GenerationJob, RegenerationRequest, SeriesProject, WorkflowRun
 from app.model_runtime.media import get_media_runtime
 from app.providers.base import VideoGenerationRequest, VideoProvider
 from app.providers.pricing import PRICE_TABLE_VERSION, actual_video_cost, estimate_video_cost
@@ -1043,6 +1043,9 @@ async def execute_render_canvas(session: AsyncSession, job: GenerationJob) -> No
                 "canvas_id": params.get("canvas_id"),
             },
             on_progress=on_progress,
+            # 《人工智能生成合成内容标识办法》：画布成片始终带显式角标 + 隐式元数据，不可关闭
+            aigc_label=True,
+            aigc_reserved_code=str(params.get("input_hash") or ""),
         )
     except ValueError as e:
         logger.warning(f"render_canvas 校验失败 (job={job.id}): {e}")
@@ -1079,6 +1082,7 @@ async def execute_render_canvas(session: AsyncSession, job: GenerationJob) -> No
         )
         return
 
+    qc = await _run_canvas_qc(session, result, spec)
     await usage_service.record_usage(
         session,
         **await _job_trace_context(session, job),
@@ -1109,6 +1113,7 @@ async def execute_render_canvas(session: AsyncSession, job: GenerationJob) -> No
             "input_hash": params.get("input_hash"),
             "srt_artifact_id": result["srt_artifact_id"],
             "duration_ms": result["duration_ms"],
+            "qc": qc,
         },
         artifact={
             "artifact_id": result["artifact_id"],
@@ -1116,6 +1121,46 @@ async def execute_render_canvas(session: AsyncSession, job: GenerationJob) -> No
             "url": f"/api/artifacts/{result['artifact_id']}/download",
         },
     )
+
+
+async def _run_canvas_qc(session: AsyncSession, result: dict, spec: dict) -> dict:
+    """成片渲染成功后的出片检查：结果写进成片 Artifact 的 metadata.qc，并返回给 job.result。
+
+    检查本身出错（ffmpeg 超时等）→ status=error，按提醒处理，不让渲染任务失败。
+    """
+    from app.services import render_qc
+
+    try:
+        manifest = result["manifest"]
+        total_ms = int(result["duration_ms"])
+        audio_clips = [clip for track in spec.get("audio_tracks") or [] for clip in track.get("clips") or []]
+        cues = [cue for track in spec.get("subtitle_tracks") or [] for cue in track.get("cues") or []]
+        qc = await asyncio.to_thread(
+            render_qc.check_render,
+            timeline_renderer.STORAGE_DIR / result["storage_key"],
+            total_ms=total_ms,
+            shots=manifest.get("shots") or [],
+            audio_ranges=render_qc.audio_coverage(spec, total_ms),
+            expects_audio=bool(audio_clips),
+            cues=cues,
+            badge_applied=bool((result.get("aigc") or {}).get("badge")),
+        )
+    except Exception as e:
+        logger.exception("出片检查出错")
+        qc = render_qc.error_report(
+            f"出片检查没有跑完：{e if isinstance(e, render_qc.QcExecError) else type(e).__name__}"
+        )
+    try:
+        # 保存点隔离：写入失败只回滚这一步，外层事务仍可继续（记账、任务收尾）
+        async with session.begin_nested():
+            artifact = await session.get(Artifact, result["artifact_id"])
+            if artifact is not None:
+                artifact.artifact_metadata = {**(artifact.artifact_metadata or {}), "qc": qc}
+                await session.flush()
+    except Exception:
+        logger.exception("出片检查结果写入产物 metadata 失败")
+        qc = render_qc.error_report("出片检查结果没有保存成功")
+    return qc
 
 
 async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:

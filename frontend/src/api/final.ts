@@ -51,6 +51,25 @@ export interface FinalTimeline {
   bgm: TimelineBgm | null
 }
 
+/** 出片检查的一条问题：blocking 阻止导出，warning 提醒；带 start_ms / end_ms 的可以在播放器里跳转 */
+export interface QcIssue {
+  code: string
+  level: 'blocking' | 'warning'
+  message: string
+  start_ms?: number
+  end_ms?: number
+}
+
+/** 出片检查结果（渲染成功后由后端写入）。error = 检查本身没跑完，按提醒处理 */
+export interface RenderQc {
+  version: number
+  status: 'passed' | 'warning' | 'failed' | 'error'
+  error?: string
+  issues: QcIssue[]
+  notes: string[]
+  checks: Record<string, { status: string } & Record<string, unknown>>
+}
+
 export interface RenderInfo {
   job_id: string
   /** queued | running | succeeded | failed | canceled */
@@ -62,6 +81,8 @@ export interface RenderInfo {
   srt_url: string | null
   input_hash: string | null
   created_at: string | null
+  /** 出片检查；null / 缺省 = 本功能上线前的渲染，没有检查结果 */
+  qc?: RenderQc | null
 }
 
 export interface FinalState {

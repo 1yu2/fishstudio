@@ -7,6 +7,7 @@ import { ProtectedVideo } from '../common/ProtectedMedia'
 import type { ProjectOutletContext } from '../project/outletContext'
 import { confirmDialog } from '../ui/ConfirmDialog'
 import { toast } from '../ui/Toast'
+import QcCard, { timeLabel } from './QcCard'
 import Timeline from './Timeline'
 import { useFinal } from './useFinal'
 import './final.css'
@@ -44,7 +45,14 @@ export default function FinalPage() {
   const failed = latest?.status === 'failed'
   const stale = !!state?.stale
   const blocked = (state?.problems.length ?? 0) > 0
-  const exportable = !!lastSuccess?.url
+  const qc = lastSuccess?.qc ?? null
+  const qcFailed = qc?.status === 'failed'
+  const qcReason = qcFailed ? qc?.issues.find((issue) => issue.level === 'blocking')?.message ?? '请重新渲染' : ''
+  const exportable = !!lastSuccess?.url && !qcFailed
+  // 检查没通过 / 有提醒时，播放器不提供原生下载入口（只能走“导出成片”按钮和它的确认）
+  const guard = qc?.status === 'failed' || qc?.status === 'warning'
+    ? { controlsList: qcFailed ? 'nodownload noplaybackrate' : 'nodownload', disablePictureInPicture: qcFailed, onContextMenu: (event: React.MouseEvent) => event.preventDefault() }
+    : {}
 
   const { flush, refresh } = data
   const exportFinal = useCallback(async () => {
@@ -59,6 +67,13 @@ export default function FinalPage() {
     }
     const url = fresh.last_success?.url
     if (!url) return
+    // 出片检查没通过不能导出（门禁在前端：以刚取到的最新结果为准）
+    const freshQc = fresh.last_success?.qc
+    if (freshQc?.status === 'failed') { toast(`出片检查没通过：${freshQc.issues.find((issue) => issue.level === 'blocking')?.message ?? '请重新渲染'}`, 'error'); return }
+    if (freshQc?.status === 'warning') {
+      const lines = freshQc.issues.map((issue) => `${timeLabel(issue) ? `${timeLabel(issue)} ` : ''}${issue.message}`)
+      if (!await confirmDialog({ title: `出片检查有 ${lines.length} 条提醒，仍要导出吗？`, description: lines.slice(0, 6).join('；') + (lines.length > 6 ? `；等共 ${lines.length} 条` : ''), confirmText: '仍要导出' })) return
+    }
     if (fresh.stale && !await confirmDialog({ title: '当前成片不是最新素材，仍要下载吗？', description: '素材在上次渲染之后有变化，下载的是旧版本。', confirmText: '仍要下载' })) return
     try { await finalApi.download(url, `成片-${canvasId}.mp4`) }
     catch (reason) { toast(reason instanceof Error ? reason.message : '下载失败', 'error') }
@@ -70,8 +85,9 @@ export default function FinalPage() {
   const hint = blocked ? state?.problems[0]?.message : stale ? STALE_TEXT : failed ? '上次渲染失败，可以重试' : undefined
   useEffect(() => {
     if (!state) return
-    setFooter?.({ label: '导出成片', onClick: () => void exportRef.current(), disabled: !exportable, note: exportable ? undefined : '先渲染一次', hint })
-  }, [setFooter, state, exportable, hint])
+    const note = exportable ? undefined : qcFailed ? `出片检查没通过：${qcReason}` : '先渲染一次'
+    setFooter?.({ label: '导出成片', onClick: () => void exportRef.current(), disabled: !exportable, note, hint })
+  }, [setFooter, state, exportable, hint, qcFailed, qcReason])
   useEffect(() => () => setFooter?.(null), [setFooter])
 
   const seek = useCallback((seconds: number) => {
@@ -91,7 +107,7 @@ export default function FinalPage() {
       <div className="fn-top">
         <section className="fn-preview" aria-label="预览">
           {lastSuccess?.url
-            ? <ProtectedVideo ref={videoRef} key={lastSuccess.url} src={lastSuccess.url} controls playsInline onTimeUpdate={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)} />
+            ? <ProtectedVideo ref={videoRef} key={lastSuccess.url} src={lastSuccess.url} controls playsInline {...guard} onTimeUpdate={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)} />
             : <div className="fn-preview__empty">还没有渲染过</div>}
           <div className="fn-preview__meta">
             {shotCount} 个镜头 · {state.timeline.voices.length} 句配音{state.timeline.bgm ? ' · 有背景音乐' : ''}
@@ -132,13 +148,13 @@ export default function FinalPage() {
                 <option value="1080p">1080p · MP4</option>
               </select>
             </label>
-            <label className="fn-check fn-check--soon"><input type="checkbox" disabled checked={false} readOnly />自动加入“AI 生成”标识（即将上线）</label>
-            <p className="fn-soon">出片检查（即将上线）</p>
+            <label className="fn-check"><input type="checkbox" disabled checked readOnly />自动加入“AI 生成”标识（平台要求）</label>
           </fieldset>
+          <QcCard qc={qc} hasRender={!!lastSuccess} rendering={active || data.rendering} onSeek={seek} />
         </aside>
       </div>
 
-      <Timeline state={state} currentMs={currentMs} onSeek={seek} />
+      <Timeline state={state} currentMs={currentMs} onSeek={seek} markers={active ? [] : qc?.issues ?? []} />
 
       {issues.length > 0 && (
         <ul className="fn-issues" aria-label="问题与提醒">
@@ -164,7 +180,7 @@ export default function FinalPage() {
           </button>
           {blocked && <span className="fn-reason">先解决上面的问题再渲染</span>}
           <button type="button" className="fn-btn fn-btn--primary" disabled={!exportable} onClick={() => void exportFinal()}>导出成片</button>
-          {!exportable && <span className="fn-reason">先渲染一次</span>}
+          {!exportable && <span className="fn-reason">{qcFailed ? `出片检查没通过：${qcReason}，建议重新渲染` : '先渲染一次'}</span>}
           {lastSuccess?.srt_url && <button type="button" className="fn-link" onClick={() => void finalApi.download(lastSuccess.srt_url!, `字幕-${canvasId}.srt`).catch((reason) => toast(reason instanceof Error ? reason.message : '下载失败', 'error'))}>下载 SRT 字幕</button>}
         </div>
       </section>
