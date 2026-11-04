@@ -101,6 +101,8 @@ export interface RunRequest {
   reference_artifact_ids?: string[]
   first_frame_artifact_id?: string | null
   last_frame_artifact_id?: string | null
+  /** 幂等标识：每次点击生成一个，自动重试复用，后端据此去重 */
+  client_request_id?: string
 }
 
 export interface Quote {
@@ -109,6 +111,55 @@ export interface Quote {
   mode?: string
   resolution?: string
   estimated_cost: number | null
+}
+
+export type BatchScope = 'all' | 'downstream'
+
+export interface BatchScopeBody {
+  scope: BatchScope
+  node_id?: string
+  skip_succeeded?: boolean
+}
+
+export interface BatchQuoteNode {
+  node_id: string
+  label: string
+  kind: 'image' | 'video'
+  status: 'pending' | 'skipped'
+  estimated_cost: number | null
+  unavailable: boolean
+  reason: string
+}
+
+export interface BatchQuote {
+  /** 报价时的画布版本；提交批量运行时原样带回，服务端据此拒绝过期报价 */
+  revision: number
+  nodes: BatchQuoteNode[]
+  estimated_total: number
+  /** 计入每日预算的云端部分 */
+  billable_total: number
+  unavailable_nodes: { node_id: string; label: string; reason: string }[]
+  budget: { cap: number | null; remaining: number | null }
+  exceeds_budget: boolean
+}
+
+export interface BatchNodeState {
+  status: 'waiting' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'canceled' | 'skipped'
+  job_id: string | null
+  reason: string
+}
+
+export interface BatchRun {
+  id: string
+  status: 'running' | 'succeeded' | 'failed' | 'canceled'
+  node_ids: string[]
+  nodes: Record<string, BatchNodeState>
+  total: number
+  /** 已成功或被跳过的节点数 */
+  completed: number
+  /** 失败或被上游阻塞的节点数 */
+  failed: number
+  estimated_total: number
 }
 
 export interface SplitResult {
@@ -148,6 +199,11 @@ export const nodeCanvasApi = {
   quote: (id: string, body: RunRequest) => json<Quote>(`${base(id)}/quote`, send('POST', body)),
   run: (id: string, nodeId: string, body: RunRequest) =>
     json<{ job_id: string; status: string }>(`${base(id)}/nodes/${encodeURIComponent(nodeId)}/run`, send('POST', body)),
+  batchQuote: (id: string, body: BatchScopeBody) => json<BatchQuote>(`${base(id)}/batch-quote`, send('POST', body)),
+  batchRun: (id: string, body: BatchScopeBody & { client_request_id: string; quoted_revision?: number }) => json<BatchRun>(`${base(id)}/batch-runs`, send('POST', body)),
+  batchList: (id: string) => json<BatchRun[]>(`${base(id)}/batch-runs`),
+  batchGet: (id: string, batchId: string, signal?: AbortSignal) => json<BatchRun>(`${base(id)}/batch-runs/${encodeURIComponent(batchId)}`, { signal }),
+  batchCancel: (id: string, batchId: string) => json<BatchRun>(`${base(id)}/batch-runs/${encodeURIComponent(batchId)}/cancel`, { method: 'POST' }),
   upload: (id: string, nodeId: string, file: File) => {
     const form = new FormData()
     form.append('node_id', nodeId)

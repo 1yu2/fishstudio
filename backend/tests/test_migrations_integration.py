@@ -77,6 +77,8 @@ EXPECTED_TABLES = {
     # 0025
     "model_providers",
     "node_canvases",
+    # 0027
+    "canvas_batch_runs",
 }
 
 
@@ -170,7 +172,7 @@ def test_empty_database_upgrades_to_head(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0026"
+    assert revision == "0027"
 
     # 0006 新列：shots 拆分选择槽 + usage_events.cost_source
     def _columns(table):
@@ -248,7 +250,7 @@ def test_legacy_0001_database_stamps_0001_then_upgrades(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0026"
+    assert revision == "0027"
 
     async def _legacy_rows():
         engine = create_async_engine(TEST_DATABASE_URL)
@@ -279,7 +281,7 @@ def test_bootstrap_is_idempotent(mig_env):
 
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0026"
+    assert revision == "0027"
 
 
 def test_concurrent_startup_is_serialized_by_advisory_lock(mig_env, monkeypatch):
@@ -309,7 +311,7 @@ def test_concurrent_startup_is_serialized_by_advisory_lock(mig_env, monkeypatch)
     assert all(timeline[i][1] == timeline[i + 1][1] for i in range(0, 6, 2))
     tables, revision = _tables_and_revision()
     assert EXPECTED_TABLES <= tables
-    assert revision == "0026"
+    assert revision == "0027"
 
 
 def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
@@ -352,7 +354,7 @@ def test_head_downgrade_and_upgrade_preserves_core_data(mig_env):
 
     command.upgrade(cfg, "head")
     tables, revision = _tables_and_revision()
-    assert revision == "0026"
+    assert revision == "0027"
     assert "clone_voice_quotes" in tables
     assert "script_revisions" in tables
     assert "series_bible_revisions" in tables

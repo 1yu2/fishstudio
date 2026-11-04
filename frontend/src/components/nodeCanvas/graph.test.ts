@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasRuns, StoredEdge, StoredNode } from '../../api/nodeCanvas'
+import fixture from '../../../../backend/tests/fixtures/node_canvas_resolve_cases.json'
 import { canConnect, dropTarget, layoutSplit, resolveInputs, statusText } from './graph'
 
 const node = (id: string, type: StoredNode['type'], data: Record<string, unknown> = {}): StoredNode => ({ id, type, position: { x: 0, y: 0 }, data })
@@ -95,5 +96,26 @@ describe('statusText', () => {
     expect(statusText({ ...job, status: 'queued', queue_position: 2 })).toBe('排队中 · 前面 2 个')
     expect(statusText({ ...job, status: 'queued' })).toBe('排队中')
     expect(statusText({ ...job, status: 'succeeded', progress: 100 })).toBe('完成')
+  })
+})
+
+// 与后端 resolve_node_request 共用同一份 fixture：同一张图和结果必须得到相同的请求与 blockers
+describe('resolveInputs matches the backend resolver fixture', () => {
+  interface Case {
+    name: string
+    nodes: { id: string; type: StoredNode['type']; data: Record<string, unknown> }[]
+    edges: { source: string; target: string; targetHandle: string }[]
+    results: Record<string, string[]>
+    aspect_ratio: string
+    node_id: string
+    expected: { request: unknown; blockers: string[] }
+  }
+  it.each(fixture.cases as unknown as Case[])('$name', (item) => {
+    const nodes = item.nodes.map((entry) => node(entry.id, entry.type, entry.data))
+    const edges = item.edges.map((entry) => edge(entry.source, entry.target, entry.targetHandle))
+    const target = nodes.find((entry) => entry.id === item.node_id)!
+    const { request, blockers } = resolveInputs(target, nodes, edges, runs(item.results), item.aspect_ratio)
+    expect(JSON.parse(JSON.stringify(request))).toEqual(item.expected.request)
+    expect(blockers).toEqual(item.expected.blockers)
   })
 })

@@ -26,6 +26,7 @@ from app.providers.pricing import PRICE_TABLE_VERSION, actual_video_cost, estima
 from app.providers.video_router import NoProviderError, RouteDecision
 from app.services import (
     asset_service,
+    canvas_batch_service,
     cost_service,
     job_event_service,
     job_service,
@@ -301,6 +302,7 @@ async def finalize_job(
     if job.status in job_service.TERMINAL_STATES:
         await workflow_service.on_job_finished(session, job)
         await job_event_service.emit_batch_progress(session, job)
+        await canvas_batch_service.advance_for_job(session, job)
     request_id = (job.params or {}).get("regeneration_request_id")
     if request_id:
         regen = await session.get(RegenerationRequest, request_id)
@@ -1476,6 +1478,8 @@ async def run_worker(poll_interval: float = 2.0, once: bool = False) -> None:
                 await session.commit()  # 租约落库后再执行
                 for job in jobs:
                     await _process_job(session, job)
+                # 画布批量运行的周期兜底：防止 job 终态时推进事件丢失
+                await canvas_batch_service.sweep_running(session)
         except asyncio.CancelledError:
             logger.info("generation worker 收到取消，退出")
             raise

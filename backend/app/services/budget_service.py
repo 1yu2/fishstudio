@@ -94,6 +94,11 @@ async def status(session: AsyncSession, user_id: int) -> dict[str, Any]:
     }
 
 
+async def lock_user(session: AsyncSession, user_id: int) -> None:
+    """用户级事务锁：串行化同一用户的预算检查 + 建任务，锁随事务提交释放。"""
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 7_310_000 + user_id})
+
+
 async def reserve(session: AsyncSession, user_id: int, estimate: Decimal) -> None:
     """检查本次云端预估是否超出今日上限；超出抛 BudgetExceeded。
 
@@ -103,7 +108,7 @@ async def reserve(session: AsyncSession, user_id: int, estimate: Decimal) -> Non
     cap = daily_cap()
     if cap is None or estimate <= 0:
         return
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 7_310_000 + user_id})
+    await lock_user(session, user_id)
     spent = await spent_today(session, user_id)
     pending = await in_flight(session, user_id)
     if spent + pending + estimate > cap:
