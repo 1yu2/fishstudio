@@ -101,6 +101,20 @@ def video_clips(spec: dict[str, Any]) -> list[VideoClip]:
     return sorted(clips, key=lambda item: (item.timeline_start_ms, item.id))
 
 
+def validate_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """校验 EDL 与轨道内容，供 revision 和直接渲染共用。"""
+    validated = TimelineSpec.model_validate(spec).model_dump(mode="json")
+    # 轨道容器允许扩展，内部 clip/cue 仍按模型校验。
+    video_clips(validated)
+    for track in validated.get("audio_tracks", []):
+        [AudioClip.model_validate(item) for item in track.get("clips", [])]
+    for track in validated.get("subtitle_tracks", []):
+        [SubtitleCue.model_validate(item) for item in track.get("cues", [])]
+    for track in validated.get("overlay_tracks", []):
+        [OverlayClip.model_validate(item) for item in track.get("clips", [])]
+    return validated
+
+
 async def validate_artifacts(session: AsyncSession, project_id: str, spec: dict[str, Any]) -> None:
     artifact_ids: set[str] = set()
     for group in ("video_tracks", "audio_tracks", "overlay_tracks"):
@@ -117,6 +131,17 @@ async def validate_artifacts(session: AsyncSession, project_id: str, spec: dict[
     if foreign:
         raise PermissionError(f"timeline artifacts belong to another project: {foreign}")
 
+    for group in ("video_tracks", "audio_tracks", "overlay_tracks"):
+        for track in spec.get(group, []):
+            for clip in track.get("clips", []):
+                expected = clip.get("artifact_hash")
+                if (
+                    expected
+                    and clip.get("artifact_id")
+                    and found[clip["artifact_id"]].content_hash != expected
+                ):
+                    raise ValueError(f"timeline clip artifact hash changed: {clip['artifact_id']}")
+
 
 async def create_revision(
     session: AsyncSession,
@@ -131,15 +156,7 @@ async def create_revision(
     episode = await session.get(Episode, episode_id)
     if episode is None or episode.project_id != project_id:
         raise ValueError("episode not found")
-    validated = TimelineSpec.model_validate(spec).model_dump(mode="json")
-    # Validate typed clip/cue payloads kept inside extensible track containers.
-    video_clips(validated)
-    for track in validated.get("audio_tracks", []):
-        [AudioClip.model_validate(item) for item in track.get("clips", [])]
-    for track in validated.get("subtitle_tracks", []):
-        [SubtitleCue.model_validate(item) for item in track.get("cues", [])]
-    for track in validated.get("overlay_tracks", []):
-        [OverlayClip.model_validate(item) for item in track.get("clips", [])]
+    validated = validate_spec(spec)
     await validate_artifacts(session, project_id, validated)
     revision = (
         int(
