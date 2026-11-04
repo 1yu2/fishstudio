@@ -164,7 +164,8 @@ export function dropTarget(fromType: CanvasNodeType, handleType: 'source' | 'tar
 }
 
 const COLUMN = { character: 0, keyframe: 420, video: 840 }
-const ROW = 380
+/** 行距要放得下带缩略图的图片 / 视频节点（约 520–580）加镜头组标题和边距，否则新拆出来的镜头组会互相重叠 */
+const ROW = 700
 
 /** 把 Copilot 拆出的角色与镜头摆成三列：角色定妆图 → 镜头关键帧 → 视频。 */
 export function layoutSplit(split: SplitResult, existing: StoredNode[]): { nodes: StoredNode[]; edges: StoredEdge[] } {

@@ -7,6 +7,10 @@
 .pf-back { display: flex; color: var(--text-secondary); }
 .pf-back:hover { color: var(--text-primary); }
 .pf-title { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.pf-title--button { border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: inherit; font-family: inherit; padding: 2px 6px; margin: 0 -6px; cursor: text; text-align: left; }
+.pf-title--button:hover { border-color: var(--border); }
+.pf-title-input { width: 200px; max-width: 100%; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-primary); font: inherit; font-weight: 600; font-size: 15px; padding: 2px 6px; }
+.pf-title-input:focus { outline: none; }
 .pf-episode { color: var(--text-secondary); font-size: 13px; }
 
 .pf-seg { display: inline-flex; background: var(--surface-2); border-radius: var(--radius-md); padding: 3px; }
@@ -41,9 +45,8 @@
 .pf-steps__cost { margin-left: auto; padding-left: 12px; white-space: nowrap; color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 .pf-body { flex: 1; min-height: 0; overflow: auto; }
-/* 画布视图：全屏工作区，覆盖画布自带的整屏最小高度，避免在框架内再出现滚动条 */
+/* 画布视图：全屏工作区，画布自己填满这里，框架内不出现第二个滚动条 */
 .pf-body--canvas { display: flex; flex-direction: column; overflow: hidden; }
-.pf-body--canvas .nc-page { flex: 1; height: auto; min-height: 0; }
 
 .pf-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; background: var(--surface); border-top: 1px solid var(--border); }
 .pf-footer__hint { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }

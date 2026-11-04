@@ -4,12 +4,19 @@ import { Suspense } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../routing'
 import { POLL_INTERVAL_MS } from '../../hooks/usePolling'
+import { nodeCanvasApi } from '../../api/nodeCanvas'
+import { toast } from '../ui/Toast'
 import { WorkspaceApiError, workspaceApi, type ProjectSummary } from '../../api/workspace'
 
 vi.mock('../../api/workspace', async () => {
   const actual = await vi.importActual<typeof import('../../api/workspace')>('../../api/workspace')
   return { ...actual, workspaceApi: { overview: vi.fn(), project: vi.fn() } }
 })
+vi.mock('../../api/nodeCanvas', async () => {
+  const actual = await vi.importActual<typeof import('../../api/nodeCanvas')>('../../api/nodeCanvas')
+  return { ...actual, nodeCanvasApi: { ...actual.nodeCanvasApi, rename: vi.fn() } }
+})
+vi.mock('../ui/Toast', () => ({ toast: vi.fn() }))
 vi.mock('../workspace/WorkspacePage', () => ({ default: () => <div>WORKSPACE_PAGE</div> }))
 vi.mock('../nodeCanvas/NodeCanvasPage', () => ({
   default: ({ canvasId }: { canvasId: string }) => <div>NODE_CANVAS:{canvasId}</div>,
@@ -78,9 +85,13 @@ function renderAt(entry: string) {
   )
 }
 
+const nodeCanvas_renameCalls = () => vi.mocked(nodeCanvasApi.rename).mock.calls.length
+
 describe('ProjectFrame', () => {
   beforeEach(() => {
     stub.override = null
+    vi.mocked(nodeCanvasApi.rename).mockReset()
+    vi.mocked(toast).mockReset()
     vi.mocked(workspaceApi.project).mockReset()
     vi.mocked(workspaceApi.project).mockResolvedValue(summary)
   })
@@ -103,6 +114,69 @@ describe('ProjectFrame', () => {
     expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1')
     await act(async () => { resolve({ ...summary, active_step: null }) })
     await waitFor(() => expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/script'))
+  })
+
+  describe('rename from the header title', () => {
+    const open = async () => {
+      renderAt('/studio/c1/canvas')
+      fireEvent.click(await screen.findByRole('button', { name: '雪夜狐妖' }))
+      return screen.getByLabelText('项目名称') as HTMLInputElement
+    }
+
+    it('saves on Enter, then refreshes the summary', async () => {
+      vi.mocked(nodeCanvasApi.rename).mockResolvedValue({} as never)
+      const input = await open()
+      expect(input.value).toBe('雪夜狐妖')
+      const calls = vi.mocked(workspaceApi.project).mock.calls.length
+      fireEvent.change(input, { target: { value: ' 新名字 ' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(nodeCanvasApi.rename).toHaveBeenCalledWith('c1', { title: '新名字' }))
+      await waitFor(() => expect(vi.mocked(workspaceApi.project).mock.calls.length).toBeGreaterThan(calls))
+      expect(screen.queryByLabelText('项目名称')).not.toBeInTheDocument()
+    })
+
+    it('saves on blur', async () => {
+      vi.mocked(nodeCanvasApi.rename).mockResolvedValue({} as never)
+      const input = await open()
+      fireEvent.change(input, { target: { value: '失焦保存' } })
+      fireEvent.blur(input)
+      await waitFor(() => expect(nodeCanvasApi.rename).toHaveBeenCalledWith('c1', { title: '失焦保存' }))
+    })
+
+    it('toasts on failure', async () => {
+      vi.mocked(nodeCanvasApi.rename).mockRejectedValue(new Error('重命名失败啦'))
+      const input = await open()
+      fireEvent.change(input, { target: { value: '改一下' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(toast).toHaveBeenCalledWith('重命名失败啦', 'error'))
+    })
+
+    it('ignores Enter and Esc while the IME is composing', async () => {
+      vi.mocked(nodeCanvasApi.rename).mockResolvedValue({} as never)
+      const input = await open()
+      fireEvent.change(input, { target: { value: 'ni' } })
+      fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+      fireEvent.keyDown(input, { key: 'Escape', keyCode: 229 })
+      expect(screen.getByLabelText('项目名称')).toBeInTheDocument()
+      expect(nodeCanvas_renameCalls()).toBe(0)
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(nodeCanvasApi.rename).toHaveBeenCalledWith('c1', { title: 'ni' }))
+    })
+
+    it('Esc cancels without saving, and unchanged / empty names are not saved', async () => {
+      const input = await open()
+      fireEvent.change(input, { target: { value: '不要保存' } })
+      fireEvent.keyDown(input, { key: 'Escape' })
+      expect(screen.queryByLabelText('项目名称')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '雪夜狐妖' })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: '雪夜狐妖' }))
+      fireEvent.blur(screen.getByLabelText('项目名称'))  // 没改
+      fireEvent.click(screen.getByRole('button', { name: '雪夜狐妖' }))
+      fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '   ' } })
+      fireEvent.blur(screen.getByLabelText('项目名称'))  // 空
+      expect(nodeCanvasApi.rename).not.toHaveBeenCalled()
+    })
   })
 
   it('canvas view has no step nav or footer', async () => {

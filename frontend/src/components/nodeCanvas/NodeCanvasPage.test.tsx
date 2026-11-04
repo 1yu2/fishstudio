@@ -27,6 +27,7 @@ const api = vi.mocked(nodeCanvasApi)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  window.localStorage.clear()
   api.get.mockResolvedValue({
     id: 'c1', title: '雨夜', aspect_ratio: '9:16', node_count: 1, updated_at: null, created_at: null, revision: 3,
     graph: { nodes: [{ id: 'text-1', type: 'text', position: { x: 0, y: 0 }, data: { label: '想法', text: '雨夜便利店' } }], edges: [], viewport: { x: 0, y: 0, zoom: 1 } },
@@ -38,6 +39,12 @@ beforeEach(() => {
   api.run.mockResolvedValue({ job_id: 'j1', status: 'pending' })
   api.batchList.mockResolvedValue([])
 })
+
+/** 工具栏的下拉菜单：先点开，再点菜单项 */
+function chooseMenu(menu: string, item: string) {
+  fireEvent.click(screen.getByRole('button', { name: menu }))
+  fireEvent.click(screen.getByRole('menuitem', { name: item }))
+}
 
 function renderPage(entry = '/') {
   return render(<MemoryRouter initialEntries={[entry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><NodeCanvasPage canvasId="c1" /></MemoryRouter>)
@@ -59,7 +66,10 @@ describe('NodeCanvasPage', () => {
   it('loads the graph and shows spend', async () => {
     renderPage()
     expect(await screen.findByDisplayValue('雨夜便利店')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('雨夜')).toBeInTheDocument()
+    // 画布名称改到项目顶栏，工具栏不再有返回 / 标题输入 / 预算
+    expect(screen.queryByLabelText('画布名称')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('返回项目')).not.toBeInTheDocument()
+    expect(screen.queryByText(/今日云端/)).not.toBeInTheDocument()
     expect(await screen.findByText('已花费 ¥1.50')).toBeInTheDocument()
   })
 
@@ -76,7 +86,7 @@ describe('NodeCanvasPage', () => {
   it('adds an image node, saves, then runs it with the merged prompt', async () => {
     renderPage()
     await screen.findByDisplayValue('雨夜便利店')
-    fireEvent.click(screen.getByRole('button', { name: '图片' }))
+    chooseMenu('更多', '新建图片节点')
     fireEvent.change(await screen.findByLabelText('提示词'), { target: { value: '女店员' } })
     const run = (await screen.findByText('生成')).closest('button')!
     await waitFor(() => expect(run).not.toBeDisabled())
@@ -193,7 +203,8 @@ describe('NodeCanvasPage', () => {
     api.batchQuote.mockResolvedValue(batchQuote)
     api.batchRun.mockResolvedValue({ ...batchRun, kinds: ['image'] })
     renderPage()
-    fireEvent.click(await screen.findByText('生成全部画面'))
+    await screen.findByText('全部运行')
+    chooseMenu('分段生成', '生成全部画面')
     await screen.findByText(/预计合计/)
     expect(api.batchQuote).toHaveBeenLastCalledWith('c1', { scope: 'all', node_id: undefined, kinds: ['image'] })
     await act(async () => { fireEvent.click(screen.getByText('确认运行')) })
@@ -224,7 +235,8 @@ describe('NodeCanvasPage', () => {
       unavailable_nodes: [videoNode('上游图片还没有结果', false)],
     })
     renderPage()
-    fireEvent.click(await screen.findByText('生成全部视频'))
+    await screen.findByText('全部运行')
+    chooseMenu('分段生成', '生成全部视频')
     expect(await screen.findByText('没有可以运行的节点（1 个缺上游图片，先跳过）')).toBeInTheDocument()
     expect(screen.queryByText(/将运行/)).not.toBeInTheDocument()
     expect(screen.getByText('这些节点暂时无法运行（未计入合计）')).toBeInTheDocument()
@@ -246,7 +258,8 @@ describe('NodeCanvasPage', () => {
     withImageJob('succeeded')
     api.batchQuote.mockResolvedValueOnce({ ...batchQuote, runnable_count: 1, waiting_count: 1 })
     renderPage()
-    fireEvent.click(await screen.findByText('生成全部视频'))
+    await screen.findByText('全部运行')
+    chooseMenu('分段生成', '生成全部视频')
     expect(await screen.findByText(/将运行 1 个节点（1 个缺上游图片，先跳过）/)).toBeInTheDocument()
     expect(screen.getByText('确认运行').closest('button')).not.toBeDisabled()
 
@@ -373,11 +386,358 @@ describe('NodeCanvasPage', () => {
     api.models.mockResolvedValue({ image: [], video: [], defaults: { image: '', video_preview: '', video_final: '' }, image_problem: '还没有可用的图片模型：去设置添加' })
     renderPage()
     await screen.findByDisplayValue('雨夜便利店')
-    fireEvent.click(screen.getByRole('button', { name: '图片' }))
+    chooseMenu('更多', '新建图片节点')
     fireEvent.change(await screen.findByLabelText('提示词'), { target: { value: '女店员' } })
     expect(await screen.findByText('还没有可用的图片模型：去设置添加')).toBeInTheDocument()
     expect((await screen.findByText('生成')).closest('button')).toBeDisabled()
     expect(screen.getByLabelText('上传')).not.toBeDisabled()
+  })
+
+  // ---- 镜头分组 ----
+  const shotGraph = (count: number, extra: { nodes?: unknown[]; edges?: unknown[] } = {}, spacing = 600) => {
+    const nodes: unknown[] = []
+    const edges: unknown[] = []
+    for (let n = 1; n <= count; n++) {
+      const y = (n - 1) * spacing
+      nodes.push(
+        { id: `k${n}`, type: 'image', position: { x: 0, y }, data: { label: `${n} · 开场 关键帧`, prompt: `画面${n}`, shot_size: '近景' } },
+        { id: `v${n}`, type: 'video', position: { x: 400, y }, data: { label: `${n} · 开场`, prompt: `视频${n}`, duration: 4, order: n - 1 } },
+      )
+      edges.push({ id: `e${n}`, source: `k${n}`, target: `v${n}`, sourceHandle: 'out', targetHandle: 'first_frame' })
+    }
+    api.get.mockResolvedValue({
+      id: 'c1', title: '雨夜', aspect_ratio: '9:16', node_count: nodes.length, updated_at: null, created_at: null, revision: 3,
+      graph: { nodes: [...nodes, ...(extra.nodes || [])] as never, edges: [...edges, ...(extra.edges || [])] as never, viewport: { x: 0, y: 0, zoom: 1 } },
+    })
+  }
+
+  it('wraps each shot in an expanded group by default and folds / unfolds it', async () => {
+    shotGraph(2)
+    renderPage()
+    expect(await screen.findByLabelText('镜头 1（已展开）')).toBeInTheDocument()
+    expect(screen.getByLabelText('镜头 2（已展开）')).toBeInTheDocument()
+    expect(screen.getByText('镜头 1 · 近景 · 4 秒')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('画面1')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('折叠镜头 1'))
+    expect(screen.queryByDisplayValue('画面1')).not.toBeInTheDocument()  // 成员隐藏
+    expect(screen.queryByLabelText('镜头 1（已展开）')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('展开镜头 1')).toHaveTextContent('镜头 1 · 近景')
+    expect(screen.getByLabelText('展开镜头 1')).toHaveTextContent('未生成')
+    expect(screen.getByDisplayValue('画面2')).toBeInTheDocument()  // 另一组不受影响
+
+    fireEvent.click(screen.getByLabelText('展开镜头 1'))
+    expect(screen.getByDisplayValue('画面1')).toBeInTheDocument()
+    expect(screen.getByLabelText('镜头 1（已展开）')).toBeInTheDocument()
+  })
+
+  it('collapses / expands every group from the toolbar and remembers it per canvas', async () => {
+    shotGraph(2)
+    const first = renderPage()
+    await screen.findByLabelText('镜头 1（已展开）')
+    fireEvent.click(screen.getByRole('button', { name: '全部折叠' }))
+    expect(screen.getByLabelText('展开镜头 1')).toBeInTheDocument()
+    expect(screen.getByLabelText('展开镜头 2')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('画面1')).not.toBeInTheDocument()
+    expect(JSON.parse(window.localStorage.getItem('fishstudio.canvas.collapsed.c1') || '[]').sort()).toEqual(['v1', 'v2'])
+
+    first.unmount()
+    renderPage()  // 重新打开仍是折叠
+    expect(await screen.findByLabelText('展开镜头 1')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '全部展开' }))
+    expect(screen.getByDisplayValue('画面1')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('画面2')).toBeInTheDocument()
+  })
+
+  it('folds everything by default when there are more than 4 shots', async () => {
+    shotGraph(5)
+    renderPage()
+    expect(await screen.findByLabelText('展开镜头 5')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('画面1')).not.toBeInTheDocument()
+  })
+
+  it('expands the group that holds the ?node= target', async () => {
+    shotGraph(5)
+    renderPage('/?node=k3')
+    expect(await screen.findByDisplayValue('画面3')).toBeInTheDocument()
+    expect(screen.getByLabelText('镜头 3（已展开）')).toBeInTheDocument()
+    expect(screen.getByLabelText('展开镜头 1')).toBeInTheDocument()  // 其他组仍折叠
+    expect(screen.queryByDisplayValue('画面1')).not.toBeInTheDocument()
+  })
+
+  it('never saves the derived group nodes or the hidden flag', async () => {
+    shotGraph(2)
+    renderPage()
+    await screen.findByLabelText('镜头 1（已展开）')
+    fireEvent.click(screen.getByLabelText('折叠镜头 1'))
+    fireEvent.change(screen.getByDisplayValue('画面2'), { target: { value: '改过的画面' } })
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    const [, graph] = api.save.mock.calls[api.save.mock.calls.length - 1]
+    expect(graph.nodes?.map((item) => item.id).sort()).toEqual(['k1', 'k2', 'v1', 'v2'])
+    expect(JSON.stringify(graph)).not.toContain('shotGroup')
+    expect(JSON.stringify(graph)).not.toContain('hidden')
+    expect(graph.nodes?.find((item) => item.id === 'k2')?.data.prompt).toBe('改过的画面')
+  })
+
+  it('drops a stray shotGroup node that comes back in a graph', async () => {
+    shotGraph(1, { nodes: [{ id: 'shot-group:v1', type: 'shotGroup', position: { x: 0, y: 0 }, data: {} }] })
+    renderPage()
+    await screen.findByLabelText('镜头 1（已展开）')
+    fireEvent.change(screen.getByDisplayValue('画面1'), { target: { value: '改' } })
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect(JSON.stringify(api.save.mock.calls[0][1])).not.toContain('shotGroup')
+  })
+
+  it('adds a shot below the existing ones, expanded, and saves it', async () => {
+    shotGraph(5)  // 5 个镜头默认全折叠
+    renderPage()
+    await screen.findByLabelText('展开镜头 5')
+    fireEvent.click(screen.getByRole('button', { name: '添加镜头' }))
+    expect(await screen.findByLabelText('镜头 6（已展开）')).toBeInTheDocument()
+    expect(screen.getByLabelText('展开镜头 5')).toBeInTheDocument()
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    const [, graph] = api.save.mock.calls[api.save.mock.calls.length - 1]
+    expect(graph.nodes).toHaveLength(12)
+    const added = graph.nodes?.filter((item) => !/^[kv]\d$/.test(item.id)) || []
+    expect(added.map((item) => item.type).sort()).toEqual(['image', 'video'])
+    // 5 个镜头都折叠成小卡片：新镜头放在可见内容（最后一张卡片，底边 2400）之下，再加间距、标题栏和内边距
+    expect(Math.min(...added.map((item) => item.position.y))).toBeGreaterThanOrEqual(2400 + 48 + 24 + 44)
+    expect(graph.nodes?.find((item) => item.type === 'video' && item.data.order === 5)).toBeTruthy()
+    expect(graph.edges?.some((item) => item.targetHandle === 'first_frame' && added.some((n) => n.id === item.target))).toBe(true)
+  })
+
+  it('tags character nodes and explains the dashed reference lines', async () => {
+    shotGraph(1, {
+      nodes: [{ id: 'c1', type: 'image', position: { x: -400, y: 0 }, data: { label: '角色 · 狐妖', role: 'character', character: '狐妖' } }],
+      edges: [{ id: 'ec', source: 'c1', target: 'k1', sourceHandle: 'out', targetHandle: 'reference' }],
+    })
+    const { container } = renderPage()
+    expect(await screen.findByText('虚线：角色参考')).toBeInTheDocument()
+    expect(container.querySelectorAll('.nc-tag')).toHaveLength(1)
+    expect(screen.getByDisplayValue('角色 · 狐妖').closest('.nc-node')).toContainElement(container.querySelector('.nc-tag') as HTMLElement)
+    // 角色不属于任何镜头组
+    expect(screen.getByLabelText('镜头 1（已展开）')).toBeInTheDocument()
+    expect(container.querySelectorAll('.nc-group')).toHaveLength(1)
+  })
+
+  it('has a centred toolbar with the primary run button and no legend without characters', async () => {
+    renderPage()
+    await screen.findByDisplayValue('雨夜便利店')
+    expect(screen.getByRole('button', { name: '全部运行' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '添加镜头' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '全部折叠' })).toBeDisabled()  // 还没有镜头
+    expect(screen.queryByText('虚线：角色参考')).not.toBeInTheDocument()
+  })
+
+  it('clears the selection of nodes hidden by a fold, so Delete cannot remove them', async () => {
+    shotGraph(2)
+    renderPage('/?node=k1')
+    await screen.findByLabelText('镜头 1（已展开）')
+    await waitFor(() => expect(screen.getByDisplayValue('画面1').closest('.nc-node')).toHaveClass('nc-node--selected'))
+    fireEvent.click(screen.getByRole('button', { name: '全部折叠' }))
+    fireEvent.keyDown(document.body, { key: 'Delete', code: 'Delete' })
+    fireEvent.keyUp(document.body, { key: 'Delete', code: 'Delete' })
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    for (const call of api.save.mock.calls) expect(call[1].nodes?.map((item) => item.id).sort()).toEqual(['k1', 'k2', 'v1', 'v2'])
+    expect(api.save.mock.calls.every((call) => call[1].edges?.length === 2)).toBe(true)
+  })
+
+  it('has our own fit-view button instead of the default one', async () => {
+    const { container } = renderPage()
+    await screen.findByDisplayValue('雨夜便利店')
+    expect(container.querySelector('.react-flow__controls-fitview')).toBeNull()
+    expect(screen.getByLabelText('适应画面')).toBeInTheDocument()
+  })
+
+  it('shows the dashed-line legend only when a character really has a reference edge', async () => {
+    shotGraph(1, { nodes: [{ id: 'c1', type: 'image', position: { x: -400, y: 0 }, data: { label: '角色 · 狐妖', role: 'character', character: '狐妖' } }] })
+    renderPage()
+    await screen.findByLabelText('镜头 1（已展开）')
+    expect(screen.queryByText('虚线：角色参考')).not.toBeInTheDocument()
+  })
+
+  it('tidies the layout and saves the new positions', async () => {
+    shotGraph(2)
+    renderPage()
+    await screen.findByLabelText('镜头 1（已展开）')
+    chooseMenu('更多', '整理布局')
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    const [, graph] = api.save.mock.calls[api.save.mock.calls.length - 1]
+    const at = (id: string) => graph.nodes!.find((item) => item.id === id)!.position
+    expect(at('k1').x).toBeLessThan(at('v1').x)
+    expect(at('k2').y).toBeGreaterThan(at('k1').y + 500)
+  })
+
+  it('shows a clear progress status on groups instead of repeating the shot size', async () => {
+    shotGraph(2)
+    api.runs.mockResolvedValue({
+      nodes: { v1: { jobs: [{ id: 'j', status: 'running', progress: 60, queue_position: 0, error: '', model: '', created_at: null }], results: [] } },
+      active_jobs: 1, spent: 0,
+    })
+    renderPage()
+    expect(await screen.findByText('视频生成中 60%')).toBeInTheDocument()
+    expect(screen.getByText('未生成', { selector: '.nc-group__state' })).toBeInTheDocument()
+    expect(screen.queryByText('近景', { selector: '.nc-group__state' })).not.toBeInTheDocument()
+  })
+
+  it('makes room when a folded group is unfolded and saves the shifted positions', async () => {
+    shotGraph(5)  // 默认全折叠
+    renderPage()
+    await screen.findByLabelText('展开镜头 1')
+    fireEvent.click(screen.getByLabelText('展开镜头 1'))
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    const [, graph] = api.save.mock.calls[api.save.mock.calls.length - 1]
+    const y = (id: string) => graph.nodes!.find((item) => item.id === id)!.position.y
+    expect(y('k1')).toBe(0)
+    expect(y('k2')).toBeGreaterThanOrEqual(500 + 24 + 48)  // 镜头一展开后的底边加间距
+  })
+
+  it('corrects the room once unfolded members get their real (taller) size, and saves it', async () => {
+    const RealObserver = globalThis.ResizeObserver
+    const heights = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    const widths = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
+    // 节点一显示出来就被“测量”成 280 x 700（折叠时的隐藏节点测量不到，只有展开后才有）
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return (this as HTMLElement).classList.contains('react-flow__node') ? 700 : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { return (this as HTMLElement).classList.contains('react-flow__node') ? 280 : 0 } })
+    globalThis.ResizeObserver = class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) { window.setTimeout(() => this.callback([{ target, contentRect: { width: 800, height: 600 } } as ResizeObserverEntry], this as never), 0) }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
+    try {
+      shotGraph(5)  // 默认全折叠
+      renderPage()
+      await screen.findByLabelText('展开镜头 1')
+      await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 50)) })
+      fireEvent.click(screen.getByLabelText('展开镜头 1'))
+      await screen.findByLabelText('镜头 1（已展开）')
+      await waitFor(() => {
+        const [, graph] = api.save.mock.calls[api.save.mock.calls.length - 1] || []
+        const y = (id: string) => graph?.nodes?.find((item) => item.id === id)?.position.y ?? 0
+        // 镜头一成员实测 700 高：组框底边 = 700 + 24，镜头二小卡片顶边（k2.y - 68）至少在它之下 48
+        expect(y('k2') - 68).toBeGreaterThanOrEqual(700 + 24 + 48)
+      }, { timeout: 4000 })
+    } finally {
+      globalThis.ResizeObserver = RealObserver
+      if (heights) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', heights)
+      if (widths) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', widths)
+    }
+  })
+
+  it('deletes the edges of a visible node that is deleted, even when the other end is folded away', async () => {
+    api.get.mockResolvedValue({
+      id: 'c1', title: '雨夜', aspect_ratio: '9:16', node_count: 3, updated_at: null, created_at: null, revision: 3,
+      graph: {
+        nodes: [
+          { id: 'k', type: 'image', position: { x: 0, y: 0 }, data: { label: '共用首帧', prompt: 'p' } },
+          { id: 'v1', type: 'video', position: { x: 400, y: 0 }, data: { label: '1 · 甲', order: 0 } },
+          { id: 'v2', type: 'video', position: { x: 400, y: 1200 }, data: { label: '2 · 乙', order: 1 } },
+        ],
+        edges: [
+          { id: 'e1', source: 'k', target: 'v1', sourceHandle: 'out', targetHandle: 'first_frame' },
+          { id: 'e2', source: 'k', target: 'v2', sourceHandle: 'out', targetHandle: 'first_frame' },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    })
+    renderPage('/?node=k')
+    await screen.findByLabelText('镜头 1（已展开）')
+    await waitFor(() => expect(screen.getByDisplayValue('共用首帧').closest('.nc-node')).toHaveClass('nc-node--selected'))
+    fireEvent.click(screen.getByRole('button', { name: '全部折叠' }))
+    fireEvent.keyDown(document.body, { key: 'Delete', code: 'Delete' })
+    fireEvent.keyUp(document.body, { key: 'Delete', code: 'Delete' })
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    const [, graph] = api.save.mock.calls[api.save.mock.calls.length - 1]
+    expect(graph.nodes?.map((item) => item.id).sort()).toEqual(['v1', 'v2'])  // 隐藏的视频节点没被删
+    expect(graph.edges).toEqual([])  // 连到隐藏节点的边跟着被删节点一起走
+  })
+
+  it('opening with ?node= on an already unfolded, non-overlapping group saves nothing', async () => {
+    shotGraph(2, {}, 3000)
+    const { container } = renderPage('/?node=k1')
+    await screen.findByLabelText('镜头 1（已展开）')
+    await waitFor(() => expect(container.querySelector('.nc-node--selected')).not.toBeNull())
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 1200)) })
+    expect(api.save).not.toHaveBeenCalled()
+  })
+
+  it('opening a folded group by ?node= unfolds it without shoving the others by guessed sizes', async () => {
+    shotGraph(5, {}, 300)  // 5 个镜头默认全折叠，卡片靠得很近：若按默认尺寸让位就会推开后面的
+    renderPage('/?node=k3')
+    expect(await screen.findByDisplayValue('画面3')).toBeInTheDocument()
+    expect(screen.getByLabelText('镜头 3（已展开）')).toBeInTheDocument()
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 1200)) })
+    expect(api.save).not.toHaveBeenCalled()
+  })
+
+  describe('menus', () => {
+    it('moves focus into the menu, walks it with arrows, and gives focus back on Escape / after a choice', async () => {
+      renderPage()
+      await screen.findByDisplayValue('雨夜便利店')
+      const trigger = screen.getByRole('button', { name: '更多' })
+      trigger.focus()
+      fireEvent.click(trigger)
+      const items = screen.getAllByRole('menuitem')
+      expect(items[0]).toHaveFocus()
+      fireEvent.keyDown(items[0], { key: 'ArrowDown' })
+      expect(items[1]).toHaveFocus()
+      fireEvent.keyDown(items[1], { key: 'ArrowUp' })
+      fireEvent.keyDown(items[0], { key: 'ArrowUp' })  // 到头回绕到最后一个可用项（整理布局在没有节点时禁用不算）
+      const usable = screen.getAllByRole('menuitem').filter((item) => !(item as HTMLButtonElement).disabled)
+      expect(document.activeElement).toBe(usable[usable.length - 1])
+      fireEvent.keyDown(document.activeElement as Element, { key: 'Escape' })
+      expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+      expect(trigger).toHaveFocus()
+
+      fireEvent.click(trigger)
+      fireEvent.click(screen.getByRole('menuitem', { name: '新建文本节点' }))
+      expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+      expect(trigger).toHaveFocus()
+    })
+
+    it('closes when clicking outside', async () => {
+      renderPage()
+      await screen.findByDisplayValue('雨夜便利店')
+      fireEvent.click(screen.getByRole('button', { name: '分段生成' }))
+      expect(screen.getAllByRole('menuitem').length).toBeGreaterThan(0)
+      fireEvent.mouseDown(document.body)
+      expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+    })
+  })
+
+  it('re-corrects when a re-shown group is measured taller than before it was folded', async () => {
+    const RealObserver = globalThis.ResizeObserver
+    const heights = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    const widths = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
+    let nodeHeight = 700
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return (this as HTMLElement).classList.contains('react-flow__node') ? nodeHeight : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { return (this as HTMLElement).classList.contains('react-flow__node') ? 280 : 0 } })
+    globalThis.ResizeObserver = class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) { window.setTimeout(() => this.callback([{ target, contentRect: { width: 800, height: 600 } } as ResizeObserverEntry], this as never), 0) }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
+    const lastY = (id: string) => {
+      const [, graph] = api.save.mock.calls[api.save.mock.calls.length - 1] || []
+      return graph?.nodes?.find((item) => item.id === id)?.position.y ?? 0
+    }
+    try {
+      shotGraph(5)
+      renderPage()
+      await screen.findByLabelText('展开镜头 1')
+      fireEvent.click(screen.getByLabelText('展开镜头 1'))
+      await waitFor(() => expect(lastY('k2') - 68).toBeGreaterThanOrEqual(700 + 24 + 48), { timeout: 4000 })
+      fireEvent.click(screen.getByLabelText('折叠镜头 1'))
+      nodeHeight = 900  // 折叠期间节点变高了（比如结果历史变多）
+      fireEvent.click(await screen.findByLabelText('展开镜头 1'))
+      await waitFor(() => expect(lastY('k2') - 68).toBeGreaterThanOrEqual(900 + 24 + 48), { timeout: 4000 })
+    } finally {
+      globalThis.ResizeObserver = RealObserver
+      if (heights) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', heights)
+      if (widths) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', widths)
+    }
   })
 })
 

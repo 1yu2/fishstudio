@@ -4,6 +4,7 @@ import { Film, ImageIcon, ListEnd, Loader2, Play, RotateCcw, Square, Type, Uploa
 import type { CanvasModel, CanvasNodeType, Quote, StoredNode } from '../../api/nodeCanvas'
 import { ProtectedImage, ProtectedVideo } from '../common/ProtectedMedia'
 import { useCanvas } from './context'
+import { ShotGroupNode } from './ShotGroupNode'
 import { ACTIVE, HANDLE_LABELS, statusText, INPUTS, latestJob, resolveInputs, selectedResult, type ImageData, type InputHandle, type TextData, type VideoData } from './graph'
 
 const ICONS = { text: Type, image: ImageIcon, video: Film }
@@ -13,7 +14,7 @@ function money(value: number | null | undefined) {
 }
 
 function Shell({ id, type, data, selected, children }: { id: string; type: CanvasNodeType; data: { label?: string }; selected: boolean; children: ReactNode }) {
-  const { updateData, runs } = useCanvas()
+  const { updateData, runs, characterIds } = useCanvas()
   const Icon = ICONS[type]
   const job = latestJob(runs, id)
   const inputs = Object.keys(INPUTS[type]) as InputHandle[]
@@ -22,6 +23,7 @@ function Shell({ id, type, data, selected, children }: { id: string; type: Canva
       <Icon size={14} />
       <input className="nc-node__label nodrag" aria-label="节点名称" value={data.label || ''} placeholder={type === 'text' ? '文本' : type === 'image' ? '图片' : '视频'}
         onChange={(event) => updateData(id, { label: event.target.value })} />
+      {characterIds.has(id) && <span className="nc-tag">角色</span>}
       {job && <span className={`nc-status nc-status--${job.status}`} title={job.error || undefined}>
         {ACTIVE.has(job.status) && <Loader2 size={11} className="nc-spin" />}{statusText(job)}
       </span>}
@@ -179,4 +181,4 @@ export const VideoNode = memo(function VideoNode({ id, data, selected }: NodePro
   </Shell>
 })
 
-export const nodeTypes = { text: TextNode, image: ImageNode, video: VideoNode }
+export const nodeTypes = { text: TextNode, image: ImageNode, video: VideoNode, shotGroup: ShotGroupNode }

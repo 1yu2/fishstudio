@@ -85,6 +85,8 @@ describe('layoutSplit', () => {
     expect(nodes[2].data).toMatchObject({ duration: 4, tier: 'preview', label: '1 · 推门' })
     expect(nodes[3].data.label).toBe('2 · 镜头 2 关键帧')
     expect(Math.min(...nodes.map((item) => item.position.y))).toBeGreaterThan(0)
+    // 行距放得下一个图片 / 视频节点（约 500）加镜头组的标题和内边距，镜头之间、角色之间都不重叠
+    expect(nodes[3].position.y - nodes[1].position.y).toBeGreaterThanOrEqual(500 + 24 * 2 + 44)
     expect(edges.map((item) => item.targetHandle)).toEqual(['reference', 'first_frame', 'first_frame'])
     expect(edges[0]).toMatchObject({ source: nodes[0].id, target: nodes[1].id })
   })

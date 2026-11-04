@@ -8,6 +8,8 @@ export interface CanvasActions {
   runs: CanvasRuns | null
   nodes: StoredNode[]
   edges: StoredEdge[]
+  /** 角色节点 id（用于节点上的“角色”标签） */
+  characterIds: Set<string>
   updateData: (nodeId: string, patch: Record<string, unknown>) => void
   run: (nodeId: string, request: RunRequest) => Promise<void>
   upload: (nodeId: string, file: File) => Promise<void>
