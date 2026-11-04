@@ -24,6 +24,11 @@ describe('buildShots: which nodes are shots', () => {
     expect(shots[0].video?.id).toBe('v1')
   })
 
+  it('never counts a role=character image as a shot, even when nothing references it yet', () => {
+    const nodes = [node('lonely', 'image', { role: 'character', character: '狐妖' }), node('k', 'image', { prompt: '空镜' })]
+    expect(buildShots(nodes, [], null).map((shot) => shot.id)).toEqual(['k'])
+  })
+
   it('counts an image with no video and no outgoing reference as a picture-only shot', () => {
     const nodes = [node('char', 'image'), node('user', 'image', { label: '2 · 空镜 关键帧', prompt: '空镜' }), node('k', 'image'), node('v', 'video')]
     const edges = [edge('char', 'user', 'reference'), edge('k', 'v', 'first_frame')]

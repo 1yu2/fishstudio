@@ -7,7 +7,11 @@ import type { CanvasNodeType, CanvasRuns, NodeJob, NodeResult, RunRequest, Split
 export type InputHandle = 'prompt' | 'reference' | 'first_frame' | 'last_frame'
 
 export interface TextData { label?: string; text?: string }
-export interface ImageData { label?: string; prompt?: string; model?: string; count?: number; selected?: string; shot_size?: string; order?: number }
+export interface ImageData {
+  label?: string; prompt?: string; model?: string; count?: number; selected?: string; shot_size?: string; order?: number
+  /** 角色图片节点：role === 'character'；同名 character 的多个节点是同一角色的多套造型 */
+  role?: 'character'; character?: string; look?: string; library_asset_id?: string
+}
 export interface VideoData { label?: string; prompt?: string; model?: string; duration?: number; tier?: VideoTier; selected?: string; camera?: string; order?: number }
 
 /** 每种节点接受哪些输入端口，以及每个端口接受的上游类型。 */
@@ -174,7 +178,10 @@ export function layoutSplit(split: SplitResult, existing: StoredNode[]): { nodes
     characters.set(character.name, id)
     nodes.push({
       id, type: 'image', position: { x: left + COLUMN.character, y: top + index * ROW },
-      data: { label: `角色 · ${character.name}`, prompt: `${character.name}，${character.description}，角色定妆照，正面半身，纯色背景`, model: '', count: 1 },
+      data: {
+        label: `角色 · ${character.name}`, prompt: `${character.name}，${character.description}，角色定妆照，正面半身，纯色背景`, model: '', count: 4,
+        role: 'character', character: character.name,
+      },
     })
   })
   split.shots.forEach((shot, index) => {
