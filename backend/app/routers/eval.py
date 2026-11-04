@@ -35,6 +35,8 @@ class EvalRunRequest(BaseModel):
     model: str
     project_id: Optional[str] = None
     samples: list[dict[str, Any]]
+    # 局部运行：只评测了前 N 个镜头（N < 基准镜头数）；不传则必须提交完整基准的全部镜头样本
+    partial_shots: Optional[int] = Field(default=None, ge=1)
 
 
 class PriceEntryRequest(BaseModel):
@@ -119,6 +121,7 @@ async def create_eval_run(
             samples=body.samples,
             project_id=body.project_id,
             created_by=user.id,
+            partial_shots=body.partial_shots,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))

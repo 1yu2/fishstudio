@@ -191,19 +191,30 @@ async def create_eval_run(
     samples: list[dict[str, Any]],
     project_id: Optional[str] = None,
     created_by: Optional[int] = None,
+    partial_shots: Optional[int] = None,
 ) -> EvalRun:
     if dataset.status != "active":
         raise ValueError(f"benchmark {dataset.key} v{dataset.version} 已停用")
-    if len(samples) != dataset.shot_count:
-        raise ValueError(f"benchmark 需要 {dataset.shot_count} 个镜头样本")
+    input_hash = dataset.content_hash
+    if partial_shots is None:
+        if len(samples) != dataset.shot_count:
+            raise ValueError(f"benchmark 需要 {dataset.shot_count} 个镜头样本")
+    else:
+        # 局部运行（基准脚本 --max-shots 只跑前 N 个镜头）：必须明确声明 N 且样本数等于 N；
+        # input_hash 带上 N，metrics 里标记 partial，routing_stats 不统计，避免与完整基准混比
+        if not 1 <= partial_shots < dataset.shot_count or len(samples) != partial_shots:
+            raise ValueError(f"局部运行需要 1 到 {dataset.shot_count - 1} 个镜头，且样本数与之相等")
+        input_hash = f"{dataset.content_hash}:partial-{partial_shots}"
     metrics, reasons, score, explanation = aggregate_samples(samples)
+    if partial_shots is not None:
+        metrics = {**metrics, "partial": {"shots": partial_shots, "of": dataset.shot_count}}
     row = EvalRun(
         dataset_id=dataset.id,
         project_id=project_id,
         provider=provider,
         deployment=deployment,
         model=model,
-        input_hash=dataset.content_hash,
+        input_hash=input_hash,
         metrics=metrics,
         failure_reasons=reasons,
         score=score,
@@ -217,7 +228,12 @@ async def create_eval_run(
 
 
 async def routing_stats(session: AsyncSession) -> list[dict[str, Any]]:
-    rows = list((await session.execute(select(EvalRun).where(EvalRun.status == "completed"))).scalars())
+    rows = [
+        row
+        for row in (await session.execute(select(EvalRun).where(EvalRun.status == "completed"))).scalars()
+        # 局部运行（只跑了前 N 个镜头）与完整基准不可比，不进入路由统计
+        if "partial" not in (row.metrics or {})
+    ]
     grouped: dict[str, list[EvalRun]] = {}
     for row in rows:
         grouped.setdefault(row.deployment, []).append(row)

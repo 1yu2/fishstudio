@@ -56,6 +56,8 @@ class JobResponse(BaseModel):
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     finished_at: Optional[datetime]
+    # 开始执行时间（排队结束）；基准脚本据此算每个镜头任务的真实耗时
+    started_at: Optional[datetime] = None
 
     @classmethod
     def from_job(cls, job: GenerationJob) -> "JobResponse":
@@ -84,6 +86,7 @@ class JobResponse(BaseModel):
             created_at=job.created_at,
             updated_at=job.updated_at,
             finished_at=job.finished_at,
+            started_at=getattr(job, "started_at", None),
         )
 
 

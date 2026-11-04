@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import mock_providers_enabled
 from app.model_runtime.catalog import CatalogDeployment, get_catalog
 from app.model_runtime.routes import DEFAULT_TIER
 from app.providers.base import VideoGenerationRequest
@@ -143,7 +144,9 @@ async def resolve_video_plan(
     route = await model_route_service.get_effective_route(session, VIDEO_PURPOSE, tier)
 
     if route is None:
-        if video_deployments:
+        # 显式开启 Mock 且没有任何已启用的视频 Deployment（只剩缺 Key 的占位）时，沿用旧静态路由走 Mock
+        mock_only = mock_providers_enabled() and not any(item.enabled for item in video_deployments)
+        if video_deployments and not mock_only:
             raise VideoRoutingError(
                 f"已有视频 Deployment，但未配置用途 Route: {VIDEO_PURPOSE}", code="no_route"
             )

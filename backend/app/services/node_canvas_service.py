@@ -320,6 +320,7 @@ def canvas_summary(canvas: NodeCanvas) -> dict[str, Any]:
     nodes = (canvas.graph or {}).get("nodes", [])
     return {
         "id": canvas.id,
+        "project_id": canvas.project_id,
         "title": canvas.title,
         "aspect_ratio": canvas.aspect_ratio,
         "node_count": len(nodes),
@@ -1251,6 +1252,8 @@ class SplitShot(BaseModel):
 class SplitResult(BaseModel):
     characters: list[SplitCharacter] = Field(default_factory=list, max_length=6)
     shots: list[SplitShot] = Field(min_length=1, max_length=12)
+    # 结果来自 Mock 对话模型（ALLOW_MOCK_PROVIDERS 且没有真实对话模型）；真实结果恒为 False
+    mocked: bool = False
 
 
 SPLIT_PROMPT = """你是短视频分镜师。把创作者的想法拆成角色和镜头，只输出一个 JSON 对象，不要解释：
@@ -1261,12 +1264,30 @@ SPLIT_PROMPT = """你是短视频分镜师。把创作者的想法拆成角色�
 台词：有对白或旁白的镜头写 lines（每镜头最多 3 句，每句不超过 60 字，说话人用角色名或 旁白）；没有就给空数组 []，不要硬凑。"""
 
 
+def _has_real_chat_model() -> bool:
+    """是否配置了任何已启用的真实对话模型（Mock 兜底只在一个都没有时才允许）。"""
+    from app.model_runtime import get_model_runtime
+
+    return any(item.enabled for item in get_model_runtime().list_chat())
+
+
 async def _call_llm(messages: list[dict[str, str]]) -> str:
     from app.llm.factory import create_llm
 
     try:
         llm = create_llm(purpose="planner")
     except Exception as error:  # noqa: BLE001 - 未配置模型时给出可操作提示
+        from app.config import mock_providers_enabled
+
+        if _has_real_chat_model():
+            # 配了真实对话模型却创建失败（名称 / 能力 / 初始化错误）：照常报错，不能悄悄换成假结果
+            raise CanvasError(f"对话模型不可用：{str(error)[:200]}") from error
+        if mock_providers_enabled():
+            # 与图片 / 视频 / 配音一致：只有显式开启 Mock 且一个真实对话模型都没配置时才用假模型兜底；
+            # 输出里带 "mocked": true，SplitResult.mocked 会原样返回给调用方
+            from app.llm.mock_chat import MockPlannerChat
+
+            return str((await MockPlannerChat().ainvoke(messages)).content)
         raise CanvasError(
             "还没有可用的对话模型，请在「设置 → 模型服务 → 默认模型」里设置「剧本拆分与规划」"
         ) from error
