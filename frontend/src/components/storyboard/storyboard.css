@@ -105,6 +105,15 @@
 .sb-blockers { flex-basis: 100%; margin: 0; padding: 0 0 0 16px; font-size: 12px; color: var(--status-warn); }
 .sb-link--open { height: 34px; padding: 0 14px; }
 
+/* 台词编辑 */
+.sb-lines { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.sb-line { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); }
+.sb-line__row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sb-line__row select { height: 30px; font-size: 13px; }
+.sb-line__tools { display: flex; gap: 2px; }
+.sb-line textarea { padding: 6px 8px; font-size: 13px; resize: vertical; }
+.sb-btn--add { align-self: flex-start; }
+
 /* 空状态 */
 .sb-empty { max-width: 520px; margin: 48px auto; padding: 0 20px; display: flex; flex-direction: column; gap: 12px; }
 .sb-empty h2 { margin: 0; font-size: 18px; }

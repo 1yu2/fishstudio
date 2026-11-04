@@ -1,16 +1,16 @@
 import { Loader2, Play, X } from 'lucide-react'
-import type { BatchKind, BatchQuote, BatchScope } from '../../api/nodeCanvas'
+import type { BatchQuote, BatchRunKind, BatchScope } from '../../api/nodeCanvas'
 import './nodeCanvas.css'
 
-export interface BatchPlan { scope: BatchScope; nodeId?: string; kinds?: BatchKind[]; requestId: string; quote: BatchQuote | null; error: string; notice: string; busy: boolean }
+export interface BatchPlan { scope: BatchScope; nodeId?: string; kinds?: BatchRunKind[]; requestId: string; quote: BatchQuote | null; error: string; notice: string; busy: boolean }
 
-/** 分段批次的称呼：只含图片 = 画面批次，只含视频 = 视频批次，其余 = 批量 */
-export const kindsLabel = (kinds?: BatchKind[] | null) => {
-  if (kinds?.length === 1) return kinds[0] === 'image' ? '画面批次' : '视频批次'
+/** 分段批次的称呼：只含图片 = 画面批次，只含视频 = 视频批次，只含配音 = 配音批次，其余 = 批量 */
+export const kindsLabel = (kinds?: BatchRunKind[] | null) => {
+  if (kinds?.length === 1) return { image: '画面批次', video: '视频批次', tts: '配音批次' }[kinds[0]]
   return '批量'
 }
 export const dialogTitle = (plan: BatchPlan) => {
-  if (plan.kinds?.length === 1) return plan.kinds[0] === 'image' ? '生成全部画面' : '生成全部视频'
+  if (plan.kinds?.length === 1) return { image: '生成全部画面', video: '生成全部视频', tts: '生成剩余配音' }[plan.kinds[0]]
   return plan.scope === 'all' ? '全部运行' : '运行此节点及下游'
 }
 

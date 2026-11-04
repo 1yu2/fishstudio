@@ -24,6 +24,8 @@ vi.mock('../nodeCanvas/NodeCanvasPage', () => ({
 
 vi.mock('../storyboard/StoryboardPage', () => ({ default: () => <h1>STORYBOARD_PAGE</h1> }))
 vi.mock('../characters/CharactersPage', () => ({ default: () => <h1>CHARACTERS_PAGE</h1> }))
+vi.mock('../voice/VoicePage', () => ({ default: () => <h1>VOICE_PAGE</h1> }))
+vi.mock('../final/FinalPage', () => ({ default: () => <h1>FINAL_PAGE</h1> }))
 
 // 剧本页替身：按测试里设置的 footerOverride 调用 setFooter（默认不覆盖），验证底栏覆盖机制
 const stub = vi.hoisted(() => ({ override: null as null | import('./outletContext').FooterOverride }))
@@ -295,11 +297,14 @@ describe('ProjectFrame', () => {
     expect(screen.queryByText('AI')).not.toBeInTheDocument()
   })
 
-  it('placeholder step offers to continue in the canvas', async () => {
+  it('voice and final steps render their pages', async () => {
     renderAt('/studio/c1/voice')
-    fireEvent.click(await screen.findByRole('link', { name: '在画布中继续' }))
-    expect(await screen.findByText('NODE_CANVAS:c1')).toBeInTheDocument()
-    expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/canvas')
+    expect(await screen.findByRole('heading', { name: 'VOICE_PAGE' })).toBeInTheDocument()
+  })
+
+  it('final step renders the final page', async () => {
+    renderAt('/studio/c1/final')
+    expect(await screen.findByRole('heading', { name: 'FINAL_PAGE' })).toBeInTheDocument()
   })
 
   it('view switch: steps goes to the active step, canvas goes to the canvas', async () => {

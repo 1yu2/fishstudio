@@ -247,11 +247,12 @@ describe('StoryboardPage detail', () => {
     expect(savedData('v1').camera).toBe('从肩后绕到正面')
   })
 
-  it('greys out characters and dialogue until later steps ship', async () => {
+  it('greys out characters until the characters step ships, dialogue is editable', async () => {
     renderPage()
     await screen.findByLabelText('画面描述')
     expect(screen.getByText('第 4 步上线后可编辑')).toBeInTheDocument()
-    expect(screen.getByText('第 6 步上线后可编辑')).toBeInTheDocument()
+    expect(screen.queryByText('第 6 步上线后可编辑')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '添加台词' })).toBeInTheDocument()
   })
 
   it('quotes single nodes, runs them with the resolved request and explains blockers', async () => {
@@ -403,5 +404,78 @@ describe('StoryboardPage polling and empty state', () => {
     fireEvent.change(screen.getByLabelText('想法'), { target: { value: '一只猫' } })
     expect(button).toBeEnabled()
     expect(within(screen.getByLabelText('还没有镜头')).getByRole('link', { name: '到画布里自己搭' })).toHaveAttribute('href', '/studio/c1/canvas')
+  })
+})
+
+describe('StoryboardPage dialogue lines', () => {
+  const lineNodes = (): StoredNode[] => [
+    node('a1', 'audio', { label: '台词 · 狐妖', speaker: '狐妖', text: '你来了', voice: '', order: 0 }, 0),
+    node('a2', 'audio', { label: '台词 · 旁白', speaker: '旁白', text: '那一夜', voice: '', order: 1 }, 200),
+    node('a3', 'audio', { label: '台词 · 书生', speaker: '书生', text: '第二个镜头的', order: 0 }, 380),
+  ]
+  const withLines = () => setupApi({
+    nodes: [...graphNodes(), ...lineNodes()],
+    edges: [...graphEdges(), link('a1', 'v1', 'voice'), link('a2', 'v1', 'voice'), link('a3', 'v2', 'voice')],
+  })
+  const savedGraph = () => lastSave()[1]
+
+  it('lists only this shot\'s lines in order', async () => {
+    withLines()
+    renderPage()
+    expect(await screen.findByDisplayValue('你来了')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('那一夜')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('第二个镜头的')).not.toBeInTheDocument()
+    expect(screen.getByText('台词 · 2 句')).toBeInTheDocument()
+    expect(screen.getByLabelText('第 1 句说话人')).toHaveValue('狐妖')
+    expect(screen.getByLabelText('第 2 句说话人')).toHaveValue('旁白')
+  })
+
+  it('writes text and speaker edits back to the audio node', async () => {
+    withLines()
+    renderPage()
+    fireEvent.change(await screen.findByLabelText('第 1 句台词'), { target: { value: '你终于来了' } })
+    fireEvent.change(screen.getByLabelText('第 2 句说话人'), { target: { value: '狐妖' } })
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect(savedData('a1').text).toBe('你终于来了')
+    expect(savedData('a2')).toMatchObject({ speaker: '狐妖', label: '台词 · 狐妖' })
+  })
+
+  it('adds a line: a new audio node with a voice edge to the shot video, ordered last', async () => {
+    withLines()
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '添加台词' }))
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    const graph = savedGraph()
+    const created = graph.nodes!.find((item) => item.type === 'audio' && !['a1', 'a2', 'a3'].includes(item.id))!
+    expect(created.data).toMatchObject({ speaker: '狐妖', text: '', order: 2 })
+    expect(graph.edges!.find((item) => item.source === created.id)).toMatchObject({ target: 'v1', targetHandle: 'voice' })
+    expect(screen.getByLabelText('第 3 句台词')).toBeInTheDocument()
+  })
+
+  it('deletes a line together with its voice edge', async () => {
+    withLines()
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '删除第 1 句' }))
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    const graph = savedGraph()
+    expect(graph.nodes!.some((item) => item.id === 'a1')).toBe(false)
+    expect(graph.edges!.some((item) => item.source === 'a1')).toBe(false)
+    expect(graph.nodes!.some((item) => item.id === 'a2')).toBe(true)
+  })
+
+  it('reorders lines by rewriting order', async () => {
+    withLines()
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '第 1 句下移' }))
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect([savedData('a1').order, savedData('a2').order]).toEqual([1, 0])
+    expect((screen.getByLabelText('第 1 句台词') as HTMLTextAreaElement).value).toBe('那一夜')
+  })
+
+  it('falls back to the narrator when the shot has no character voice yet', async () => {
+    setupApi({ nodes: graphNodes().filter((item) => item.id !== 'char'), edges: graphEdges().filter((item) => item.source !== 'char') })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '添加台词' }))
+    expect(await screen.findByLabelText('第 1 句说话人')).toHaveValue('旁白')
   })
 })

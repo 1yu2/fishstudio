@@ -5,10 +5,11 @@ import type { Quote, RunRequest, StoredNode } from '../../api/nodeCanvas'
 import { paths } from '../../routePaths'
 import { resolveInputs } from '../nodeCanvas/graph'
 import { CAMERA_MOVES, DURATIONS, SHOT_SIZES, priceSuffix, type Shot } from './shots'
+import ShotLines from './ShotLines'
 import type { Storyboard } from './useStoryboard'
 
 /** 单节点报价：请求变化后防抖取价；有 blockers 时不报价。 */
-function useNodeQuote(quote: Storyboard['quote'], request: RunRequest, enabled: boolean): { price: Quote | null; error: string } {
+export function useNodeQuote(quote: (request: RunRequest) => Promise<Quote>, request: RunRequest, enabled: boolean): { price: Quote | null; error: string } {
   const [state, setState] = useState<{ price: Quote | null; error: string }>({ price: null, error: '' })
   const key = JSON.stringify(request)
   useEffect(() => {
@@ -112,9 +113,7 @@ export default function ShotFields({ shot, total, canvasId, sb, onMove }: Props)
       <div className="sb-field sb-field--muted" aria-disabled="true">出镜角色
         <span className="sb-muted">第 4 步上线后可编辑</span>
       </div>
-      <div className="sb-field sb-field--muted" aria-disabled="true">台词
-        <span className="sb-muted">第 6 步上线后可编辑</span>
-      </div>
+      <ShotLines shot={shot} sb={sb} />
       <div className="sb-actions">
         {frame && <Generate node={frame} label="重新生成图片" running={shot.frameStatus.state === 'running'} sb={sb} extraBlocker={imageProblem} />}
         {video && <Generate node={video} label="生成视频" primary running={shot.videoStatus.state === 'running'} sb={sb} />}

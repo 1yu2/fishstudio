@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ConflictError, nodeCanvasApi,
-  type BatchKind, type BatchQuote, type BatchRun, type BatchScope, type CanvasModels, type CanvasRuns, type RunRequest, type StoredEdge, type StoredGraph, type StoredNode,
+  type BatchKind, type BatchQuote, type BatchRun, type BatchRunKind, type BatchScope, type CanvasModels, type CanvasRuns, type RunRequest, type StoredEdge, type StoredGraph, type StoredNode,
 } from '../../api/nodeCanvas'
 import { toast } from '../ui/Toast'
 import { newRequestId } from '../nodeCanvas/graph'
@@ -198,7 +198,7 @@ export function useStoryboard(canvasId: string) {
     return () => { controller.abort(); window.clearInterval(timer) }
   }, [batchId, canvasId, refreshRuns])
 
-  const loadQuote = useCallback(async (scope: BatchScope, kinds?: BatchKind[], notice = '') => {
+  const loadQuote = useCallback(async (scope: BatchScope, kinds?: BatchRunKind[], notice = '') => {
     const next: BatchPlan = { scope, kinds, requestId: newRequestId(), quote: null, error: '', notice, busy: false }
     setPlan(next)
     const apply = (patch: Partial<BatchPlan>) => setPlan((current) => current?.requestId === next.requestId ? { ...current, ...patch } : current)

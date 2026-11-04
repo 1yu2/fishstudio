@@ -1,13 +1,18 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { Film, ImageIcon, ListEnd, Loader2, Play, RotateCcw, Square, Type, Upload } from 'lucide-react'
+import { Clapperboard, Film, ImageIcon, ListEnd, Loader2, Mic, Play, RotateCcw, Square, Type, Upload } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { CanvasModel, CanvasNodeType, Quote, StoredNode } from '../../api/nodeCanvas'
-import { ProtectedImage, ProtectedVideo } from '../common/ProtectedMedia'
+import { ProtectedAudio, ProtectedImage, ProtectedVideo } from '../common/ProtectedMedia'
+import { useVoiceList } from '../voice/useVoiceList'
+import { finalApi, type FinalState } from '../../api/final'
+import { paths } from '../../routePaths'
 import { useCanvas } from './context'
 import { ShotGroupNode } from './ShotGroupNode'
-import { ACTIVE, HANDLE_LABELS, statusText, INPUTS, latestJob, resolveInputs, selectedResult, type ImageData, type InputHandle, type TextData, type VideoData } from './graph'
+import { ACTIVE, HANDLE_LABELS, statusText, INPUTS, latestJob, MAX_LINE_CHARS, resolveInputs, selectedResult, type AudioData, type ImageData, type InputHandle, type TextData, type VideoData } from './graph'
 
-const ICONS = { text: Type, image: ImageIcon, video: Film }
+const ICONS = { text: Type, image: ImageIcon, video: Film, audio: Mic, episode: Clapperboard }
+const PLACEHOLDERS = { text: '文本', image: '图片', video: '视频', audio: '配音', episode: '成片' }
 
 function money(value: number | null | undefined) {
   return value === null || value === undefined ? '未配置价格' : `¥${value.toFixed(value < 1 ? 3 : 2)}`
@@ -21,7 +26,7 @@ function Shell({ id, type, data, selected, children }: { id: string; type: Canva
   return <div className={`nc-node nc-node--${type}${selected ? ' nc-node--selected' : ''}`}>
     <header className="nc-node__head">
       <Icon size={14} />
-      <input className="nc-node__label nodrag" aria-label="节点名称" value={data.label || ''} placeholder={type === 'text' ? '文本' : type === 'image' ? '图片' : '视频'}
+      <input className="nc-node__label nodrag" aria-label="节点名称" value={data.label || ''} placeholder={PLACEHOLDERS[type]}
         onChange={(event) => updateData(id, { label: event.target.value })} />
       {characterIds.has(id) && <span className="nc-tag">角色</span>}
       {job && <span className={`nc-status nc-status--${job.status}`} title={job.error || undefined}>
@@ -181,4 +186,105 @@ export const VideoNode = memo(function VideoNode({ id, data, selected }: NodePro
   </Shell>
 })
 
-export const nodeTypes = { text: TextNode, image: ImageNode, video: VideoNode, shotGroup: ShotGroupNode }
+/** 配音节点：说话人 + 台词 + 音色，生成后可试听；通过 voice 边连到所属镜头的视频 / 图片节点。 */
+export const AudioNode = memo(function AudioNode({ id, data, selected }: NodeProps) {
+  const { updateData, runs, nodes, edges, aspectRatio, run, cancel } = useCanvas()
+  const value = data as AudioData
+  const voices = useVoiceList()
+  const node: StoredNode = { id, type: 'audio', position: { x: 0, y: 0 }, data: value as Record<string, unknown> }
+  const resolved = useMemo(() => resolveInputs(node, nodes, edges, runs, aspectRatio), [node, nodes, edges, runs, aspectRatio])
+  const { request, blockers } = resolved
+  const quote = useQuote(blockers.length === 0, request)
+  const [busy, setBusy] = useState(false)
+  const job = latestJob(runs, id)
+  const running = !!job && ACTIVE.has(job.status)
+  const results = runs?.nodes[id]?.results || []
+  const result = selectedResult(node, runs)
+  const linked = edges.some((edge) => edge.target === id && edge.targetHandle === 'prompt')
+  const start = async () => { setBusy(true); try { await run(id, request) } finally { setBusy(false) } }
+  return <Shell id={id} type="audio" data={value} selected={!!selected}>
+    <div className="nc-row nc-audio__speaker">
+      <input className="nc-input nodrag" aria-label="说话人" value={value.speaker || ''} placeholder="说话人（旁白写「旁白」）"
+        onChange={(event) => updateData(id, { speaker: event.target.value })} />
+    </div>
+    {linked && <div className="nc-upstream" title={request.text}>台词取自连入的文本节点</div>}
+    <textarea className="nc-textarea nodrag nowheel" aria-label="台词" rows={3} maxLength={MAX_LINE_CHARS} value={value.text || ''} placeholder="这个镜头里的一句台词或旁白"
+      onChange={(event) => updateData(id, { text: event.target.value })} />
+    <div className="nc-row">
+      <select className="nc-select nodrag" aria-label="音色" value={value.voice || ''} onChange={(event) => updateData(id, { voice: event.target.value })}>
+        <option value="">默认音色（跟随说话人）</option>
+        {value.voice && !voices.some((item) => item.id === value.voice) && <option value={value.voice}>{value.voice}</option>}
+        {voices.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.style}</option>)}
+      </select>
+    </div>
+    <div className="nc-audio nodrag nowheel">
+      {result ? <>
+        <ProtectedAudio key={result.url} src={result.url} controls preload="none" />
+        <span className="nc-audio__meta">{result.duration_ms ? `${(result.duration_ms / 1000).toFixed(1)} 秒` : '时长未知'}</span>
+      </> : <span className="nc-audio__empty">还没有配音</span>}
+      {results.length > 1 && <select className="nc-select nodrag" aria-label="选用结果" value={result?.artifact_id || ''}
+        onChange={(event) => updateData(id, { selected: event.target.value })}>
+        {results.map((item, index) => <option key={item.artifact_id} value={item.artifact_id}>
+          #{results.length - index}{item.duration_ms ? ` · ${(item.duration_ms / 1000).toFixed(1)} 秒` : ''}{clock(item.created_at) ? ` · ${clock(item.created_at)}` : ''}
+        </option>)}
+      </select>}
+    </div>
+    {blockers.length > 0 && <div className="nc-blockers">{blockers.map((text) => <div key={text}>{text}</div>)}</div>}
+    {job?.status === 'failed' && <div className="nc-error" title={job.error}>
+      <span>{job.error || '生成失败'}</span>
+      <button className="nc-link nodrag" disabled={busy || blockers.length > 0} onClick={() => void start()}><RotateCcw size={12} />重试</button>
+    </div>}
+    <footer className="nc-node__foot">
+      <span className="nc-quote">{quote ? `预计 ${money(quote.estimated_cost)}` : ''}</span>
+      {running && job
+        ? <button className="nc-run nc-run--stop nodrag" onClick={() => void cancel(job.id)}><Square size={11} />取消</button>
+        : <button className="nc-run nodrag" disabled={busy || blockers.length > 0} onClick={() => void start()}>
+          {busy ? <Loader2 size={13} className="nc-spin" /> : <Play size={13} />}生成
+        </button>}
+    </footer>
+  </Shell>
+})
+
+
+/** 成片节点要显示的摘要：进入画布时取一次，之后跟着 runs 变化防抖刷新（不单独轮询）。 */
+function useFinalSummary(canvasId: string, runs: unknown, graphKey: string) {
+  const [state, setState] = useState<FinalState | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      finalApi.get(canvasId).then((value) => { if (!cancelled) setState(value) }).catch(() => undefined)
+    }, 1500)  // 略长于画布自动保存的防抖：接口读的是已保存的画布
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [canvasId, runs, graphKey])
+  return state
+}
+
+/** 成片节点：没有输入输出，按镜头顺序自动收集全部镜头；设置和渲染都在成片页。 */
+export const EpisodeNode = memo(function EpisodeNode({ id, data, selected }: NodeProps) {
+  const { canvasId, runs, nodes, edges } = useCanvas()
+  // 镜头相关的图指纹：镜头 / 配音节点、顺序、选用结果、首帧与 voice 连线变化时刷新摘要
+  const graphKey = useMemo(() => JSON.stringify([
+    nodes.filter((node) => node.type !== 'text' && node.type !== 'episode').map((node) => {
+      const data = node.data as { order?: unknown; selected?: unknown }
+      return [node.id, node.type, data.order ?? null, data.selected ?? null]
+    }),
+    edges.filter((edge) => edge.targetHandle === 'first_frame' || edge.targetHandle === 'voice').map((edge) => [edge.source, edge.target, edge.targetHandle]),
+  ]), [nodes, edges])
+  const final = useFinalSummary(canvasId, runs, graphKey)
+  const value = data as { label?: string }
+  const shots = final?.timeline.shots.length ?? 0
+  const voices = final?.timeline.voices.length ?? 0
+  return <section className={`nc-node nc-node--episode${selected ? ' nc-node--selected' : ''}`} aria-label="成片" data-node-id={id}>
+    <header className="nc-node__head">
+      <Clapperboard size={14} />
+      <span className="nc-node__title">{value.label || '成片 · 第 1 集'}</span>
+    </header>
+    <p className="nc-episode__summary">
+      {final ? `按镜头顺序收集 ${shots} 个镜头 · ${voices} 句配音 · ${final.timeline.bgm ? 'BGM' : '无 BGM'}` : '按镜头顺序收集全部镜头'}
+    </p>
+    {final?.stale && <p className="nc-episode__stale" role="status">素材已变更，需要重新渲染</p>}
+    <Link className="nc-run nodrag nc-episode__go" to={paths.projectStep(canvasId, 'final')}>去成片</Link>
+  </section>
+})
+
+export const nodeTypes = { text: TextNode, image: ImageNode, video: VideoNode, audio: AudioNode, episode: EpisodeNode, shotGroup: ShotGroupNode }

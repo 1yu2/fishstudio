@@ -330,3 +330,35 @@ describe('expandWithRoom collision chain', () => {
     expect(positions).toEqual({})
   })
 })
+
+describe('audio nodes in groups', () => {
+  it('puts a line that only voices this shot into its group, and leaves out lines shared by two shots', () => {
+    const a = shot(1, 0)
+    const b = shot(2, 600)
+    const own = node('own', 'audio', { speaker: '狐妖', text: '你来了' }, 1200, 0)
+    const shared = node('shared', 'audio', { speaker: '旁白', text: '那一夜' }, 1200, 300)
+    const edges = [...a.edges, ...b.edges, edge('own', 'v1', 'voice'), edge('shared', 'v1', 'voice'), edge('shared', 'v2', 'voice')]
+    const groups = buildGroups([...a.nodes, ...b.nodes, own, shared], edges, null)
+    expect(groups[0].members).toContain('own')
+    expect(groups[1].members).not.toContain('own')
+    for (const group of groups) expect(group.members).not.toContain('shared')
+  })
+
+  it('groups lines of an image-only shot through the image node, and ignores audio without edges', () => {
+    const nodes = [node('k', 'image', { label: '1 · 远景' }), node('l', 'audio'), node('free', 'audio')]
+    const groups = buildGroups(nodes, [edge('l', 'k', 'voice')], null)
+    expect(groups).toHaveLength(1)
+    expect([...groups[0].members].sort()).toEqual(['k', 'l'])
+  })
+
+  it('does not count audio nodes as shots and lays them out right of the video', () => {
+    const a = shot(1, 0)
+    const line = node('line', 'audio', { speaker: '狐妖', text: '你来了' }, 1200, 0)
+    const edges = [...a.edges, edge('line', 'v1', 'voice')]
+    const nodes = [...a.nodes, line]
+    expect(buildGroups(nodes, edges, null)).toHaveLength(1)
+    const laid = tidyLayout(nodes, edges, null)
+    expect(laid.line.x).toBeGreaterThan(laid.v1.x)
+    expect(DEFAULT_SIZE.audio.width).toBe(280)
+  })
+})

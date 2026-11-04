@@ -28,7 +28,11 @@ from app.services.node_canvas_service import CanvasError, NodeRunRequest
 
 logger = logging.getLogger(__name__)
 
+# RUNNABLE：默认批量运行的类型（也是节点之间的依赖类型）；配音（tts）只在 kinds 明确包含时才运行
 RUNNABLE = ("image", "video")
+ALL_KINDS = ("image", "video", "tts")
+# 画布节点类型 → 运行类型（配音节点 audio 对应 tts）
+NODE_KIND = {"image": "image", "video": "video", "audio": "tts"}
 # 节点状态：waiting 等上游；running 已提交任务；skipped 已有成功结果而跳过
 OPEN_NODE_STATES = ("waiting", "running")
 FAILED_NODE_STATES = ("failed", "blocked", "canceled")
@@ -42,7 +46,8 @@ class BatchRequest(BaseModel):
     node_id: Optional[str] = Field(default=None, max_length=64)
     skip_succeeded: bool = True
     # 只运行这些类型的节点（分段生成：先画面、再视频）；None / 两种都选 = 全部
-    kinds: Optional[list[Literal["image", "video"]]] = None
+    # 配音节点用 "tts"：不传 kinds 时默认不包含配音，生成配音要明确选 tts
+    kinds: Optional[list[Literal["image", "video", "tts"]]] = None
 
 
 class BatchRunRequest(BatchRequest):
@@ -52,9 +57,9 @@ class BatchRunRequest(BatchRequest):
 
 
 def effective_kinds(request: BatchRequest) -> Optional[list[str]]:
-    """规范化 kinds：去重排序；空或覆盖全部类型时返回 None（等同不限制）。"""
+    """规范化 kinds：去重排序；空或恰好是图片 + 视频时返回 None（等同不限制，保持原有口径）。"""
     chosen = sorted(set(request.kinds or []))
-    if not chosen or set(chosen) >= set(RUNNABLE):
+    if not chosen or set(chosen) == set(RUNNABLE):
         return None
     return chosen
 
@@ -156,7 +161,7 @@ def _check_acyclic(graph: dict[str, Any]) -> None:
 
 def _predecessors(graph: dict[str, Any], members: set[str]) -> dict[str, list[str]]:
     """批次内节点 → 它依赖的批次内图片 / 视频节点（文本节点只提供提示词，不算依赖）。"""
-    kinds = {node["id"]: node["type"] for node in graph.get("nodes", [])}
+    kinds = {node["id"]: NODE_KIND.get(node["type"], node["type"]) for node in graph.get("nodes", [])}
     preds: dict[str, list[str]] = {node_id: [] for node_id in members}
     for edge in graph.get("edges", []):
         source, target = edge.get("source"), edge.get("target")
@@ -177,9 +182,12 @@ def plan_batch(
 ) -> tuple[list[str], set[str]]:
     """返回 (拓扑顺序的节点 id, 其中被跳过的节点 id)。有环抛 CanvasError。"""
     _check_acyclic(graph)
-    kinds = {node["id"]: node["type"] for node in graph.get("nodes", [])}
+    kinds = {node["id"]: NODE_KIND.get(node["type"], node["type"]) for node in graph.get("nodes", [])}
     children: dict[str, list[str]] = {}
     for edge in graph.get("edges", []):
+        # voice 边只表示台词属于哪个镜头，不是生成依赖
+        if edge.get("targetHandle") == "voice":
+            continue
         if edge.get("source") in kinds and edge.get("target") in kinds:
             children.setdefault(edge["source"], []).append(edge["target"])
     runnable = set(effective_kinds(request) or RUNNABLE)
@@ -197,7 +205,7 @@ def plan_batch(
     else:
         members = {node_id for node_id, kind in kinds.items() if kind in runnable}
     if not members:
-        raise CanvasError("没有可运行的图片 / 视频节点")
+        raise CanvasError("没有可运行的配音节点" if runnable == {"tts"} else "没有可运行的图片 / 视频节点")
 
     preds = _predecessors(graph, members)
     # 稳定的拓扑序：按图里节点出现的顺序取“上游已排好”的节点
@@ -240,6 +248,18 @@ async def _remaining_budget(
     return cap, max(Decimal(0), cap - spent - pending)
 
 
+async def _active_tts_nodes(session: AsyncSession, canvas: NodeCanvas) -> set[str]:
+    """画布里已经有配音任务在排队 / 运行的节点 id。"""
+    rows = await session.execute(
+        select(GenerationJob.params["canvas_node_id"].astext).where(
+            GenerationJob.project_id == canvas.project_id,
+            GenerationJob.operation == "tts",
+            GenerationJob.status.in_(canvas_service.ACTIVE_JOB_STATUSES),
+        )
+    )
+    return {node_id for (node_id,) in rows.all() if node_id}
+
+
 async def _quote_plan(
     session: AsyncSession,
     canvas: NodeCanvas,
@@ -248,13 +268,31 @@ async def _quote_plan(
     graph = copy.deepcopy(canvas.graph or {})
     results, _ = await node_results(session, canvas)
     order, skipped = plan_batch(graph, request, results)
+    by_id = {node["id"]: node for node in graph.get("nodes", [])}
+    # 配音节点：台词为空 / 超长的先跳过（报价里显示为不能运行，但不拦其他台词）；已经有任务在跑的也跳过，避免重复生成、重复收费
+    unrunnable_audio: dict[str, list[str]] = {}
+    active_tts: set[str] = set()
+    if any(by_id[node_id]["type"] == "audio" for node_id in order):
+        active_tts = await _active_tts_nodes(session, canvas)
+        for node_id in order:
+            if by_id[node_id]["type"] != "audio" or node_id in skipped:
+                continue
+            _, audio_blockers = canvas_service.resolve_node_request(
+                graph, node_id, results, canvas.aspect_ratio
+            )
+            if audio_blockers:
+                unrunnable_audio[node_id] = audio_blockers
+        skipped = (
+            skipped
+            | set(unrunnable_audio)
+            | {node_id for node_id in order if node_id in active_tts and by_id[node_id]["type"] == "audio"}
+        )
     # 还要生成的节点，其结果在报价时用占位 id 代替，这样依赖它的下游也能估价
     quote_results = {**results}
     for node_id in order:
         if node_id not in skipped:
             quote_results[node_id] = [f"{canvas_service.PENDING_PREFIX}{node_id}"]
-    by_id = {node["id"]: node for node in graph.get("nodes", [])}
-    kinds_by_id = {node_id: node["type"] for node_id, node in by_id.items()}
+    kinds_by_id = {node_id: NODE_KIND.get(node["type"], node["type"]) for node_id, node in by_id.items()}
     kinds = effective_kinds(request)
     preds = _predecessors(graph, set(order))
     # 不会提交、但也不拦整个批次的节点（分段运行缺批次外上游）；它的批次内下游推进时同样会被 blocked
@@ -278,8 +316,19 @@ async def _quote_plan(
             "waits_upstream": False,
         }
         items.append(item)
+        if node_id in unrunnable_audio:
+            reason = "；".join(unrunnable_audio[node_id])
+            item.update(
+                estimated_cost=None,
+                unavailable=True,
+                reason=f"{reason}，先跳过",
+                blockers=unrunnable_audio[node_id],
+            )
+            continue
         if node_id in skipped:
             item["estimated_cost"] = 0.0
+            if node_id in active_tts:
+                item["reason"] = "正在生成，先跳过"
             continue
         stalled_up = [up for up in preds.get(node_id, []) if up in stalled]
         if stalled_up:

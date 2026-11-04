@@ -44,11 +44,19 @@ logger = logging.getLogger(__name__)
 
 LEASE_SECONDS = 300
 POLL_DELAY_SECONDS = 10.0  # 外部任务未完成时的重查间隔（run_after）
-SUPPORTED_OPERATIONS = ["generate_video", "generate_image", "render_episode", "tts", "clone_voice"]
+SUPPORTED_OPERATIONS = [
+    "generate_video",
+    "generate_image",
+    "render_episode",
+    "render_canvas",
+    "tts",
+    "clone_voice",
+]
 OPERATION_WORKER_CLASS = {
     "generate_video": "video",
     "generate_image": "image",
     "render_episode": "render",
+    "render_canvas": "render",
     "tts": "audio",
     "clone_voice": "audio",
 }
@@ -131,6 +139,7 @@ _PURPOSE_BY_OPERATION = {
     "tts": "speech",
     "clone_voice": "speech",
     "render_episode": "render",
+    "render_canvas": "render",
 }
 
 
@@ -995,6 +1004,120 @@ async def execute_render_episode(session: AsyncSession, job: GenerationJob) -> N
     )
 
 
+async def execute_render_canvas(session: AsyncSession, job: GenerationJob) -> None:
+    """render_canvas executor：按提交时生成的 EDL 渲染画布成片（本地 ffmpeg，不计费，但占用 render 并发）。
+
+    产物归属成片节点（metadata.canvas_node_id）。确定性错误（素材文件缺失等）给出中文原因、不自动重试，
+    用户修好素材后重新点“重新渲染”；其余异常按可重试处理。
+    """
+    started = time.monotonic()
+    params = dict(job.params or {})
+    spec = params.get("spec")
+    if not isinstance(spec, dict):
+        await finalize_job(
+            session,
+            job,
+            success=False,
+            error_code="invalid_params",
+            error="渲染任务缺少时间线数据，请重新渲染",
+        )
+        return
+
+    async def on_progress(value: int) -> None:
+        job.progress = max(job.progress or 0, min(99, value))
+        await session.commit()
+
+    try:
+        await job_service.mark_running(session, job)
+        result = await timeline_renderer.render_timeline(
+            session,
+            project_id=job.project_id,
+            spec=spec,
+            burn_subtitles=bool(params.get("burn_subtitles", True)),
+            export_srt=bool(params.get("export_srt", True)),
+            render_mode="final",
+            short_side=timeline_renderer.SHORT_SIDE.get(params.get("resolution", "720p"), 720),
+            job_id=job.id,
+            artifact_meta={
+                "canvas_node_id": params.get("canvas_node_id"),
+                "canvas_id": params.get("canvas_id"),
+            },
+            on_progress=on_progress,
+        )
+    except ValueError as e:
+        logger.warning(f"render_canvas 校验失败 (job={job.id}): {e}")
+        await finalize_job(
+            session,
+            job,
+            success=False,
+            error_code="render_invalid",
+            error=str(e),
+            retryable=False,
+            usage_fields={
+                "operation": "render_canvas",
+                "status": "failed",
+                "latency_ms": int((time.monotonic() - started) * 1000),
+                "error_code": "render_invalid",
+            },
+        )
+        return
+    except Exception:
+        logger.exception(f"render_canvas 渲染失败 (job={job.id})")
+        await finalize_job(
+            session,
+            job,
+            success=False,
+            error_code="render_failed",
+            error="视频合成出错，请重新渲染；反复失败请联系管理员",
+            retryable=True,
+            usage_fields={
+                "operation": "render_canvas",
+                "status": "failed",
+                "latency_ms": int((time.monotonic() - started) * 1000),
+                "error_code": "render_failed",
+            },
+        )
+        return
+
+    await usage_service.record_usage(
+        session,
+        **await _job_trace_context(session, job),
+        job_id=job.id,
+        project_id=job.project_id,
+        user_id=await _job_user_id(session, job),
+        operation="render_canvas",
+        provider="local",
+        model="ffmpeg",
+        output_units=float(result["duration_ms"]) / 1000.0,
+        unit_type="second",
+        estimated_cost=0,
+        actual_cost=0,
+        currency="CNY",
+        latency_ms=int((time.monotonic() - started) * 1000),
+        status="success",
+        attempt=job.attempt,
+        event_metadata={
+            "subtitles_burned": result["subtitles_burned"],
+            "resolution": params.get("resolution", "720p"),
+        },
+    )
+    await finalize_job(
+        session,
+        job,
+        success=True,
+        result={
+            "input_hash": params.get("input_hash"),
+            "srt_artifact_id": result["srt_artifact_id"],
+            "duration_ms": result["duration_ms"],
+        },
+        artifact={
+            "artifact_id": result["artifact_id"],
+            "storage_key": result["storage_key"],
+            "url": f"/api/artifacts/{result['artifact_id']}/download",
+        },
+    )
+
+
 async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
     """tts executor（P1-12）：合成单条对白/旁白轨并回写 Shot track.audio_storage_key。
 
@@ -1019,15 +1142,24 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
         )
         return
 
+    # 画布配音按提交时预留预算的 provider 执行：API 与 Worker 的密钥配置不同时，不能悄悄换成别的 provider
+    submitted_provider = (params.get("speech_provider") or "").strip() if params.get("canvas_node_id") else ""
     try:
-        provider, mocked = _media_runtime.resolve_speech()
+        if submitted_provider:
+            provider, mocked = _media_runtime.resolve_speech(explicit_name=submitted_provider)
+        else:
+            provider, mocked = _media_runtime.resolve_speech()
     except RuntimeError:
         await finalize_job(
             session,
             job,
             success=False,
             error_code="no_provider",
-            error="无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS",
+            error=(
+                f"提交时选定的配音服务「{submitted_provider}」现在不可用，请检查模型服务配置后重试"
+                if submitted_provider
+                else "无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS"
+            ),
         )
         return
 
@@ -1097,6 +1229,15 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
 
     storage_key = result.artifacts[0]["storage_key"]
     duration_ms = result.artifacts[0].get("duration_ms")
+    duration_estimated = False
+    if params.get("canvas_node_id"):
+        # 画布配音的时长要给成片时间线用：以文件真实时长为准，读不出来才退回估算
+        info = await media_probe.probe_media(asset_service.STORAGE_DIR / storage_key)
+        real = info.get("duration") if info.get("ok") else None
+        if real:
+            duration_ms = int(round(real * 1000))
+        else:
+            duration_estimated = True
     artifact = await asset_service.create_artifact(
         session,
         project_id=job.project_id,
@@ -1111,11 +1252,22 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
             "track_index": params.get("track_index"),
             "text": text,
             "mocked": mocked,
+            # 画布配音节点的产物：按 canvas_node_id 归到节点，并记录时长（毫秒）
+            **(
+                {
+                    "canvas_node_id": params["canvas_node_id"],
+                    "duration_ms": duration_ms,
+                    **({"duration_estimated": True} if duration_estimated else {}),
+                }
+                if params.get("canvas_node_id")
+                else {}
+            ),
         },
     )
 
     # 回写 Shot 的 track：JSONB 变更检测需要整体重新赋值 list
-    shot = await session.get(Shot, params.get("shot_id") or "")
+    shot_id = params.get("shot_id") or ""
+    shot = await session.get(Shot, shot_id) if shot_id else None
     if shot is not None:
         field = "dialogue_tracks" if params.get("track_type") == "dialogue" else "narration_tracks"
         tracks = [dict(t) for t in (getattr(shot, field) or [])]
@@ -1124,8 +1276,9 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
             tracks[index]["audio_storage_key"] = storage_key
             setattr(shot, field, tracks)
             await session.flush()
-    else:
-        logger.warning(f"tts job {job.id}: shot {params.get('shot_id')} 不存在，跳过 track 回写")
+    elif shot_id or not params.get("canvas_node_id"):
+        # 画布配音节点（有 canvas_node_id、没有 shot_id）本来就没有剧集 Shot，不需要回写也不告警
+        logger.warning(f"tts job {job.id}: shot {shot_id} 不存在，跳过 track 回写")
 
     # 优先用 provider 返回的字符数
     tts_characters = int(result.usage.get("characters") or len(text.strip()))
@@ -1360,6 +1513,7 @@ EXECUTORS: dict[str, Callable[[AsyncSession, GenerationJob], Awaitable[None]]] =
     "generate_video": execute_generate_video,
     "generate_image": execute_generate_image,
     "render_episode": execute_render_episode,
+    "render_canvas": execute_render_canvas,
     "tts": execute_tts,
     "clone_voice": execute_clone_voice,
 }

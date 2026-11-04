@@ -4,10 +4,10 @@ import {
   useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node, type NodeChange, type OnBeforeDelete, type OnConnectEnd,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Check, ChevronDown, ChevronsDownUp, ChevronsUpDown, Film, ImageIcon, LayoutGrid, Loader2, Maximize, MoreHorizontal, Play, Plus, Sparkles, Type, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronsDownUp, ChevronsUpDown, Film, ImageIcon, LayoutGrid, Loader2, Maximize, Mic, MoreHorizontal, Play, Plus, Sparkles, Type, X } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
-  ConflictError, nodeCanvasApi, type BatchKind, type BatchRun, type BatchScope, type CanvasDetail, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
+  ConflictError, nodeCanvasApi, type BatchRun, type BatchRunKind, type BatchScope, type CanvasDetail, type CanvasModels, type CanvasNodeType, type CanvasRuns, type RunRequest,
   type SplitResult, type StoredEdge, type StoredGraph, type StoredNode,
 } from '../../api/nodeCanvas'
 import { paths } from '../../routePaths'
@@ -350,7 +350,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
   }, [save])
 
   // 报价：先保存画布再报价；notice 用于说明为什么重新报价。每次报价换一个 requestId（新的决定）
-  const loadQuote = useCallback(async (scope: BatchScope, nodeId?: string, notice = '', kinds?: BatchKind[]) => {
+  const loadQuote = useCallback(async (scope: BatchScope, nodeId?: string, notice = '', kinds?: BatchRunKind[]) => {
     const next: BatchPlan = { scope, nodeId, kinds, requestId: newRequestId(), quote: null, error: '', notice, busy: false }
     setPlan(next)
     const apply = (patch: Partial<BatchPlan>) => setPlan((current) => current?.requestId === next.requestId ? { ...current, ...patch } : current)
@@ -362,7 +362,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
     }
   }, [detail.id, flushThen])
 
-  const openBatch = useCallback((scope: BatchScope, nodeId?: string, kinds?: BatchKind[]) => loadQuote(scope, nodeId, '', kinds), [loadQuote])
+  const openBatch = useCallback((scope: BatchScope, nodeId?: string, kinds?: BatchRunKind[]) => loadQuote(scope, nodeId, '', kinds), [loadQuote])
 
   const confirmBatch = async () => {
     if (!plan || plan.busy || !plan.quote) return
@@ -630,6 +630,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
                   <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('text') }}><Type size={14} />新建文本节点</button>
                   <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('image') }}><ImageIcon size={14} />新建图片节点</button>
                   <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('video') }}><Film size={14} />新建视频节点</button>
+                  <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('audio') }}><Mic size={14} />新建配音节点</button>
                   <button role="menuitem" className="nc-menu__item" disabled={nodes.length === 0} onClick={() => { close(); tidy() }}><LayoutGrid size={14} />整理布局</button>
                 </>}
               </ToolbarMenu>

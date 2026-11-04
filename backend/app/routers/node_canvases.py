@@ -71,6 +71,12 @@ async def available_models(session: AsyncSession = Depends(get_session)):
     return await service.available_models(session)
 
 
+@router.get("/node-canvases/voices")
+async def voices():
+    """配音可选的预置音色（常量表，不调用厂商）。"""
+    return service.preset_voices()
+
+
 @router.get("/node-canvases/{canvas_id}")
 async def get_canvas(
     canvas_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)

@@ -1,6 +1,6 @@
 import { apiFetch, getToken } from '../api'
 
-export type CanvasNodeType = 'text' | 'image' | 'video'
+export type CanvasNodeType = 'text' | 'image' | 'video' | 'audio' | 'episode'
 export type VideoTier = 'preview' | 'final'
 
 export interface CanvasSummary {
@@ -61,6 +61,8 @@ export interface NodeResult {
   /** 基于哪张图修改而来（分镜页的“基于这张修改”）；原始结果没有 */
   edit_of?: string | null
   edit_instruction?: string | null
+  /** 音频结果的时长（毫秒） */
+  duration_ms?: number | null
 }
 
 export interface DailyBudget {
@@ -85,6 +87,9 @@ export interface CanvasModel {
   provider: string
   modes: string[]
   pricing: Record<string, unknown>
+  /** 视频模型允许的时长范围（秒）；没配置时没有 */
+  min_duration?: number
+  max_duration?: number
 }
 
 export interface CanvasModels {
@@ -98,8 +103,12 @@ export interface CanvasModels {
 }
 
 export interface RunRequest {
-  kind: 'image' | 'video'
-  prompt: string
+  kind: 'image' | 'video' | 'tts'
+  /** 图片 / 视频的提示词；配音（tts）不用 */
+  prompt?: string
+  /** 配音：台词（≤500 字）与预置音色 id（空 = 系统默认音色） */
+  text?: string
+  voice?: string
   model?: string
   aspect_ratio?: string
   duration?: number
@@ -117,8 +126,10 @@ export interface RunRequest {
 }
 
 export interface Quote {
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'tts'
   model: string
+  /** 配音：计费字符数 */
+  characters?: number
   mode?: string
   resolution?: string
   estimated_cost: number | null
@@ -127,19 +138,21 @@ export interface Quote {
 export type BatchScope = 'all' | 'downstream'
 
 export type BatchKind = 'image' | 'video'
+/** 批量运行可选的类型：配音（tts）要明确选才会运行，默认的“全部”不含配音 */
+export type BatchRunKind = BatchKind | 'tts'
 
 export interface BatchScopeBody {
   scope: BatchScope
   node_id?: string
   skip_succeeded?: boolean
   /** 只运行这些类型的节点（分段生成）；不传 = 全部 */
-  kinds?: BatchKind[]
+  kinds?: BatchRunKind[]
 }
 
 export interface BatchQuoteNode {
   node_id: string
   label: string
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'audio'
   status: 'pending' | 'skipped'
   estimated_cost: number | null
   unavailable: boolean
@@ -175,7 +188,7 @@ export interface BatchRun {
   id: string
   status: 'running' | 'succeeded' | 'failed' | 'canceled'
   /** 批次限定的节点类型；null / 缺省 = 全部 */
-  kinds?: BatchKind[] | null
+  kinds?: BatchRunKind[] | null
   node_ids: string[]
   nodes: Record<string, BatchNodeState>
   total: number
@@ -188,7 +201,17 @@ export interface BatchRun {
 
 export interface SplitResult {
   characters: { name: string; description: string }[]
-  shots: { title: string; prompt: string; characters: string[]; duration_s: number }[]
+  shots: { title: string; prompt: string; characters: string[]; duration_s: number; lines?: { speaker: string; text: string }[] }[]
+}
+
+/** 预置音色（后端常量表）；sample_url 为空表示没有试听音频，不显示试听按钮 */
+export interface PresetVoice {
+  id: string
+  name: string
+  gender: 'male' | 'female'
+  style: string
+  sample_text: string
+  sample_url: string | null
 }
 
 export class ConflictError extends Error {}
@@ -229,6 +252,7 @@ export const nodeCanvasApi = {
   },
   runs: (id: string) => json<CanvasRuns>(`${base(id)}/runs`),
   models: () => json<CanvasModels>('/api/node-canvases/models'),
+  voices: () => json<PresetVoice[]>('/api/node-canvases/voices'),
   quote: (id: string, body: RunRequest) => json<Quote>(`${base(id)}/quote`, send('POST', body)),
   run: (id: string, nodeId: string, body: RunRequest) =>
     json<{ job_id: string; status: string }>(`${base(id)}/nodes/${encodeURIComponent(nodeId)}/run`, send('POST', body)),

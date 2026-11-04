@@ -2,8 +2,6 @@ import { lazy, Suspense } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useOutletContext, useParams } from 'react-router-dom'
 import ProjectFrame from './components/project/ProjectFrame'
 import type { ProjectOutletContext } from './components/project/outletContext'
-import StepPlaceholder from './components/project/StepPlaceholder'
-import { STEP_KEYS } from './components/project/steps'
 import AppShell from './components/shell/AppShell'
 import LibraryPage from './components/workspace/LibraryPage'
 import ProjectsPage from './components/projects/ProjectsPage'
@@ -15,6 +13,8 @@ const NodeCanvasPage = lazy(() => import('./components/nodeCanvas/NodeCanvasPage
 const CharactersPage = lazy(() => import('./components/characters/CharactersPage'))
 const ScriptPage = lazy(() => import('./components/script/ScriptPage'))
 const StoryboardPage = lazy(() => import('./components/storyboard/StoryboardPage'))
+const VoicePage = lazy(() => import('./components/voice/VoicePage'))
+const FinalPage = lazy(() => import('./components/final/FinalPage'))
 
 export function legacyRedirectFor(pathname: string, search: string): string | null {
   if (pathname !== '/') return null
@@ -88,9 +88,8 @@ export function AppRoutes({ theme, onToggleTheme }: AppRoutesProps) {
             <Route path="script" element={<Suspense fallback={pageFallback}><ScriptPage /></Suspense>} />
             <Route path="characters" element={<Suspense fallback={pageFallback}><CharactersPage /></Suspense>} />
             <Route path="storyboard" element={<Suspense fallback={pageFallback}><StoryboardPage /></Suspense>} />
-            {STEP_KEYS.filter((key) => key !== 'storyboard' && key !== 'script' && key !== 'characters').map((key) => (
-              <Route key={key} path={key} element={<StepPlaceholder step={key} />} />
-            ))}
+            <Route path="voice" element={<Suspense fallback={pageFallback}><VoicePage /></Suspense>} />
+            <Route path="final" element={<Suspense fallback={pageFallback}><FinalPage /></Suspense>} />
             <Route path="*" element={<CanvasRedirect />} />
           </Route>
           <Route path="projects/drama/*" element={<Navigate to={paths.projects} replace />} />

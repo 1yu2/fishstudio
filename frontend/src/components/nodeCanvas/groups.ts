@@ -21,6 +21,8 @@ export const DEFAULT_SIZE: Record<StoredNode['type'], { width: number; height: n
   text: { width: 280, height: 230 },
   image: { width: 280, height: 520 },
   video: { width: 280, height: 580 },
+  audio: { width: 280, height: 330 },
+  episode: { width: 220, height: 160 },
 }
 /** 分组框相对成员外框的内边距、顶部标题栏高度 */
 export const GROUP_PADDING = 24
@@ -92,8 +94,8 @@ export function groupBounds(members: Rect[]): Rect {
 
 /**
  * 画布 graph → 镜头分组（顺序与镜头一致）。
- * 成员 = 主节点 + 首帧图片 + 视频 + 只连到本组成员的上游文本节点；角色节点不属于任何组，
- * 被多个组共用的节点（共用首帧、一段提示词连了几个镜头）也不归任何组。
+ * 成员 = 主节点 + 首帧图片 + 视频 + 只连到本组成员的上游文本节点 + 只通过 voice 边连到本组成员的配音节点；
+ * 角色节点不属于任何组，被多个组共用的节点（共用首帧、一段提示词连了几个镜头、一句台词连了几个镜头）也不归任何组。
  */
 export function buildGroups(nodes: SizedNode[], edges: StoredEdge[], runs: CanvasRuns | null): ShotGroup[] {
   const shots = buildShots(nodes, edges, runs)
@@ -105,14 +107,16 @@ export function buildGroups(nodes: SizedNode[], edges: StoredEdge[], runs: Canva
     for (const id of ids) claims.set(id, (claims.get(id) || 0) + 1)
     return ids
   })
-  // 上游文本：所有出边都指向同一个组的核心成员才归这个组
+  // 上游文本 / 台词：所有出边都指向同一个组的核心成员才归这个组
   const owner = new Map<string, number>()
   cores.forEach((ids, index) => { for (const id of ids) if (claims.get(id) === 1) owner.set(id, index) })
   const texts = new Map<number, string[]>()
   for (const node of nodes) {
-    if (node.type !== 'text') continue
+    if (node.type !== 'text' && node.type !== 'audio') continue
     const out = edges.filter((edge) => edge.source === node.id)
     if (out.length === 0) continue
+    // 配音节点只认 voice 边；它还连了别的东西（理论上不会）就不归组
+    if (node.type === 'audio' && out.some((edge) => edge.targetHandle !== 'voice')) continue
     const groups = new Set(out.map((edge) => owner.get(edge.target)))
     if (groups.size !== 1) continue
     const [group] = [...groups]
@@ -242,7 +246,7 @@ export function tidyLayout(nodes: SizedNode[], edges: StoredEdge[], runs: Canvas
   let right = left
   for (const group of groups) {
     const members = group.members.map((id) => byId.get(id)).filter((node): node is SizedNode => !!node)
-    const cols = (['text', 'image', 'video'] as const).map((type) => members.filter((node) => node.type === type)).filter((col) => col.length > 0)
+    const cols = (['text', 'image', 'video', 'audio'] as const).map((type) => members.filter((node) => node.type === type)).filter((col) => col.length > 0)
     const first = top + GROUP_PADDING + GROUP_HEADER
     let x = left + GROUP_PADDING
     let bottom = first
