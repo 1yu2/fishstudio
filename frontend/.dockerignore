@@ -18,6 +18,8 @@ dist-ssr/
 .vscode/
 
 # 测试 / 文档
-*.test.ts
-*.test.tsx
+# 不带 **/ 的模式只匹配根目录，src 下的测试文件要用 **/
+**/*.test.ts
+**/*.test.tsx
 *.md
+src/test/
