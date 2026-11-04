@@ -15,6 +15,8 @@ vi.mock('../nodeCanvas/NodeCanvasPage', () => ({
   default: ({ canvasId }: { canvasId: string }) => <div>NODE_CANVAS:{canvasId}</div>,
 }))
 
+vi.mock('../storyboard/StoryboardPage', () => ({ default: () => <h1>STORYBOARD_PAGE</h1> }))
+
 const summary: ProjectSummary = {
   canvas_id: 'c1',
   project_id: 'p1',
@@ -67,10 +69,26 @@ describe('ProjectFrame', () => {
     vi.useRealTimers()
   })
 
-  it('redirects /studio/:id to the canvas view without step nav or footer', async () => {
+  it('redirects /studio/:id to the active step reported by the backend', async () => {
     renderAt('/studio/c1')
+    expect(await screen.findByText('STORYBOARD_PAGE')).toBeInTheDocument()
+    expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/storyboard')
+    expect(screen.getByRole('navigation', { name: '制作步骤' })).toBeInTheDocument()
+  })
+
+  it('shows the frame skeleton while the summary loads, then goes to script when no step is active', async () => {
+    let resolve: (value: ProjectSummary) => void = () => undefined
+    vi.mocked(workspaceApi.project).mockImplementation(() => new Promise<ProjectSummary>((r) => { resolve = r }))
+    renderAt('/studio/c1')
+    expect(screen.getByLabelText('项目加载中')).toBeInTheDocument()
+    expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1')
+    await act(async () => { resolve({ ...summary, active_step: null }) })
+    await waitFor(() => expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/script'))
+  })
+
+  it('canvas view has no step nav or footer', async () => {
+    renderAt('/studio/c1/canvas')
     expect(await screen.findByText('NODE_CANVAS:c1')).toBeInTheDocument()
-    expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/canvas')
     expect(screen.queryByRole('navigation', { name: '制作步骤' })).not.toBeInTheDocument()
     expect(screen.queryByRole('contentinfo')).not.toBeInTheDocument()
     expect(await screen.findByText('雪夜狐妖')).toBeInTheDocument()
@@ -119,13 +137,32 @@ describe('ProjectFrame', () => {
     expect(screen.getByRole('link', { name: '角色定稿，去分镜 →' })).toBeInTheDocument()
   })
 
-  it.each([
-    ['storyboard', '完成分镜，去配音 →', '/studio/c1/voice'],
-    ['voice', '配音完成，去成片 →', '/studio/c1/final'],
-  ])('%s next button leads to the following step', async (step, label, target) => {
-    renderAt(`/studio/c1/${step}`)
-    fireEvent.click(await screen.findByRole('link', { name: label }))
-    await waitFor(() => expect(screen.getByLabelText('location')).toHaveTextContent(target))
+  it('voice next button leads to the following step', async () => {
+    renderAt('/studio/c1/voice')
+    fireEvent.click(await screen.findByRole('link', { name: '配音完成，去成片 →' }))
+    await waitFor(() => expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/final'))
+  })
+
+  it('storyboard next button is disabled with the remaining count until every shot is done', async () => {
+    renderAt('/studio/c1/storyboard')
+    const button = await screen.findByRole('button', { name: '完成分镜，去配音 →' })
+    expect(button).toBeDisabled()
+    expect(screen.getByText('还有 6 个镜头没完成')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '完成分镜，去配音 →' })).not.toBeInTheDocument()
+  })
+
+  it('storyboard next button is disabled when there are no shots', async () => {
+    vi.mocked(workspaceApi.project).mockResolvedValue({ ...summary, shots_total: 0, shots_done: 0 })
+    renderAt('/studio/c1/storyboard')
+    expect(await screen.findByRole('button', { name: '完成分镜，去配音 →' })).toBeDisabled()
+    expect(screen.getByText('还没有镜头')).toBeInTheDocument()
+  })
+
+  it('storyboard next button leads to voice once all shots are done', async () => {
+    vi.mocked(workspaceApi.project).mockResolvedValue({ ...summary, shots_done: 12 })
+    renderAt('/studio/c1/storyboard')
+    fireEvent.click(await screen.findByRole('link', { name: '完成分镜，去配音 →' }))
+    await waitFor(() => expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/voice'))
   })
 
   it('final step has no next button, and the hint hides when empty', async () => {
@@ -149,7 +186,7 @@ describe('ProjectFrame', () => {
     expect(within(group).getByRole('link', { name: '画布' })).toHaveAttribute('aria-current', 'page')
     await screen.findByText('3 个任务生成中')
     fireEvent.click(within(group).getByRole('link', { name: '步骤' }))
-    expect(await screen.findByRole('heading', { name: '分镜' })).toBeInTheDocument()
+    expect(await screen.findByText('STORYBOARD_PAGE')).toBeInTheDocument()
     expect(screen.getByLabelText('location')).toHaveTextContent('/studio/c1/storyboard')
     fireEvent.click(within(screen.getByRole('group', { name: '视图切换' })).getByRole('link', { name: '画布' }))
     expect(await screen.findByText('NODE_CANVAS:c1')).toBeInTheDocument()

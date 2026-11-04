@@ -1,4 +1,4 @@
-import { apiFetch } from '../api'
+import { apiFetch, getToken } from '../api'
 
 export type CanvasNodeType = 'text' | 'image' | 'video'
 export type VideoTier = 'preview' | 'final'
@@ -58,6 +58,9 @@ export interface NodeResult {
   tier?: string | null
   created_at?: string | null
   uploaded?: boolean
+  /** 基于哪张图修改而来（分镜页的“基于这张修改”）；原始结果没有 */
+  edit_of?: string | null
+  edit_instruction?: string | null
 }
 
 export interface DailyBudget {
@@ -90,6 +93,8 @@ export interface CanvasModels {
   defaults: { image: string; video_preview: string; video_final: string }
   /** 用默认模型生成图片会遇到的问题；空字符串表示可以生成 */
   image_problem?: string
+  /** 基于某张图修改（图片编辑路由）会遇到的问题；空字符串表示可以修改 */
+  image_edit_problem?: string
 }
 
 export interface RunRequest {
@@ -105,6 +110,10 @@ export interface RunRequest {
   last_frame_artifact_id?: string | null
   /** 幂等标识：每次点击生成一个，自动重试复用，后端据此去重 */
   client_request_id?: string
+  /** 基于这张图修改（仅图片）：要修改的图片 artifact id；后端把它放在参考图第一位 */
+  edit_of?: string
+  /** 用户写的修改要求原文（≤500 字），仅用于记录 */
+  edit_instruction?: string
 }
 
 export interface Quote {
@@ -209,6 +218,15 @@ export const nodeCanvasApi = {
   rename: (id: string, body: { title?: string; aspect_ratio?: string }) => json<CanvasSummary>(base(id), send('PATCH', body)),
   remove: (id: string) => json<void>(base(id), { method: 'DELETE' }),
   save: (id: string, graph: StoredGraph, revision: number) => json<{ revision: number }>(`${base(id)}/graph`, send('PUT', { graph, revision })),
+  /** 页面关闭时的尽力保存：keepalive 让请求在页面卸载后继续发送（不等待、不处理结果）。 */
+  saveKeepalive: (id: string, graph: StoredGraph, revision: number) => {
+    const token = getToken()
+    void fetch(`${base(id)}/graph`, {
+      method: 'PUT', keepalive: true,
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ graph, revision }),
+    }).catch(() => undefined)
+  },
   runs: (id: string) => json<CanvasRuns>(`${base(id)}/runs`),
   models: () => json<CanvasModels>('/api/node-canvases/models'),
   quote: (id: string, body: RunRequest) => json<Quote>(`${base(id)}/quote`, send('POST', body)),

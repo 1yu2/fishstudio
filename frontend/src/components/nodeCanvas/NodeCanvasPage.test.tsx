@@ -39,11 +39,23 @@ beforeEach(() => {
   api.batchList.mockResolvedValue([])
 })
 
-function renderPage() {
-  return render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><NodeCanvasPage canvasId="c1" /></MemoryRouter>)
+function renderPage(entry = '/') {
+  return render(<MemoryRouter initialEntries={[entry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><NodeCanvasPage canvasId="c1" /></MemoryRouter>)
 }
 
 describe('NodeCanvasPage', () => {
+  it('selects the node named by ?node= when the canvas opens', async () => {
+    const { container } = renderPage('/?node=text-1')
+    await waitFor(() => expect(container.querySelector('.nc-node--selected')).not.toBeNull())
+    expect(screen.getByDisplayValue('想法').closest('.nc-node')).toHaveClass('nc-node--selected')
+  })
+
+  it('selects nothing for an unknown ?node=', async () => {
+    const { container } = renderPage('/?node=nope')
+    await screen.findByDisplayValue('想法')
+    expect(container.querySelector('.nc-node--selected')).toBeNull()
+  })
+
   it('loads the graph and shows spend', async () => {
     renderPage()
     expect(await screen.findByDisplayValue('雨夜便利店')).toBeInTheDocument()

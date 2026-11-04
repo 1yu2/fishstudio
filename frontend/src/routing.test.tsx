@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { AppRoutes, legacyRedirectFor } from './routing'
+import { workspaceApi } from './api/workspace'
 
 vi.mock('./components/workspace/WorkspacePage', () => ({
   default: () => <div>WORKSPACE_PAGE</div>,
@@ -18,6 +19,9 @@ vi.mock('./components/SettingsPage', () => ({
 }))
 vi.mock('./api/workspace', () => ({
   workspaceApi: { project: vi.fn(() => new Promise(() => undefined)), overview: vi.fn(() => new Promise(() => undefined)) },
+}))
+vi.mock('./components/storyboard/StoryboardPage', () => ({
+  default: () => <div>STORYBOARD_PAGE</div>,
 }))
 vi.mock('./components/nodeCanvas/NodeCanvasPage', () => ({
   default: ({ canvasId }: { canvasId: string }) => <div>NODE_CANVAS:{canvasId}</div>,
@@ -125,6 +129,13 @@ describe('application navigation', () => {
     expect(screen.getByLabelText('location')).toHaveTextContent(entry)
   })
 
+  it('sends /studio/:id to the active step once the summary is known', async () => {
+    vi.mocked(workspaceApi.project).mockResolvedValueOnce({ active_step: 'storyboard', steps: [], shots_total: 0, shots_done: 0, running_count: 0, budget: { cap: null, spent_today: '0', in_flight: '0', remaining: null } } as never)
+    renderRoutes('/studio/node-1')
+    expect(await screen.findByText('STORYBOARD_PAGE')).toBeInTheDocument()
+    expect(screen.getByLabelText('location')).toHaveTextContent('/studio/node-1/storyboard')
+  })
+
   it.each([
     ['/?canvasId=legacy-canvas', 'PROJECTS_PAGE', '/projects'],
     ['/canvas/legacy-canvas', 'PROJECTS_PAGE', '/projects'],
@@ -133,7 +144,6 @@ describe('application navigation', () => {
     ['/projects/drama/legacy-drama', 'PROJECTS_PAGE', '/projects'],
     ['/?page=settings', 'SETTINGS_PAGE', '/settings'],
     ['/prototype/projects', 'WORKSPACE_PAGE', '/'],
-    ['/studio/node-1', 'NODE_CANVAS:node-1', '/studio/node-1/canvas'],
     ['/studio/node-1/unknown', 'NODE_CANVAS:node-1', '/studio/node-1/canvas'],
   ])('redirects legacy deep link %s with replace semantics', async (entry, content, expectedLocation) => {
     renderRoutes(entry)
