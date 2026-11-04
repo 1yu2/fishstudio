@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConflictError, nodeCanvasApi } from '../../api/nodeCanvas'
+import { resetVoiceCache } from '../voice/useVoiceList'
 import NodeCanvasPage from './NodeCanvasPage'
 
 vi.mock('../../api/nodeCanvas', async (importOriginal) => {
@@ -9,12 +10,16 @@ vi.mock('../../api/nodeCanvas', async (importOriginal) => {
   return {
     ...actual,
     nodeCanvasApi: {
-      get: vi.fn(), models: vi.fn(), runs: vi.fn(), save: vi.fn(), quote: vi.fn(), run: vi.fn(), upload: vi.fn(), split: vi.fn(), rename: vi.fn(), cancelJob: vi.fn(),
+      get: vi.fn(), models: vi.fn(), voices: vi.fn(), runs: vi.fn(), save: vi.fn(), quote: vi.fn(), run: vi.fn(), upload: vi.fn(), split: vi.fn(), rename: vi.fn(), cancelJob: vi.fn(),
       batchQuote: vi.fn(), batchRun: vi.fn(), batchList: vi.fn(), batchGet: vi.fn(), batchCancel: vi.fn(),
     },
   }
 })
 vi.mock('../ui/Toast', () => ({ toast: vi.fn() }))
+vi.mock('../common/ProtectedMedia', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../common/ProtectedMedia')>()
+  return { ...actual, ProtectedAudio: ({ src }: { src: string }) => <audio data-testid="line-audio" src={src} /> }
+})
 
 beforeAll(() => {
   // React Flow 在 jsdom 里需要这些浏览器 API；未测量尺寸的节点是 visibility:hidden，按 label / 文本查询
@@ -28,6 +33,8 @@ const api = vi.mocked(nodeCanvasApi)
 beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
+  resetVoiceCache()
+  api.voices.mockResolvedValue([{ id: 'Cherry', name: '芊悦', gender: 'female', style: '阳光积极', sample_text: '你好', sample_url: null }])
   api.get.mockResolvedValue({
     id: 'c1', title: '雨夜', aspect_ratio: '9:16', node_count: 1, updated_at: null, created_at: null, revision: 3,
     graph: { nodes: [{ id: 'text-1', type: 'text', position: { x: 0, y: 0 }, data: { label: '想法', text: '雨夜便利店' } }], edges: [], viewport: { x: 0, y: 0, zoom: 1 } },
@@ -738,6 +745,62 @@ describe('NodeCanvasPage', () => {
       if (heights) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', heights)
       if (widths) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', widths)
     }
+  })
+})
+
+describe('NodeCanvasPage audio node', () => {
+  function withAudio(extra: { data?: Record<string, unknown>; runs?: Parameters<typeof api.runs.mockResolvedValue>[0] } = {}) {
+    api.get.mockResolvedValue({
+      id: 'c1', title: '雨夜', aspect_ratio: '9:16', node_count: 2, updated_at: null, created_at: null, revision: 3,
+      graph: {
+        nodes: [
+          { id: 'char-1', type: 'image', position: { x: 0, y: 0 }, data: { label: '角色 · 狐妖', role: 'character', character: '狐妖', voice: 'Cherry' } },
+          { id: 'audio-1', type: 'audio', position: { x: 400, y: 0 }, data: { label: '台词 · 狐妖', speaker: '狐妖', text: '你终于来了', ...extra.data } },
+        ],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    })
+    if (extra.runs) api.runs.mockResolvedValue(extra.runs)
+    api.quote.mockResolvedValue({ kind: 'tts', model: 'qwen_tts', characters: 5, estimated_cost: 0.0004 })
+  }
+
+  it('creates an audio node from the More menu', async () => {
+    renderPage()
+    await screen.findByDisplayValue('雨夜便利店')
+    chooseMenu('更多', '新建配音节点')
+    expect(await screen.findByLabelText('说话人')).toBeInTheDocument()
+    expect(screen.getByLabelText('台词')).toBeInTheDocument()
+    expect(screen.getByLabelText('音色')).toBeInTheDocument()
+    expect(screen.getByText('写台词，或连入一个文本节点')).toBeInTheDocument()
+  })
+
+  it('edits speaker, line and voice, shows the price and submits a tts request with the speaker voice', async () => {
+    withAudio()
+    renderPage()
+    const line = await screen.findByLabelText('台词')
+    expect(screen.getByLabelText('说话人')).toHaveValue('狐妖')
+    expect(await screen.findByText('芊悦 · 阳光积极')).toBeInTheDocument()
+    expect(await screen.findByText('预计 ¥0.000')).toBeInTheDocument()
+    fireEvent.change(line, { target: { value: '你终于来了。' } })
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })  // 等自动保存落地再点生成
+    const run = within(line.closest('.nc-node') as HTMLElement).getByText('生成').closest('button')!
+    await waitFor(() => expect(run).not.toBeDisabled())
+    await act(async () => { fireEvent.click(run) })
+    await waitFor(() => expect(api.run).toHaveBeenCalled())
+    expect(api.run.mock.calls[0][1]).toBe('audio-1')
+    expect(api.run.mock.calls[0][2]).toMatchObject({ kind: 'tts', text: '你终于来了。', voice: 'Cherry' })
+  })
+
+  it('plays the selected result and shows its duration, with a result picker for several', async () => {
+    const result = (id: string, ms: number) => ({ artifact_id: id, type: 'audio', url: `/api/artifacts/${id}/download`, duration_ms: ms })
+    withAudio({ runs: { nodes: { 'audio-1': { jobs: [], results: [result('r2', 3200), result('r1', 2800)] } }, active_jobs: 0, spent: 0 } })
+    renderPage()
+    expect(await screen.findByTestId('line-audio')).toHaveAttribute('src', '/api/artifacts/r2/download')
+    expect(screen.getByText('3.2 秒')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('选用结果'), { target: { value: 'r1' } })
+    expect(await screen.findByText('2.8 秒')).toBeInTheDocument()
+    expect(screen.getByTestId('line-audio')).toHaveAttribute('src', '/api/artifacts/r1/download')
   })
 })
 

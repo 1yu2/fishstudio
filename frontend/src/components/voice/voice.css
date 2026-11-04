@@ -1,0 +1,73 @@
+/* 配音页：颜色全部来自 styles/tokens.css */
+.vc { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; padding: 20px; color: var(--text-primary); font-size: 14px; line-height: 1.5; }
+.vc button, .vc select, .vc textarea { font-family: inherit; }
+.vc :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vc-message { padding: 48px 20px; text-align: center; color: var(--text-secondary); }
+.vc-muted { font-size: 12px; color: var(--text-secondary); }
+.vc-done { font-size: 12px; color: var(--status-done); }
+.vc-running { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--status-running); }
+.vc-hint { flex-basis: 100%; margin: 0; padding: 8px 18px; font-size: 12px; color: var(--status-warn); background: var(--status-warn-soft); }
+.vc-spin { animation: vc-spin 0.9s linear infinite; }
+@keyframes vc-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .vc-spin { animation: none; } }
+
+.vc-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-primary); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.vc-btn:hover:not(:disabled) { border-color: var(--accent); }
+.vc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.vc-btn--sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: var(--radius-sm); }
+
+/* 左侧：角色音色 */
+.vc-side { flex: 1 1 260px; max-width: 300px; min-width: 240px; display: flex; flex-direction: column; gap: 12px; }
+.vc-side h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.vc-speaker { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.vc-speaker--missing { border: 2px solid var(--accent); padding: 11px; }
+.vc-speaker__head { display: flex; align-items: center; gap: 8px; }
+.vc-speaker__name { font-weight: 500; }
+.vc-speaker__tag { margin-left: auto; font-size: 12px; color: var(--accent-hover); }
+.vc-avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; flex: 0 0 auto; }
+.vc-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.vc-field select { height: 32px; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0 8px; font-size: 13px; background: var(--surface); color: var(--text-primary); }
+
+/* 右侧：按镜头的台词 */
+.vc-lines { flex: 999 1 560px; min-width: 0; display: flex; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.vc-lines__head { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--border-subtle); }
+.vc-lines__head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.vc-list { flex-basis: 100%; margin: 0; padding: 0; list-style: none; }
+.vc-line { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--border-subtle); }
+.vc-line:last-child { border-bottom: 0; }
+.vc-line--warn { background: var(--status-warn-soft); }
+.vc-line__thumb { width: 36px; height: 54px; flex: 0 0 auto; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.vc-line__thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vc-line__thumb .protected-media { font-size: 0; padding: 0; }
+.vc-line__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vc-line__text { overflow-wrap: anywhere; }
+.vc-line__edit { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--accent); border-radius: var(--radius-md); background: var(--surface); color: var(--text-primary); font-size: 14px; resize: vertical; }
+.vc-line__warn { font-size: 12px; color: var(--status-warn); }
+.vc-line__error { font-size: 12px; color: var(--status-failed); overflow-wrap: anywhere; }
+.vc-line__side { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 1 auto; }
+.vc-play { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--text-primary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.vc-play:hover { border-color: var(--accent); }
+.vc-audio { height: 32px; max-width: 220px; }
+.vc-empty { flex-basis: 100%; display: flex; flex-direction: column; gap: 6px; padding: 32px 20px; text-align: center; align-items: center; }
+.vc-empty h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.vc-empty p { margin: 0; color: var(--text-secondary); font-size: 13px; }
+
+/* 未归属镜头的台词 */
+.vc-loose { flex-basis: 100%; border-top: 1px solid var(--border-subtle); }
+.vc-loose h3 { margin: 0; padding: 12px 18px 0; font-size: 14px; font-weight: 600; }
+.vc-loose > .vc-muted { margin: 0; padding: 0 18px 8px; }
+.vc-assign { height: 28px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-primary); font-size: 12px; }
+.vc-icon { width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.vc-icon:hover:not(:disabled) { background: var(--surface-2); color: var(--status-failed); }
+.vc-icon:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* 批量报价确认面板：复用画布的 BatchDialog，以右侧抽屉浮出 */
+.vc-drawer { position: fixed; inset: 0 0 0 auto; z-index: 30; width: min(340px, 100%); box-shadow: var(--shadow-lg); display: flex; }
+.vc-drawer .nc-copilot { width: 100%; flex: 1 1 auto; }
+
+@media (max-width: 800px) {
+  .vc { padding: 12px; }
+  .vc-side { max-width: none; }
+  .vc-line { flex-wrap: wrap; }
+  .vc-line__side { flex-basis: 100%; justify-content: flex-start; }
+}

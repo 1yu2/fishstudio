@@ -1019,15 +1019,24 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
         )
         return
 
+    # 画布配音按提交时预留预算的 provider 执行：API 与 Worker 的密钥配置不同时，不能悄悄换成别的 provider
+    submitted_provider = (params.get("speech_provider") or "").strip() if params.get("canvas_node_id") else ""
     try:
-        provider, mocked = _media_runtime.resolve_speech()
+        if submitted_provider:
+            provider, mocked = _media_runtime.resolve_speech(explicit_name=submitted_provider)
+        else:
+            provider, mocked = _media_runtime.resolve_speech()
     except RuntimeError:
         await finalize_job(
             session,
             job,
             success=False,
             error_code="no_provider",
-            error="无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS",
+            error=(
+                f"提交时选定的配音服务「{submitted_provider}」现在不可用，请检查模型服务配置后重试"
+                if submitted_provider
+                else "无可用 TTS provider 且未开启 ALLOW_MOCK_PROVIDERS"
+            ),
         )
         return
 
@@ -1097,6 +1106,15 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
 
     storage_key = result.artifacts[0]["storage_key"]
     duration_ms = result.artifacts[0].get("duration_ms")
+    duration_estimated = False
+    if params.get("canvas_node_id"):
+        # 画布配音的时长要给成片时间线用：以文件真实时长为准，读不出来才退回估算
+        info = await media_probe.probe_media(asset_service.STORAGE_DIR / storage_key)
+        real = info.get("duration") if info.get("ok") else None
+        if real:
+            duration_ms = int(round(real * 1000))
+        else:
+            duration_estimated = True
     artifact = await asset_service.create_artifact(
         session,
         project_id=job.project_id,
@@ -1111,11 +1129,22 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
             "track_index": params.get("track_index"),
             "text": text,
             "mocked": mocked,
+            # 画布配音节点的产物：按 canvas_node_id 归到节点，并记录时长（毫秒）
+            **(
+                {
+                    "canvas_node_id": params["canvas_node_id"],
+                    "duration_ms": duration_ms,
+                    **({"duration_estimated": True} if duration_estimated else {}),
+                }
+                if params.get("canvas_node_id")
+                else {}
+            ),
         },
     )
 
     # 回写 Shot 的 track：JSONB 变更检测需要整体重新赋值 list
-    shot = await session.get(Shot, params.get("shot_id") or "")
+    shot_id = params.get("shot_id") or ""
+    shot = await session.get(Shot, shot_id) if shot_id else None
     if shot is not None:
         field = "dialogue_tracks" if params.get("track_type") == "dialogue" else "narration_tracks"
         tracks = [dict(t) for t in (getattr(shot, field) or [])]
@@ -1124,8 +1153,9 @@ async def execute_tts(session: AsyncSession, job: GenerationJob) -> None:
             tracks[index]["audio_storage_key"] = storage_key
             setattr(shot, field, tracks)
             await session.flush()
-    else:
-        logger.warning(f"tts job {job.id}: shot {params.get('shot_id')} 不存在，跳过 track 回写")
+    elif shot_id or not params.get("canvas_node_id"):
+        # 画布配音节点（有 canvas_node_id、没有 shot_id）本来就没有剧集 Shot，不需要回写也不告警
+        logger.warning(f"tts job {job.id}: shot {shot_id} 不存在，跳过 track 回写")
 
     # 优先用 provider 返回的字符数
     tts_characters = int(result.usage.get("characters") or len(text.strip()))

@@ -4,7 +4,7 @@
  */
 import type { CanvasNodeType, CanvasRuns, NodeJob, NodeResult, RunRequest, SplitResult, StoredEdge, StoredNode, VideoTier } from '../../api/nodeCanvas'
 
-export type InputHandle = 'prompt' | 'reference' | 'first_frame' | 'last_frame'
+export type InputHandle = 'prompt' | 'reference' | 'first_frame' | 'last_frame' | 'voice'
 
 export interface TextData { label?: string; text?: string }
 export interface ImageData {
@@ -13,12 +13,19 @@ export interface ImageData {
   role?: 'character'; character?: string; look?: string; library_asset_id?: string
 }
 export interface VideoData { label?: string; prompt?: string; model?: string; duration?: number; tier?: VideoTier; selected?: string; camera?: string; order?: number }
+/** 配音节点：text 台词，speaker 说话人（旁白写 NARRATOR），voice 预置音色 id（空 = 说话人默认音色），order 同一镜头里的先后 */
+export interface AudioData { label?: string; text?: string; speaker?: string; voice?: string; selected?: string; order?: number }
+
+export const NARRATOR = '旁白'
+/** 台词上限（字符），与后端一致 */
+export const MAX_LINE_CHARS = 500
 
 /** 每种节点接受哪些输入端口，以及每个端口接受的上游类型。 */
 export const INPUTS: Record<CanvasNodeType, Partial<Record<InputHandle, CanvasNodeType>>> = {
   text: {},
-  image: { prompt: 'text', reference: 'image' },
-  video: { prompt: 'text', first_frame: 'image', last_frame: 'image' },
+  image: { prompt: 'text', reference: 'image', voice: 'audio' },
+  video: { prompt: 'text', first_frame: 'image', last_frame: 'image', voice: 'audio' },
+  audio: { prompt: 'text' },
 }
 
 export const HANDLE_LABELS: Record<InputHandle, string> = {
@@ -26,9 +33,10 @@ export const HANDLE_LABELS: Record<InputHandle, string> = {
   reference: '参考图',
   first_frame: '首帧',
   last_frame: '尾帧',
+  voice: '台词',
 }
 
-/** 每个端口最多几条入线；提示词和参考图可以多条，首尾帧各一条。 */
+/** 每个端口最多几条入线；提示词、参考图和台词（voice）可以多条，首尾帧各一条。 */
 const SINGLE_INPUT = new Set<InputHandle>(['first_frame', 'last_frame'])
 const MAX_REFERENCES = 4
 
@@ -67,7 +75,34 @@ export interface ResolvedInputs {
   upstreamPrompt: string
 }
 
-/** 汇总一个图片 / 视频节点的全部输入，得到提交给后端的请求。 */
+/**
+ * 说话人角色的默认音色：角色基础造型节点的 data.voice，找不到为空。
+ * 口径同 characters.ts（这里不能引用它，会形成循环依赖）：角色节点 = role 为 character 或出边全是 reference 的图片；基础造型 = look 为空 / “默认”。
+ */
+export function speakerVoice(nodes: StoredNode[], edges: StoredEdge[], speaker: string): string {
+  const wanted = speaker.trim()
+  if (!wanted) return ''
+  const characters = nodes.filter((node) => {
+    if (node.type !== 'image') return false
+    if ((node.data as ImageData).role === 'character') return true
+    const out = edges.filter((edge) => edge.source === node.id)
+    return out.length > 0 && out.every((edge) => edge.targetHandle === 'reference')
+  }).filter((node) => {
+    const data = node.data as ImageData
+    const name = String(data.character || '').trim() || String(data.label || '').trim().replace(/^\s*角色\s*[·.、:：-]\s*/, '').trim() || String(data.label || '').trim()
+    return name === wanted
+  })
+  const base = characters.find((node) => { const look = String((node.data as ImageData).look || '').trim(); return look === '' || look === '默认' }) ?? characters[0]
+  return base ? String((base.data as { voice?: string }).voice || '').trim() : ''
+}
+
+/** 配音节点的有效台词：prompt 边上的文本节点内容优先，否则取节点自己的 data.text。 */
+function lineText(node: StoredNode, upstream: StoredNode[]): string {
+  const linked = upstream.map((item) => String((item.data as TextData).text || '').trim()).filter(Boolean).join('\n')
+  return linked || String((node.data as AudioData).text || '').trim()
+}
+
+/** 汇总一个图片 / 视频 / 配音节点的全部输入，得到提交给后端的请求。 */
 export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: StoredEdge[], runs: CanvasRuns | null, aspectRatio: string): ResolvedInputs {
   const byId = new Map(nodes.map((item) => [item.id, item]))
   const incoming = (handle: InputHandle) => edges
@@ -75,6 +110,15 @@ export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: Stor
     .map((edge) => byId.get(edge.source))
     .filter((item): item is StoredNode => !!item)
   const blockers: string[] = []
+  if (node.type === 'audio') {
+    // 音色取值顺序：节点自己的 → 说话人角色的 → 空（系统默认音色）
+    const data = node.data as AudioData
+    const text = lineText(node, incoming('prompt'))
+    if (!text) blockers.push('写台词，或连入一个文本节点')
+    else if (text.length > MAX_LINE_CHARS) blockers.push(`台词不能超过 ${MAX_LINE_CHARS} 字`)
+    const voice = String(data.voice || '').trim() || speakerVoice(nodes, edges, String(data.speaker || ''))
+    return { upstreamPrompt: '', blockers, request: { kind: 'tts', text, voice } }
+  }
   const frame = (handle: InputHandle) => {
     const upstream = incoming(handle)[0]
     if (!upstream) return null
@@ -124,7 +168,7 @@ export function resolveInputs(node: StoredNode, nodes: StoredNode[], edges: Stor
 export function label(node: StoredNode): string {
   const text = String((node.data as TextData).label || '').trim()
   if (text) return text
-  return node.type === 'text' ? '文本' : node.type === 'image' ? '图片' : '视频'
+  return { text: '文本', image: '图片', video: '视频', audio: '配音' }[node.type]
 }
 
 export function newId(prefix: CanvasNodeType): string {
@@ -144,18 +188,20 @@ export function edgeId(source: string, target: string, handle: string): string {
 export function defaultData(type: CanvasNodeType): Record<string, unknown> {
   if (type === 'text') return { label: '', text: '' }
   if (type === 'image') return { label: '', prompt: '', model: '', count: 1 }
+  if (type === 'audio') return { label: '', text: '', speaker: '', voice: '' }
   return { label: '', prompt: '', model: '', duration: 5, tier: 'preview' }
 }
 
 /**
  * 从端口拖到空白处时自动建的下游 / 上游节点。
- * 从输出端口拖出：文本 → 图片（提示词）、图片 → 视频（首帧）。
+ * 从输出端口拖出：文本 → 图片（提示词）、图片 → 视频（首帧）、配音 → 视频（台词）。
  * 从输入端口拖出：建一个能接到该端口的上游节点。
  */
 export function dropTarget(fromType: CanvasNodeType, handleType: 'source' | 'target', handle: string | null): { type: CanvasNodeType; handle: InputHandle; reverse: boolean } | null {
   if (handleType === 'source') {
     if (fromType === 'text') return { type: 'image', handle: 'prompt', reverse: false }
     if (fromType === 'image') return { type: 'video', handle: 'first_frame', reverse: false }
+    if (fromType === 'audio') return { type: 'video', handle: 'voice', reverse: false }
     return null
   }
   const input = handle as InputHandle | null
@@ -163,11 +209,13 @@ export function dropTarget(fromType: CanvasNodeType, handleType: 'source' | 'tar
   return upstream && input ? { type: upstream, handle: input, reverse: true } : null
 }
 
-const COLUMN = { character: 0, keyframe: 420, video: 840 }
+const COLUMN = { character: 0, keyframe: 420, video: 840, audio: 1260 }
+/** 同一镜头的多句台词纵向排开的间距（3 句仍在一个镜头行 ROW 之内） */
+const LINE_STEP = 230
 /** 行距要放得下带缩略图的图片 / 视频节点（约 520–580）加镜头组标题和边距，否则新拆出来的镜头组会互相重叠 */
 const ROW = 700
 
-/** 把 Copilot 拆出的角色与镜头摆成三列：角色定妆图 → 镜头关键帧 → 视频。 */
+/** 把 Copilot 拆出的角色与镜头摆成四列：角色定妆图 → 镜头关键帧 → 视频 → 台词（配音节点，连到该镜头视频的 voice 端口）。 */
 export function layoutSplit(split: SplitResult, existing: StoredNode[]): { nodes: StoredNode[]; edges: StoredEdge[] } {
   const top = existing.length ? Math.max(...existing.map((node) => node.position.y)) + ROW + 120 : 0
   const left = existing.length ? Math.min(...existing.map((node) => node.position.x)) : 0
@@ -196,6 +244,14 @@ export function layoutSplit(split: SplitResult, existing: StoredNode[]): { nodes
       edges.push({ id: edgeId(source, keyframe, 'reference'), source, target: keyframe, sourceHandle: 'out', targetHandle: 'reference' })
     })
     edges.push({ id: edgeId(keyframe, video, 'first_frame'), source: keyframe, target: video, sourceHandle: 'out', targetHandle: 'first_frame' })
+    ;(shot.lines || []).forEach((line, order) => {
+      const text = String(line.text || '').trim()
+      if (!text) return
+      const speaker = String(line.speaker || '').trim() || NARRATOR
+      const audio = newId('audio')
+      nodes.push({ id: audio, type: 'audio', position: { x: left + COLUMN.audio, y: y + order * LINE_STEP }, data: { label: `台词 · ${speaker}`, speaker, text, voice: '', order } })
+      edges.push({ id: edgeId(audio, video, 'voice'), source: audio, target: video, sourceHandle: 'out', targetHandle: 'voice' })
+    })
   })
   return { nodes, edges }
 }

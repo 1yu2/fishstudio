@@ -159,6 +159,51 @@
         "request": {"kind": "video", "prompt": "转身\n运镜：缓慢推近", "model": "", "aspect_ratio": "9:16", "duration": 4, "tier": "preview", "first_frame_artifact_id": "fa", "last_frame_artifact_id": null},
         "blockers": []
       }
+    },
+    {
+      "name": "audio takes linked text first and voice from the speaker character",
+      "nodes": [
+        {"id": "t", "type": "text", "data": {"text": "  今晚月色真好  "}},
+        {"id": "c", "type": "image", "data": {"role": "character", "character": "狐妖", "voice": "Serena"}},
+        {"id": "a", "type": "audio", "data": {"text": "自己的台词", "speaker": "狐妖"}}
+      ],
+      "edges": [{"source": "t", "target": "a", "targetHandle": "prompt"}],
+      "results": {},
+      "aspect_ratio": "9:16",
+      "node_id": "a",
+      "expected": {
+        "request": {"kind": "tts", "text": "今晚月色真好", "voice": "Serena"},
+        "blockers": []
+      }
+    },
+    {
+      "name": "audio own voice wins over speaker voice, empty text is a blocker",
+      "nodes": [
+        {"id": "c", "type": "image", "data": {"role": "character", "character": "书生", "voice": "Ethan"}},
+        {"id": "a", "type": "audio", "data": {"text": "  ", "speaker": "书生", "voice": "Moon"}}
+      ],
+      "edges": [],
+      "results": {},
+      "aspect_ratio": "9:16",
+      "node_id": "a",
+      "expected": {
+        "request": {"kind": "tts", "text": "", "voice": "Moon"},
+        "blockers": ["写台词，或连入一个文本节点"]
+      }
+    },
+    {
+      "name": "audio narrator without any voice uses system default (empty)",
+      "nodes": [
+        {"id": "a", "type": "audio", "data": {"text": "很久以前", "speaker": "旁白"}}
+      ],
+      "edges": [],
+      "results": {},
+      "aspect_ratio": "9:16",
+      "node_id": "a",
+      "expected": {
+        "request": {"kind": "tts", "text": "很久以前", "voice": ""},
+        "blockers": []
+      }
     }
   ]
 }

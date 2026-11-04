@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasRuns, StoredEdge, StoredNode } from '../../api/nodeCanvas'
 import fixture from '../../../../backend/tests/fixtures/node_canvas_resolve_cases.json'
-import { canConnect, dropTarget, layoutSplit, resolveInputs, statusText } from './graph'
+import { canConnect, defaultData, dropTarget, label, layoutSplit, resolveInputs, speakerVoice, statusText } from './graph'
 
 const node = (id: string, type: StoredNode['type'], data: Record<string, unknown> = {}): StoredNode => ({ id, type, position: { x: 0, y: 0 }, data })
 const edge = (source: string, target: string, targetHandle: string): StoredEdge => ({ id: `${source}-${target}-${targetHandle}`, source, target, sourceHandle: 'out', targetHandle })
@@ -121,5 +121,80 @@ describe('resolveInputs matches the backend resolver fixture', () => {
     const { request, blockers } = resolveInputs(target, nodes, edges, runs(item.results), item.aspect_ratio)
     expect(JSON.parse(JSON.stringify(request))).toEqual(item.expected.request)
     expect(blockers).toEqual(item.expected.blockers)
+  })
+})
+
+describe('audio nodes and voice edges', () => {
+  const nodes = [node('t', 'text'), node('a', 'audio'), node('b', 'audio'), node('v', 'video'), node('i', 'image')]
+
+  it('connects audio to video / image through voice, many at once, and text to audio through prompt', () => {
+    expect(canConnect(nodes, [], { source: 'a', target: 'v', targetHandle: 'voice' })).toBe(true)
+    expect(canConnect(nodes, [], { source: 'a', target: 'i', targetHandle: 'voice' })).toBe(true)
+    expect(canConnect(nodes, [edge('a', 'v', 'voice')], { source: 'b', target: 'v', targetHandle: 'voice' })).toBe(true)
+    expect(canConnect(nodes, [edge('a', 'v', 'voice')], { source: 'a', target: 'v', targetHandle: 'voice' })).toBe(false)
+    expect(canConnect(nodes, [], { source: 't', target: 'a', targetHandle: 'prompt' })).toBe(true)
+  })
+
+  it('rejects illegal edges around audio', () => {
+    expect(canConnect(nodes, [], { source: 'i', target: 'v', targetHandle: 'voice' })).toBe(false)
+    expect(canConnect(nodes, [], { source: 'a', target: 'v', targetHandle: 'first_frame' })).toBe(false)
+    expect(canConnect(nodes, [], { source: 'a', target: 'b', targetHandle: 'prompt' })).toBe(false)
+    expect(canConnect(nodes, [], { source: 'v', target: 'a', targetHandle: 'prompt' })).toBe(false)
+    expect(canConnect(nodes, [], { source: 'a', target: 'a', targetHandle: 'prompt' })).toBe(false)
+  })
+
+  it('has defaults, a label and a drop target for audio', () => {
+    expect(defaultData('audio')).toEqual({ label: '', text: '', speaker: '', voice: '' })
+    expect(label(node('a', 'audio'))).toBe('配音')
+    expect(dropTarget('audio', 'source', 'out')).toEqual({ type: 'video', handle: 'voice', reverse: false })
+    expect(dropTarget('audio', 'target', 'prompt')).toEqual({ type: 'text', handle: 'prompt', reverse: true })
+    expect(dropTarget('video', 'target', 'voice')).toEqual({ type: 'audio', handle: 'voice', reverse: true })
+  })
+
+  it('resolves a tts request: own voice > speaker voice > default, linked text first', () => {
+    const graph = [
+      node('c', 'image', { role: 'character', character: '狐妖', voice: 'Serena' }),
+      node('c2', 'image', { role: 'character', character: '狐妖', look: '冬装', voice: 'Moon' }),
+      node('a', 'audio', { text: '自己的', speaker: '狐妖' }),
+      node('b', 'audio', { text: '我也说', speaker: '狐妖', voice: 'Kai' }),
+      node('n', 'audio', { text: '很久以前', speaker: '旁白' }),
+      node('t', 'text', { text: ' 连入的台词 ' }),
+    ]
+    const request = (id: string, edges: StoredEdge[] = []) => resolveInputs(graph.find((item) => item.id === id)!, graph, edges, null, '9:16')
+    expect(request('a').request).toEqual({ kind: 'tts', text: '自己的', voice: 'Serena' })
+    expect(request('b').request.voice).toBe('Kai')
+    expect(request('n').request).toEqual({ kind: 'tts', text: '很久以前', voice: '' })
+    expect(request('a', [edge('t', 'a', 'prompt')]).request.text).toBe('连入的台词')
+    expect(speakerVoice(graph, [], '路人')).toBe('')
+  })
+
+  it('blocks empty and over-long lines', () => {
+    expect(resolveInputs(node('a', 'audio', { text: ' ' }), [node('a', 'audio')], [], null, '9:16').blockers).toEqual(['写台词，或连入一个文本节点'])
+    expect(resolveInputs(node('a', 'audio', { text: '字'.repeat(501) }), [], [], null, '9:16').blockers).toEqual(['台词不能超过 500 字'])
+  })
+})
+
+describe('layoutSplit lines', () => {
+  it('turns shot lines into audio nodes right of the video, linked by voice edges and ordered', () => {
+    const split = {
+      characters: [{ name: '狐妖', description: '白发' }],
+      shots: [
+        { title: '开场', prompt: '雪夜', characters: ['狐妖'], duration_s: 4, lines: [{ speaker: '狐妖', text: '你来了' }, { speaker: '', text: '旁白一句' }, { speaker: '书生', text: ' ' }] },
+        { title: '对视', prompt: '回头', characters: [], duration_s: 3 },
+      ],
+    }
+    const laid = layoutSplit(split, [])
+    const audios = laid.nodes.filter((item) => item.type === 'audio')
+    const videos = laid.nodes.filter((item) => item.type === 'video')
+    expect(audios).toHaveLength(2)  // 空台词丢弃；没写 lines 的镜头不生成
+    expect(audios.map((item) => item.data)).toEqual([
+      { label: '台词 · 狐妖', speaker: '狐妖', text: '你来了', voice: '', order: 0 },
+      { label: '台词 · 旁白', speaker: '旁白', text: '旁白一句', voice: '', order: 1 },
+    ])
+    expect(audios.every((item) => item.position.x > videos[0].position.x)).toBe(true)
+    expect(audios[1].position.y).toBeGreaterThan(audios[0].position.y)
+    const voiceEdges = laid.edges.filter((item) => item.targetHandle === 'voice')
+    expect(voiceEdges.map((item) => item.target)).toEqual([videos[0].id, videos[0].id])
+    expect(voiceEdges.map((item) => item.source)).toEqual(audios.map((item) => item.id))
   })
 })

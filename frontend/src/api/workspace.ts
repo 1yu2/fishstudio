@@ -35,7 +35,7 @@ export interface WorkspaceRunning {
   canvas_id: string
   project_title: string
   node_label: string
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'audio'
   status: 'queued' | 'running'
   progress: number
   created_at: string | null

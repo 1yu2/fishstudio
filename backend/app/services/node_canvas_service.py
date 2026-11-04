@@ -114,7 +114,7 @@ async def get_canvas(session: AsyncSession, canvas_id: str, user: User) -> NodeC
 
 class GraphNode(BaseModel):
     id: str = Field(min_length=1, max_length=64)
-    type: Literal["text", "image", "video"]
+    type: Literal["text", "image", "video", "audio"]
     position: dict[str, float]
     data: dict[str, Any] = Field(default_factory=dict)
     width: Optional[float] = None
@@ -275,8 +275,75 @@ def canvas_summary(canvas: NodeCanvas) -> dict[str, Any]:
 # ── 节点生成 ──────────────────────────────────────────────────────────────
 
 
+# 配音：台词上限（字符）与预置音色（Qwen3-TTS-Flash 系统音色；只做选择，不调用厂商）
+MAX_TTS_CHARS = 500
+PRESET_VOICES: tuple[dict[str, str], ...] = (
+    {
+        "id": "Cherry",
+        "name": "芊悦",
+        "gender": "female",
+        "style": "阳光积极、亲切自然",
+        "sample_text": "你好呀，今天天气真不错，我们一起出发吧。",
+    },
+    {
+        "id": "Serena",
+        "name": "苏瑶",
+        "gender": "female",
+        "style": "温柔舒缓、适合旁白",
+        "sample_text": "夜色渐深，远处的灯火一盏一盏亮了起来。",
+    },
+    {
+        "id": "Chelsie",
+        "name": "千雪",
+        "gender": "female",
+        "style": "清亮灵动、少女感",
+        "sample_text": "快看快看，那边有一只好大的狐狸！",
+    },
+    {
+        "id": "Maia",
+        "name": "四月",
+        "gender": "female",
+        "style": "知性温柔、娓娓道来",
+        "sample_text": "有些事，只有走过很远的路才会明白。",
+    },
+    {
+        "id": "Ethan",
+        "name": "晨煦",
+        "gender": "male",
+        "style": "阳光温暖、标准普通话",
+        "sample_text": "别担心，有我在，一切都会好起来的。",
+    },
+    {
+        "id": "Moon",
+        "name": "月白",
+        "gender": "male",
+        "style": "率性帅气、略带磁性",
+        "sample_text": "这一战，我等了整整三年。",
+    },
+    {
+        "id": "Kai",
+        "name": "凯",
+        "gender": "male",
+        "style": "低沉舒缓、有故事感",
+        "sample_text": "很久以前，这座山里住着一位修行的书生。",
+    },
+    {
+        "id": "Eldric Sage",
+        "name": "沧明子",
+        "gender": "male",
+        "style": "沉稳老者、苍劲有力",
+        "sample_text": "年轻人，天道无常，切莫急躁。",
+    },
+)
+
+
+def preset_voices() -> list[dict[str, Any]]:
+    """预置音色列表。sample_url 暂为空（没有示例音频就不显示试听，也不为试听调用付费 TTS）。"""
+    return [{**voice, "sample_url": None} for voice in PRESET_VOICES]
+
+
 class NodeRunRequest(BaseModel):
-    kind: Literal["image", "video"]
+    kind: Literal["image", "video", "tts"]
     prompt: str = Field(default="", max_length=8_000)
     model: str = Field(default="", max_length=128, description="Deployment slug；留空使用默认模型")
     aspect_ratio: Optional[str] = None
@@ -291,6 +358,9 @@ class NodeRunRequest(BaseModel):
     # 基于某张图修改（仅 kind=image）：要修改的图片 artifact id；会放在参考图第一位，走图片编辑路由
     edit_of: Optional[str] = Field(default=None, min_length=1, max_length=64)
     edit_instruction: str = Field(default="", max_length=500, description="用户写的修改要求原文，仅用于记录")
+    # 配音（仅 kind=tts）：台词与预置音色 id；音色为空表示用系统默认音色
+    text: str = Field(default="", max_length=MAX_TTS_CHARS)
+    voice: str = Field(default="", max_length=64)
 
 
 # 批量报价时，尚未生成的上游节点用 “pending:节点id” 占位（只用于估价，不会写进任务）
@@ -301,7 +371,7 @@ PENDING_PREFIX = "pending:"
 
 # 每种节点的输入端口 → 该端口接受的上游节点类型（与前端 INPUTS 一致）
 HANDLE_LABELS = {"prompt": "提示词", "reference": "参考图", "first_frame": "首帧", "last_frame": "尾帧"}
-_KIND_LABEL = {"text": "文本", "image": "图片", "video": "视频"}
+_KIND_LABEL = {"text": "文本", "image": "图片", "video": "视频", "audio": "配音"}
 
 
 def node_label(node: dict[str, Any]) -> str:
@@ -341,8 +411,8 @@ def resolve_node_request(
     """
     by_id = {node["id"]: node for node in graph.get("nodes", [])}
     node = by_id.get(node_id)
-    if node is None or node.get("type") not in ("image", "video"):
-        raise CanvasError("节点不存在或不是图片 / 视频节点")
+    if node is None or node.get("type") not in ("image", "video", "audio"):
+        raise CanvasError("节点不存在或不是图片 / 视频 / 配音节点")
     edges = graph.get("edges", [])
     data = node.get("data") or {}
 
@@ -356,6 +426,9 @@ def resolve_node_request(
         ]
 
     blockers: list[str] = []
+
+    if node["type"] == "audio":
+        return _resolve_tts(graph, node, incoming("prompt")), blockers_for_tts(node, incoming("prompt"))
 
     def frame(handle: str) -> Optional[str]:
         upstream = incoming(handle)
@@ -419,6 +492,44 @@ def resolve_node_request(
         "first_frame_artifact_id": first,
         "last_frame_artifact_id": last,
     }, blockers
+
+
+def speaker_voice(graph: dict[str, Any], speaker: str) -> str:
+    """说话人角色的默认音色：角色基础造型节点的 data.voice；找不到返回空。"""
+    from app.services import character_library_service as characters
+
+    nodes = characters.character_groups(graph).get(speaker.strip()) if speaker.strip() else None
+    if not nodes:
+        return ""
+    return str((characters.base_node(nodes).get("data") or {}).get("voice") or "").strip()
+
+
+def _tts_text(node: dict[str, Any], upstream: list[dict[str, Any]]) -> str:
+    """台词：prompt 边上的文本节点内容优先（多个换行拼接），否则取节点自己的 data.text。"""
+    linked = "\n".join(
+        part
+        for part in (str((item.get("data") or {}).get("text") or "").strip() for item in upstream)
+        if part
+    )
+    return linked or str((node.get("data") or {}).get("text") or "").strip()
+
+
+def _resolve_tts(
+    graph: dict[str, Any], node: dict[str, Any], upstream: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """配音节点的请求字段。音色取值顺序：节点自己的 data.voice → 说话人角色的 data.voice → 空（系统默认）。"""
+    data = node.get("data") or {}
+    voice = str(data.get("voice") or "").strip() or speaker_voice(graph, str(data.get("speaker") or ""))
+    return {"kind": "tts", "text": _tts_text(node, upstream), "voice": voice}
+
+
+def blockers_for_tts(node: dict[str, Any], upstream: list[dict[str, Any]]) -> list[str]:
+    text_value = _tts_text(node, upstream)
+    if not text_value:
+        return ["写台词，或连入一个文本节点"]
+    if len(text_value) > MAX_TTS_CHARS:
+        return [f"台词不能超过 {MAX_TTS_CHARS} 字"]
+    return []
 
 
 async def _storage_key(
@@ -569,10 +680,49 @@ async def _reference_ids(session: AsyncSession, canvas: NodeCanvas, req: NodeRun
     return [req.edit_of, *(item for item in req.reference_artifact_ids if item != req.edit_of)]
 
 
+NO_TTS_PROVIDER = "还没有可用的配音服务：请在「设置 → 模型服务」配置语音合成（通义千问 TTS）的 API Key"
+
+
+def _speech_provider() -> tuple[Any, bool]:
+    """配音使用的 provider 与是否 mock；与 Worker 同一个解析（resolve_speech），不可用时给出原因。"""
+    from app.model_runtime.media import get_media_runtime
+
+    try:
+        return get_media_runtime().resolve_speech()
+    except RuntimeError as error:
+        raise CanvasError(NO_TTS_PROVIDER) from error
+
+
+def _tts_plan(req: NodeRunRequest) -> tuple[Any, bool, int, Decimal]:
+    """校验台词与音色并算价：返回 (provider, 是否 mock, 计费字符数, 预估费用)。mock 不计费。"""
+    from app.services import cost_service
+
+    text_value = req.text.strip()
+    if not text_value:
+        raise CanvasError("配音节点需要台词")
+    if len(text_value) > MAX_TTS_CHARS:
+        raise CanvasError(f"台词不能超过 {MAX_TTS_CHARS} 字")
+    if req.voice and req.voice not in {voice["id"] for voice in PRESET_VOICES}:
+        raise CanvasError("所选音色不存在，请重新选择")
+    provider, mocked = _speech_provider()
+    characters = cost_service.tts_char_count(text_value)
+    cost = Decimal(0) if mocked else cost_service.tts_cost(characters)
+    return provider, mocked, characters, cost
+
+
 async def quote_node_with_budget(
     session: AsyncSession, canvas: NodeCanvas, req: NodeRunRequest, *, quote_only: bool = False
 ) -> tuple[dict[str, Any], Decimal]:
     """报价 + 计入每日预算的云端预估（本地自托管为 0，与创建任务时的预留口径一致）。"""
+    if req.kind == "tts":
+        provider, mocked, characters, cost = _tts_plan(req)
+        quote = {
+            "kind": "tts",
+            "model": provider.name,
+            "characters": characters,
+            "estimated_cost": float(cost),
+        }
+        return quote, cost if budget_service.is_cloud(provider.name) else Decimal(0)
     if req.kind == "video":
         params, plan = await _video_plan(session, canvas, req, quote_only=quote_only)
         quote = {
@@ -680,6 +830,35 @@ async def _create_node_job(
         if existing is not None:
             return existing, False
     base = {"canvas_id": canvas.id, "canvas_node_id": node_id, **(extra_params or {})}
+    if req.kind == "tts":
+        provider, mocked, characters, cost = _tts_plan(req)
+        estimate = cost if budget_service.is_cloud(provider.name) else Decimal(0)
+        await _reserve_budget(session, canvas, estimate)
+        voice_params: dict[str, Any] = {}
+        if req.voice:
+            from app.tools.qwen_tts import QWEN_TTS_MODEL
+
+            # 预置音色是 qwen3-tts-flash 的系统音色，需指定合成模型（否则 Worker 会按复刻音色的模型去合成）
+            voice_params = {"voice_id": req.voice, "voice_model": QWEN_TTS_MODEL}
+        job = await job_service.create_job(
+            session,
+            operation="tts",
+            project_id=canvas.project_id,
+            params={
+                **base,
+                "text": req.text.strip(),
+                "track_type": "canvas",
+                # 记下提交时预留预算用的 provider，Worker 必须按它执行
+                "speech_provider": provider.name,
+                "characters": characters,
+                **voice_params,
+                budget_service.ESTIMATE_PARAM: str(estimate),
+            },
+            provider=provider.name,
+            idempotency_key=idem_key,
+        )
+        return job, True
+
     if req.kind == "image":
         if not req.prompt.strip():
             raise CanvasError("图片节点需要提示词")
@@ -833,6 +1012,15 @@ async def node_runs(session: AsyncSession, canvas: NodeCanvas) -> dict[str, Any]
                     # 基于某张图修改产生的结果带上来源，供分镜页画出修改链
                     "edit_of": (job.params or {}).get("edit_of"),
                     "edit_instruction": (job.params or {}).get("edit_instruction"),
+                    # 音频结果带时长（毫秒），供配音页判断是否超过镜头时长
+                    **(
+                        {
+                            "duration_ms": artifact.duration_ms
+                            or (artifact.artifact_metadata or {}).get("duration_ms")
+                        }
+                        if artifact.type == "audio"
+                        else {}
+                    ),
                 }
             )
     uploads = [
@@ -894,6 +1082,19 @@ async def upload(
     return artifact
 
 
+def duration_limits(capabilities: Optional[dict[str, Any]]) -> dict[str, int]:
+    """模型允许的视频时长范围（秒）；部署没配置时不返回，前端按通用范围处理。"""
+    limits: dict[str, int] = {}
+    for key in ("min_duration", "max_duration"):
+        try:
+            value = int((capabilities or {}).get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            limits[key] = value
+    return limits
+
+
 async def available_models(session: AsyncSession) -> dict[str, Any]:
     """节点上可选的图片 / 视频模型（已启用的模型，含供应商名与价格），以及默认模型。"""
     from app.db.models import ModelProvider
@@ -925,6 +1126,7 @@ async def available_models(session: AsyncSession) -> dict[str, Any]:
                 "model": row.model,
                 "provider": provider.name if provider else "",
                 "modes": list((row.capabilities or {}).get("modes") or []),
+                **duration_limits(row.capabilities),
                 "pricing": row.pricing or {},
             }
         )
@@ -955,11 +1157,39 @@ class SplitCharacter(BaseModel):
     description: str = Field(default="", max_length=600)
 
 
+MAX_SPLIT_LINES = 3
+MAX_LINE_CHARS = 60
+
+
+class SplitLine(BaseModel):
+    speaker: str = Field(default="旁白", max_length=40)
+    text: str = Field(min_length=1, max_length=MAX_LINE_CHARS)
+
+
 class SplitShot(BaseModel):
     title: str = Field(default="", max_length=60)
     prompt: str = Field(min_length=1, max_length=800)
     characters: list[str] = Field(default_factory=list)
     duration_s: int = Field(default=5, ge=2, le=12)
+    # 台词：每镜头 0–3 句；旧输出没有该字段按空处理
+    lines: list[SplitLine] = Field(default_factory=list)
+
+    @field_validator("lines", mode="before")
+    @classmethod
+    def _tidy_lines(cls, value: Any) -> Any:
+        """容错：模型多写的句子丢弃，过长的台词截断，缺说话人记为旁白，不因此让整个拆分失败。"""
+        if not isinstance(value, list):
+            return []
+        tidy = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            text_value = str(item.get("text") or "").strip()[:MAX_LINE_CHARS]
+            if text_value:
+                tidy.append(
+                    {"speaker": str(item.get("speaker") or "").strip()[:40] or "旁白", "text": text_value}
+                )
+        return tidy[:MAX_SPLIT_LINES]
 
 
 class SplitResult(BaseModel):
@@ -969,8 +1199,10 @@ class SplitResult(BaseModel):
 
 SPLIT_PROMPT = """你是短视频分镜师。把创作者的想法拆成角色和镜头，只输出一个 JSON 对象，不要解释：
 {"characters": [{"name": "角色名", "description": "外貌、年龄、服装、标志特征，用于生成角色定妆图"}],
- "shots": [{"title": "镜头短标题", "prompt": "画面内容与动作，具体可视化，包含景别和光线", "characters": ["出镜角色名"], "duration_s": 3 到 10}]}
-要求：镜头数接近要求；每个镜头只有一个动作；同一角色外貌前后一致；不要编造未出现的角色。"""
+ "shots": [{"title": "镜头短标题", "prompt": "画面内容与动作，具体可视化，包含景别和光线", "characters": ["出镜角色名"], "duration_s": 3 到 10,
+   "lines": [{"speaker": "角色名；旁白写 旁白", "text": "台词，不超过 60 字"}]}]}
+要求：镜头数接近要求；每个镜头只有一个动作；同一角色外貌前后一致；不要编造未出现的角色。
+台词：有对白或旁白的镜头写 lines（每镜头最多 3 句，每句不超过 60 字，说话人用角色名或 旁白）；没有就给空数组 []，不要硬凑。"""
 
 
 async def _call_llm(messages: list[dict[str, str]]) -> str:
