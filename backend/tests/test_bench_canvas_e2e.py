@@ -525,6 +525,30 @@ def test_dry_quote_case_builds_canvas_locally_and_never_calls_paid_endpoints(tmp
     assert not any("/copilot/split" in p for _, p in backend.calls)
 
 
+def test_shot_seconds_overrides_every_video_duration_in_the_saved_graph(tmp_path):
+    backend = FakeBackend()
+    saved = {}
+
+    def capture(request):
+        saved.update(json.loads(request.content))
+        return httpx.Response(200, json={"revision": 2})
+
+    backend.on("PUT", r"/graph$", capture)
+    runner = bench.Runner(
+        _api(backend, forbid_paid=True),
+        _cfg(tmp_path, dry_quote=True, max_shots=2, shot_seconds=2),
+        bench.BudgetGuard(limit=0),
+    )
+    case = runner.run_case(_story(shots=6))
+    assert case["ok"] is True and case["shots"] == 2
+    videos = [n for n in saved["graph"]["nodes"] if n["type"] == "video"]
+    assert [n["data"]["duration"] for n in videos] == [2, 2]
+    assert bench.parse_args(["--shot-seconds", "2"]).shot_seconds == 2
+    assert bench.parse_args([]).shot_seconds is None
+    with pytest.raises(SystemExit):
+        bench.parse_args(["--shot-seconds", "1"])
+
+
 def _running_batch(batch_id="b1"):
     return {"id": batch_id, "status": "running", "nodes": {"n": {"status": "running", "job_id": "j1"}}}
 

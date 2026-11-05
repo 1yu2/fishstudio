@@ -17,6 +17,7 @@
   --base-url URL         后端地址，默认 http://127.0.0.1:8000
   --stories N|key,key    取前 N 个故事（只考虑镜头数 >= --min-shots 的，默认 >= 5）或按 key 指定，默认 10
   --max-shots N          每个用例截断到前 N 个镜头，默认 6（花费几乎与它成正比）
+  --shot-seconds N       把每个镜头时长统一改成 N 秒（2–12），不给则用拆分结果；最省钱的验证用 2
   --budget-yuan X        总预算上限（元），真实跑必填。见下“预算保护”
   --dry-quote            只报价：不调用任何收费接口（含拆分、批量运行、单节点运行）。用基准集的情节文本在本地
                          直接拼出镜头，经保存画布接口建图后只调用批量报价；脚本在 HTTP 层强制拦截收费接口
@@ -836,6 +837,7 @@ class Settings:
     llm_input_price: float = 4.0
     llm_output_price: float = 16.0
     max_split_calls: int = 1000
+    shot_seconds: Optional[int] = None
 
 
 @dataclass
@@ -1241,6 +1243,9 @@ class Runner:
         else:
             split = self.split(story, ctx, record)
         split["shots"] = split["shots"][: self.cfg.max_shots]
+        if self.cfg.shot_seconds:
+            for shot in split["shots"]:
+                shot["duration_s"] = self.cfg.shot_seconds
         record["shots"] = len(split["shots"])
         record["step_seconds"]["split"] = time.monotonic() - t0
 
@@ -1427,6 +1432,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--min-shots", type=int, default=5)
     parser.add_argument("--max-shots", type=int, default=6)
+    parser.add_argument("--shot-seconds", type=int, choices=range(2, 13), metavar="2-12", default=None)
     parser.add_argument("--budget-yuan", type=float, default=None, help="总预算上限（元）；真实跑必填")
     parser.add_argument("--dry-quote", action="store_true")
     parser.add_argument("--allow-unpriced", action="store_true")
@@ -1514,6 +1520,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg = Settings(
         max_shots=args.max_shots,
+        shot_seconds=args.shot_seconds,
         video_tier=TIER_BY_RESOLUTION[args.resolution],
         image_model=args.image_model,
         video_model=args.video_model,
@@ -1587,6 +1594,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "args": {
             "stories": args.stories,
             "max_shots": args.max_shots,
+            "shot_seconds": args.shot_seconds,
             "resolution": args.resolution,
             "video_model": args.video_model,
             "image_model": args.image_model,
