@@ -7,7 +7,9 @@ API Key、Base URL 和模型名全部属于实例；Adapter 不修改 Tool 模�
 import asyncio
 import logging
 import os
+import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -24,10 +26,17 @@ from app.tools.volcano_image_generation import (
 logger = logging.getLogger(__name__)
 
 INVALID_INPUT = "invalid_input"
+DOWNLOAD_FAILED = "download_failed"
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_BACKOFF_SECONDS = 2.0
 
 
 class InvalidImageInput(ValueError):
     """请求还没发给厂商就失败（参考图路径不对等）：不收费，也不该重试。"""
+
+
+class ImageDownloadFailed(RuntimeError):
+    """厂商已出图（已收费）但取回失败：只重试下载，不能整单重跑——重跑会再收一次钱。"""
 
 
 def _source_image_path(value: str) -> str:
@@ -125,9 +134,16 @@ class VolcanoImageProvider(ImageProvider):
         if not image_urls:
             raise RuntimeError("图片 API 响应中没有 image URL")
 
-        local_path = download_and_save_image(image_urls[0], req.prompt)
-        if local_path.startswith("http"):
-            raise RuntimeError(f"图片下载失败，仍为远端 URL: {local_path}")
+        local_path = image_urls[0]
+        for attempt in range(DOWNLOAD_ATTEMPTS):
+            if attempt:
+                time.sleep(DOWNLOAD_BACKOFF_SECONDS * attempt)
+            local_path = download_and_save_image(image_urls[0], req.prompt)
+            if not local_path.startswith("http"):
+                break
+        else:
+            host = urlsplit(image_urls[0]).hostname or ""
+            raise ImageDownloadFailed(f"图片已生成但下载失败（{DOWNLOAD_ATTEMPTS} 次）：{host}")
         result = {
             "image_url": local_path,
             "original_url": image_urls[0],
@@ -173,9 +189,12 @@ class VolcanoImageProvider(ImageProvider):
                 failed_count += 1
                 if not first_error:
                     first_error = str(r)[:500]
-                    first_error_code = (
-                        INVALID_INPUT if isinstance(r, InvalidImageInput) else "generate_failed"
-                    )
+                    if isinstance(r, InvalidImageInput):
+                        first_error_code = INVALID_INPUT
+                    elif isinstance(r, ImageDownloadFailed):
+                        first_error_code = DOWNLOAD_FAILED
+                    else:
+                        first_error_code = "generate_failed"
                 continue
             local_path = r.get("local_path") or r.get("image_url") or ""
             storage_key = local_path.removeprefix("/storage/").lstrip("/")
@@ -201,7 +220,8 @@ class VolcanoImageProvider(ImageProvider):
                 model=model,
                 error_code=first_error_code or "generate_failed",
                 error_message=first_error or "全部候选图片生成失败",
-                retryable=first_error_code != INVALID_INPUT,
+                # 输入错误重试也一样失败；下载失败重试会重新出图、再收一次费
+                retryable=first_error_code not in (INVALID_INPUT, DOWNLOAD_FAILED),
                 raw_metadata={
                     "candidate_count": candidate_count,
                     "success_count": 0,
