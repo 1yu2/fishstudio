@@ -256,6 +256,34 @@ def test_open_connection_pins_ip_and_keeps_host(monkeypatch):
     assert connection.sock is not None
 
 
+@pytest.mark.parametrize(
+    "scheme, port, expected",
+    [("https", 443, "cdn.example"), ("http", 80, "cdn.example"), ("https", 8443, "cdn.example:8443")],
+)
+def test_host_header_omits_default_port(monkeypatch, scheme, port, expected):
+    """签名链接（火山 TOS / S3 预签名）把 Host 算进签名：https 默认端口不能写成 host:443。"""
+    sent = bytearray()
+
+    class FakeSock:
+        def sendall(self, data):
+            sent.extend(data)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(safe_fetch.socket, "create_connection", lambda address, timeout=None: FakeSock())
+
+    class FakeContext:
+        def wrap_socket(self, sock, server_hostname=None):
+            assert server_hostname == "cdn.example"
+            return sock
+
+    monkeypatch.setattr(safe_fetch.ssl, "create_default_context", lambda: FakeContext())
+    connection = safe_fetch._open_connection(scheme, "cdn.example", port, PUBLIC_IP, 5)
+    connection.request("GET", "/a.png?X-Tos-Signature=s", headers={"Accept-Encoding": "identity"})
+    assert f"Host: {expected}\r\n".encode() in bytes(sent)
+
+
 class TrickleResponse(FakeResponse):
     """每次 read 慢慢吐 1 字节：单次读取都没超时，但总时间无限拉长。"""
 

@@ -170,7 +170,11 @@ def _open_connection(
     try:
         if scheme == "https":
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
-        connection = http.client.HTTPConnection(host, port, timeout=timeout)
+            # 必须用 HTTPSConnection：它的默认端口是 443，Host 头才是 "host" 而不是 "host:443"。
+            # 签名链接（火山 TOS / S3 预签名）把 Host 算进签名，多出 ":443" 会直接 403。
+            connection: http.client.HTTPConnection = http.client.HTTPSConnection(host, port, timeout=timeout)
+        else:
+            connection = http.client.HTTPConnection(host, port, timeout=timeout)
         connection.sock = sock  # 已有 sock 时 http.client 不会再自行解析 DNS 建连
     except BaseException:
         sock.close()
