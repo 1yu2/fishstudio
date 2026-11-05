@@ -15,12 +15,30 @@ from app.providers.base import ProviderResult
 from app.providers.image_base import ImageGenerationRequest, ImageProvider
 from app.providers.pricing import DEFAULT_VOLCANO_IMAGE_MODEL
 from app.tools.volcano_image_generation import (
+    BASE_DIR,
     download_and_save_image,
     parse_size,
     prepare_image_input,
 )
 
 logger = logging.getLogger(__name__)
+
+INVALID_INPUT = "invalid_input"
+
+
+class InvalidImageInput(ValueError):
+    """请求还没发给厂商就失败（参考图路径不对等）：不收费，也不该重试。"""
+
+
+def _source_image_path(value: str) -> str:
+    """把 storage_key（如 uploads/canvas/<id>/x.png）转成 prepare_image_input 能读的 /storage/ 路径。"""
+    if value.startswith(("http://", "https://", "/storage/")):
+        return value
+    storage = (BASE_DIR / "storage").resolve()
+    resolved = (storage / value.lstrip("/")).resolve()
+    if not resolved.is_relative_to(storage):
+        raise InvalidImageInput("参考图片路径必须位于 storage 目录内")
+    return "/storage/" + resolved.relative_to(storage).as_posix()
 
 
 class VolcanoImageProvider(ImageProvider):
@@ -76,7 +94,10 @@ class VolcanoImageProvider(ImageProvider):
             "watermark": True,
         }
         if req.source_image:
-            payload["image"] = prepare_image_input(req.source_image)
+            try:
+                payload["image"] = prepare_image_input(_source_image_path(req.source_image))
+            except (OSError, ValueError) as error:
+                raise InvalidImageInput(str(error)) from error
 
         response = requests.post(
             f"{self.base_url}/images/generations",
@@ -152,7 +173,9 @@ class VolcanoImageProvider(ImageProvider):
                 failed_count += 1
                 if not first_error:
                     first_error = str(r)[:500]
-                    first_error_code = "generate_failed"
+                    first_error_code = (
+                        INVALID_INPUT if isinstance(r, InvalidImageInput) else "generate_failed"
+                    )
                 continue
             local_path = r.get("local_path") or r.get("image_url") or ""
             storage_key = local_path.removeprefix("/storage/").lstrip("/")
@@ -178,7 +201,7 @@ class VolcanoImageProvider(ImageProvider):
                 model=model,
                 error_code=first_error_code or "generate_failed",
                 error_message=first_error or "全部候选图片生成失败",
-                retryable=True,
+                retryable=first_error_code != INVALID_INPUT,
                 raw_metadata={
                     "candidate_count": candidate_count,
                     "success_count": 0,

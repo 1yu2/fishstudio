@@ -806,7 +806,8 @@ async def execute_generate_image(session: AsyncSession, job: GenerationJob) -> N
             usage_fields={
                 "operation": "generate_image",
                 "status": "failed",
-                "estimated_cost": image_cost,
+                # 请求没发出去（invalid_input）不收费；其余失败可能已在厂商侧出图，按估价保守入账
+                "estimated_cost": Decimal("0") if result.error_code == "invalid_input" else image_cost,
                 "error_code": result.error_code or "generate_failed",
             },
         )
