@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConflictError, nodeCanvasApi } from '../../api/nodeCanvas'
 import { resetVoiceCache } from '../voice/useVoiceList'
 import NodeCanvasPage from './NodeCanvasPage'
+import { thumbStyle } from './ShotGroupNode'
 
 vi.mock('../../api/nodeCanvas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/nodeCanvas')>()
@@ -845,5 +846,70 @@ describe('NodeCanvasPage video reference images', () => {
     loaded.graph.edges!.push({ id: 'e3', source: 'k', target: 'v1', sourceHandle: 'out', targetHandle: 'first_frame' })
     renderPage()
     expect(await screen.findByText('参考图和首帧不能同时使用：去掉首帧连线，或去掉参考图连线')).toBeInTheDocument()
+  })
+})
+
+describe('NodeCanvasPage narrow toolbar and thumbnails', () => {
+  const shots = () => {
+    api.get.mockResolvedValue({
+      id: 'c1', title: '雨夜', aspect_ratio: '9:16', node_count: 2, updated_at: null, created_at: null, revision: 3,
+      graph: {
+        nodes: [
+          { id: 'k1', type: 'image', position: { x: 0, y: 0 }, data: { label: '1 · 开场 关键帧', prompt: '画面1', shot_size: '近景' } },
+          { id: 'v1', type: 'video', position: { x: 400, y: 0 }, data: { label: '1 · 开场', prompt: '视频1', duration: 4, order: 0 } },
+        ] as never,
+        edges: [{ id: 'e1', source: 'k1', target: 'v1', sourceHandle: 'out', targetHandle: 'first_frame' }] as never,
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    })
+  }
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  const stubWidth = (narrow: boolean) => vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: narrow, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+  }))
+
+  it('keeps fold-all and add-shot on the toolbar on wide screens', async () => {
+    shots(); stubWidth(false)
+    renderPage()
+    await screen.findByLabelText('镜头 1（已展开）')
+    expect(screen.getByRole('button', { name: '全部折叠' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '添加镜头' })).toBeInTheDocument()
+  })
+
+  it('moves fold-all and add-shot into the More menu below 900px', async () => {
+    shots(); stubWidth(true)
+    renderPage()
+    await screen.findByLabelText('镜头 1（已展开）')
+    expect(screen.queryByRole('button', { name: '全部折叠' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '添加镜头' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '更多' }))
+    expect(screen.getByRole('menuitem', { name: '添加镜头' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: '全部折叠' }))
+    expect(screen.getByLabelText('展开镜头 1')).toBeInTheDocument()
+  })
+
+  it('sizes the collapsed shot thumbnail by the canvas aspect ratio', async () => {
+    shots(); stubWidth(false)
+    const { container, unmount } = renderPage()
+    fireEvent.click(await screen.findByLabelText('折叠镜头 1'))
+    const portrait = container.querySelector('.nc-group-card__thumb') as HTMLElement
+    expect(portrait.style.aspectRatio).toBe('9 / 16')
+    expect(portrait.style.height).toBe('48px')
+    unmount()
+
+    window.localStorage.clear()
+    shots()
+    api.get.mockResolvedValue({ ...(await api.get('c1')), aspect_ratio: '16:9' })
+    const wide = renderPage()
+    fireEvent.click(await screen.findByLabelText('折叠镜头 1'))
+    const landscape = wide.container.querySelector('.nc-group-card__thumb') as HTMLElement
+    expect(landscape.style.aspectRatio).toBe('16 / 9')
+    expect(landscape.style.width).toBe('64px')
+  })
+
+  it('falls back to portrait for an unknown ratio and treats 1:1 as square', () => {
+    expect(thumbStyle('weird')).toEqual({ aspectRatio: '9 / 16', height: 48 })
+    expect(thumbStyle('1:1')).toEqual({ aspectRatio: '1 / 1', width: 64 })
   })
 })
