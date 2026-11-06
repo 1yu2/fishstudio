@@ -163,6 +163,7 @@ jobs:
     name: browser e2e (mock)
     # Playwright 1.56 只支持到 Ubuntu 24.04；ubuntu-latest 已是 26.04。
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     continue-on-error: true
     services:
       postgres:
@@ -198,7 +199,8 @@ jobs:
       - name: Install system and Python deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 ffmpeg
+          # 渲染用 imageio-ffmpeg 自带的 ffmpeg；不装系统 ffmpeg（24.04 镜像源慢，依赖上百个包）
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
           pip install -r backend/requirements.txt
       - name: Install frontend deps
         run: npm ci --prefix frontend --no-audit --no-fund
