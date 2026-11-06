@@ -293,6 +293,78 @@ def test_node_runs_report_cost_per_node_and_shot(pg):
     assert shot["is_estimate"] is True
 
 
+@pytest.mark.parametrize("include_original", [False, True])
+def test_node_costs_inherited_video_task_counts_charge_once(pg, include_original):
+    from app.db.models import GenerationJob, UsageEvent
+    from app.services import usage_service
+
+    async def run():
+        async with pg() as s:
+            canvas = await service.create_canvas(s, await _user(s), title="retry cost")
+            await service.save_graph(s, canvas, {"nodes": [_node("v", "video")], "edges": []}, revision=1)
+            original = GenerationJob(
+                project_id=canvas.project_id,
+                operation="generate_video",
+                provider="p",
+                model="m",
+                external_task_id="paid-task",
+                status="failed",
+                idempotency_key="original",
+                params={"canvas_node_id": "v"},
+            )
+            retry = GenerationJob(
+                project_id=canvas.project_id,
+                operation="generate_video",
+                provider="p",
+                model="m",
+                external_task_id="paid-task",
+                status="succeeded",
+                idempotency_key="retry",
+                params={"canvas_node_id": "v"},
+            )
+            s.add_all([original, retry])
+            await s.flush()
+            await usage_service.record_usage(
+                s,
+                project_id=canvas.project_id,
+                job_id=original.id,
+                operation="generate_video",
+                provider="p",
+                provider_request_id="paid-task",
+                status="success",
+                actual_cost=Decimal("1.5"),
+            )
+            # 兼容旧版的重复估价事件：按厂商任务去重，优先使用实际费用。
+            s.add(
+                UsageEvent(
+                    project_id=canvas.project_id,
+                    job_id=original.id,
+                    operation="generate_video",
+                    provider="p",
+                    provider_request_id="paid-task",
+                    estimated_cost=Decimal("2"),
+                )
+            )
+            # 另一厂商恰好使用相同任务号，不得串到账目里。
+            await usage_service.record_usage(
+                s,
+                project_id=canvas.project_id,
+                operation="generate_video",
+                provider="other",
+                provider_request_id="paid-task",
+                status="success",
+                actual_cost=Decimal("9"),
+            )
+            await s.flush()
+            costs = await service._node_costs(s, [original, retry] if include_original else [retry])
+            assert costs["v"] == {"actual": 1.5, "estimated": 0.0, "total": 1.5, "is_estimate": False}
+            runs = await service.node_runs(s, canvas)
+            assert runs["nodes"]["v"]["cost"]["total"] == 1.5
+            assert runs["shot_costs"]["v"]["total"] == 1.5
+
+    asyncio.run(run())
+
+
 # ── Worker：execute_tts ───────────────────────────────────────────────────
 
 

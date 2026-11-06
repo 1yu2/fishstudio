@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_user
 from app.db.database import get_session
 from app.db.models import SeriesProject, User
-from app.services import upload_guard
+from app.services import asset_service, upload_guard
 from app.services.agent_service import process_chat_stream
 from app.services.connection_manager import canvas_channel, manager
 from app.services.execution_context import (
@@ -89,16 +89,40 @@ def _user_dir(user: User, kind: str) -> Path:
     return _STORAGE_DIR / "uploads" / str(user.id) / kind
 
 
+async def _register_upload(
+    session: AsyncSession, user: User, path: Path, kind: str, mime: str, original_name: Optional[str]
+) -> str:
+    """给聊天上传的文件建 Artifact（无项目，归属上传者），让画布等能按 artifact_id 引用。
+
+    文件仍留在 uploads/<user_id>/<kind>s/ 原处（/storage 直链继续可用）；
+    下载鉴权靠 meta.owner_user_id（见 routers/artifacts.py）。返回 artifact_id。
+    """
+    artifact = await asset_service.create_artifact(
+        session,
+        project_id=None,
+        type=kind,
+        storage_key=path.relative_to(_STORAGE_DIR).as_posix(),
+        mime_type=mime,
+        meta={"source": "chat_upload", "owner_user_id": user.id, "filename": (original_name or "")[:200]},
+    )
+    return artifact.id
+
+
 @router.post("/upload-image")
-async def upload_image(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+async def upload_image(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     """
     上传图片到 storage/uploads/<user_id>/images 目录（≤15MB；仅 png / jpeg / webp / gif，按内容识别）
 
     Returns:
         上传后的图片URL（相对路径，如 /storage/uploads/1/images/xxx.png）
     """
+    original_name = file.filename
     try:
-        path, _mime, _size = await upload_guard.save_upload(
+        path, mime, _size = await upload_guard.save_upload(
             file,
             _user_dir(user, "images"),
             sniff=upload_guard.sniff_image,
@@ -108,19 +132,29 @@ async def upload_image(file: UploadFile = File(...), user: User = Depends(get_cu
         )
     finally:
         await file.close()
-    return {"url": f"/storage/uploads/{user.id}/images/{path.name}", "filename": path.name}
+    artifact_id = await _register_upload(session, user, path, "image", mime, original_name)
+    return {
+        "url": f"/storage/uploads/{user.id}/images/{path.name}",
+        "filename": path.name,
+        "artifact_id": artifact_id,
+    }
 
 
 @router.post("/upload-audio")
-async def upload_audio(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+async def upload_audio(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     """
     上传音频到 storage/uploads/<user_id>/audios 目录（≤20MB；mp3 / wav / m4a / aac / ogg / flac，按内容识别）
 
     Returns:
         上传后的音频URL（相对路径，如 /storage/uploads/1/audios/xxx.mp3）
     """
+    original_name = file.filename
     try:
-        path, _mime, _size = await upload_guard.save_upload(
+        path, mime, _size = await upload_guard.save_upload(
             file,
             _user_dir(user, "audios"),
             sniff=upload_guard.sniff_audio,
@@ -130,19 +164,29 @@ async def upload_audio(file: UploadFile = File(...), user: User = Depends(get_cu
         )
     finally:
         await file.close()
-    return {"url": f"/storage/uploads/{user.id}/audios/{path.name}", "filename": path.name}
+    artifact_id = await _register_upload(session, user, path, "audio", mime, original_name)
+    return {
+        "url": f"/storage/uploads/{user.id}/audios/{path.name}",
+        "filename": path.name,
+        "artifact_id": artifact_id,
+    }
 
 
 @router.post("/upload-video")
-async def upload_video(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+async def upload_video(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     """
     上传视频到 storage/uploads/<user_id>/videos 目录（≤200MB；mp4 / mov / webm / mkv / avi，按内容识别）
 
     Returns:
         上传后的视频URL（相对路径，如 /storage/uploads/1/videos/xxx.mp4）
     """
+    original_name = file.filename
     try:
-        path, _mime, _size = await upload_guard.save_upload(
+        path, mime, _size = await upload_guard.save_upload(
             file,
             _user_dir(user, "videos"),
             sniff=upload_guard.sniff_video,
@@ -152,7 +196,12 @@ async def upload_video(file: UploadFile = File(...), user: User = Depends(get_cu
         )
     finally:
         await file.close()
-    return {"url": f"/storage/uploads/{user.id}/videos/{path.name}", "filename": path.name}
+    artifact_id = await _register_upload(session, user, path, "video", mime, original_name)
+    return {
+        "url": f"/storage/uploads/{user.id}/videos/{path.name}",
+        "filename": path.name,
+        "artifact_id": artifact_id,
+    }
 
 
 @router.post("/chat")

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from sqlalchemy import func, select, text
+from sqlalchemy import or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Artifact, GenerationJob, ModelRoute, NodeCanvas, SeriesProject, UsageEvent, User
@@ -1127,6 +1127,7 @@ async def _node_costs(session: AsyncSession, jobs: list[GenerationJob]) -> dict[
     """usage_events 经 job → 节点汇总。
 
     不带金额的事件（如视频 submit 记录）只是过程记录，不参与判断；
+    视频重试按 provider + external_task_id 关联原账目，每个节点只计入同一账目一次。
     已成功的任务若没有任何带金额的事件，节点费用记为未知（total=None）。
     未完成、已取消或未提交即失败的任务没有金额时按 0 计。
     """
@@ -1137,34 +1138,64 @@ async def _node_costs(session: AsyncSession, jobs: list[GenerationJob]) -> dict[
     }
     if not node_by_job:
         return {}
-    status_by_job = {job.id: job.status for job in jobs}
-    priced = UsageEvent.actual_cost.is_not(None) | UsageEvent.estimated_cost.is_not(None)
+    tasks = {
+        (job.provider, job.external_task_id)
+        for job in jobs
+        if job.operation == "generate_video" and job.external_task_id and job.id in node_by_job
+    }
     rows = (
-        await session.execute(
-            select(
-                UsageEvent.job_id,
-                func.coalesce(func.sum(UsageEvent.actual_cost), 0),
-                func.coalesce(
-                    func.sum(UsageEvent.estimated_cost).filter(UsageEvent.actual_cost.is_(None)), 0
-                ),
-                func.count().filter(priced),
-                func.count().filter(UsageEvent.actual_cost.is_(None), UsageEvent.estimated_cost.is_not(None)),
+        await session.scalars(
+            select(UsageEvent).where(
+                or_(
+                    UsageEvent.job_id.in_(list(node_by_job)),
+                    (UsageEvent.operation == "generate_video")
+                    & tuple_(UsageEvent.provider, UsageEvent.provider_request_id).in_(tasks),
+                )
             )
-            .where(UsageEvent.job_id.in_(list(node_by_job)))
-            .group_by(UsageEvent.job_id)
         )
     ).all()
-    by_job = {row[0]: row[1:] for row in rows}
+    # 旧数据也可能有同一厂商任务的多条事件；实际账目优先，同一任务只取一笔。
+    unique_charges: dict[tuple, UsageEvent] = {}
+    for row in rows:
+        if row.actual_cost is None and row.estimated_cost is None:
+            continue
+        key = (
+            ("video", row.provider, row.provider_request_id)
+            if row.operation == "generate_video" and row.provider_request_id
+            else ("event", row.id)
+        )
+        previous = unique_charges.get(key)
+        if previous is None or (previous.actual_cost is None and row.actual_cost is not None):
+            unique_charges[key] = row
+    by_job: dict[str, list[UsageEvent]] = {}
+    by_task: dict[tuple[str, str], list[UsageEvent]] = {}
+    for row in unique_charges.values():
+        by_job.setdefault(row.job_id, []).append(row)
+        if row.operation == "generate_video" and row.provider_request_id:
+            by_task.setdefault((row.provider, row.provider_request_id), []).append(row)
     totals: dict[str, dict[str, Any]] = {}
-    for job_id, node_id in node_by_job.items():
-        actual, estimated, priced_count, estimates = by_job.get(job_id, (0, 0, 0, 0))
+    seen: dict[str, set[str]] = {}
+    for job in jobs:
+        node_id = node_by_job.get(job.id)
+        if not node_id:
+            continue
+        charges = by_job.get(job.id, [])
+        if job.operation == "generate_video" and job.external_task_id:
+            charges = [*charges, *by_task.get((job.provider, job.external_task_id), [])]
         entry = totals.setdefault(
             node_id, {"actual": 0, "estimated": 0, "unknown": False, "is_estimate": False}
         )
-        entry["actual"] += actual
-        entry["estimated"] += estimated
-        entry["unknown"] |= status_by_job.get(job_id) == "succeeded" and not priced_count
-        entry["is_estimate"] |= bool(estimates)
+        entry["unknown"] |= job.status == "succeeded" and not charges
+        counted = seen.setdefault(node_id, set())
+        for charge in charges:
+            if charge.id in counted:
+                continue
+            counted.add(charge.id)
+            if charge.actual_cost is not None:
+                entry["actual"] += charge.actual_cost
+            else:
+                entry["estimated"] += charge.estimated_cost
+                entry["is_estimate"] = True
     return {node_id: _cost_entry(**entry) for node_id, entry in totals.items()}
 
 

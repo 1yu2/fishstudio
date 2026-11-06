@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 load_dotenv()  # 在导入 settings 之前加载 .env
 
 from app.auth.security import decode_token
-from app.config import get_settings
+from app.config import fastapi_docs_kwargs, get_settings
 from app.db.init_db import db_healthcheck, init_db
 from app.observability import (
     RequestIdMiddleware,
@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
     logger.info("👋 engine disposed, shutdown complete")
 
 
-app = FastAPI(title="FishStudio API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="FishStudio API", version="1.0.0", lifespan=lifespan, **fastapi_docs_kwargs())
 
 # 注意：中间件按"添加倒序"执行；最后 add 的最先执行
 # request_id 必须最先（这样后续日志/异常都能拿到 rid），CORS 最后处理浏览器预检

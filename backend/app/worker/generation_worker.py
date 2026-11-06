@@ -208,7 +208,8 @@ async def _record_job_usage(
         latency_ms=latency_ms,
         status=status,
         attempt=job.attempt,
-        provider_request_id=provider_request_id,
+        provider_request_id=provider_request_id
+        or (job.external_task_id if job.operation == "generate_video" else ""),
         error_code=error_code,
         event_metadata={"price_table_version": PRICE_TABLE_VERSION, **(event_metadata or {})},
     )
@@ -275,7 +276,17 @@ async def finalize_job(
     """
     invocation_id = (job.params or {}).get("model_invocation_id")
     if usage_fields:
-        await _record_job_usage(session, job, **usage_fields)
+        for accounting_attempt in range(3):
+            try:
+                await _record_job_usage(session, job, **usage_fields)
+                break
+            except usage_service.VideoAccountingError:
+                # PostgreSQL 写入失败后必须回滚，在新事务重试；保留厂商任务号，绝不重新提交。
+                await session.rollback()
+                await session.refresh(job)
+                if accounting_attempt == 2:
+                    raise
+                await asyncio.sleep(0.1 * 2**accounting_attempt)
     if success:
         await session.refresh(job)
         if job.status == "canceled":
@@ -342,6 +353,7 @@ async def _should_abort_before_submit(session: AsyncSession, job: GenerationJob)
         if run is not None and run.status == "canceled":
             job.status = "canceled"
             job.finished_at = job_service._utcnow()
+            await job_service.account_canceled_video(session, job)
             await session.flush()
             await workflow_service.on_job_finished(session, job)
             await session.commit()
@@ -524,7 +536,11 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
                 or "v1"
             )
         )
-        job.params = {**(job.params or {}), "protocol_version": protocol_version}
+        job.params = {
+            **(job.params or {}),
+            "protocol_version": protocol_version,
+            "external_task_failed": False,
+        }
         # R5.5：验证 Provider 实际使用的模型与锁定快照一致，不一致时标失败
         expected_model = job.model
         if expected_model and result.model and result.model != expected_model:
@@ -576,6 +592,9 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
                     "operation": "generate_video",
                     "status": "failed",
                     "error_code": "provider_adapter_missing",
+                    "estimated_cost": ((job.params or {}).get("routing_snapshot") or {}).get(
+                        "estimated_total_cost"
+                    ),
                 },
             )
             return
@@ -604,6 +623,19 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             _record_remote_progress(job, status.raw_metadata)
             await job_service.requeue_for_poll(session, job, delay_seconds=POLL_DELAY_SECONDS)
             return
+        metadata = status.raw_metadata or {}
+        remote = metadata.get("raw", metadata)
+        remote = remote.get("task", remote)
+        if str(remote.get("status", "")).lower() in {
+            "fail",
+            "failed",
+            "error",
+            "cancelled",
+            "canceled",
+            "expired",
+        }:
+            job.params = {**(job.params or {}), "external_task_failed": True}
+        will_retry = status.retryable and job.attempt < job.max_attempts
         await finalize_job(
             session,
             job,
@@ -611,7 +643,9 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
             error_code=status.error_code or "task_failed",
             error=status.error_message,
             retryable=status.retryable,
-            usage_fields={
+            usage_fields=None
+            if will_retry
+            else {
                 "operation": "generate_video",
                 "status": "failed",
                 "estimated_cost": estimated,
@@ -622,17 +656,26 @@ async def execute_generate_video(session: AsyncSession, job: GenerationJob) -> N
 
     # 3) 完成 → 下载产物
     protocol = (job.params or {}).get("protocol_version", "v1")
+    fetch_attempts = int((job.params or {}).get("fetch_attempts", 0)) + 1
+    job.params = {**(job.params or {}), "fetch_attempts": fetch_attempts}
     async with sem:
         fetched = await provider.fetch_result(job.external_task_id, protocol=protocol)
     if not fetched.success:
+        # 查询成功后，pending 也是一次取回失败；累计计数不随轮询/新 job 重置。
+        retryable = fetched.retryable or fetched.error_code == "pending"
+        will_retry = retryable and fetch_attempts < job.max_attempts and job.attempt < job.max_attempts
+        if will_retry:
+            job.attempt = max(job.attempt, fetch_attempts)
         await finalize_job(
             session,
             job,
             success=False,
             error_code=fetched.error_code or "fetch_failed",
             error=fetched.error_message,
-            retryable=fetched.retryable,
-            usage_fields={
+            retryable=will_retry,
+            usage_fields=None
+            if will_retry
+            else {
                 "operation": "generate_video",
                 "status": "failed",
                 "estimated_cost": estimated,
@@ -1597,6 +1640,7 @@ async def _process_job_in_context(session: AsyncSession, job: GenerationJob) -> 
             error=f"暂不支持的 operation: {job.operation}",
         )
     else:
+        job_id, operation = job.id, job.operation
         heartbeat_stop = asyncio.Event()
 
         async def keep_lease_alive() -> None:
@@ -1608,7 +1652,7 @@ async def _process_job_in_context(session: AsyncSession, job: GenerationJob) -> 
                     async with SessionLocal() as heartbeat_session:
                         await job_service.heartbeat(
                             heartbeat_session,
-                            job.id,
+                            job_id,
                             WORKER_ID,
                             lease_seconds=LEASE_SECONDS,
                         )
@@ -1618,13 +1662,23 @@ async def _process_job_in_context(session: AsyncSession, job: GenerationJob) -> 
         try:
             await executor(session, job)
         except Exception as e:
-            logger.exception(f"job {job.id} ({job.operation}) 执行异常")
+            logger.exception(f"job {job_id} ({operation}) 执行异常")
             await session.rollback()  # executor 可能把事务置于失败态，先回滚再标失败
+            await session.refresh(job)  # rollback 会过期 ORM 属性，禁止隐式异步加载
+            accounting_failed = isinstance(e, usage_service.VideoAccountingError)
+            if accounting_failed and job.attempt >= job.max_attempts:
+                logger.error(
+                    "视频费用重试用尽，需人工补账 job_id=%s external_task_id=%s",
+                    job_id,
+                    job.external_task_id,
+                )
             await finalize_job(
                 session,
                 job,
                 success=False,
-                error_code="executor_exception",
+                error_code=("accounting_failed" if job.attempt >= job.max_attempts else "accounting_retry")
+                if accounting_failed
+                else "executor_exception",
                 error=str(e),
                 retryable=True,
             )

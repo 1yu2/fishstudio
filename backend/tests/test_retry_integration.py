@@ -343,3 +343,517 @@ def test_retry_job_concurrent_sessions_create_once(pg):
             assert retry_count == 1
 
     asyncio.run(_run())
+
+
+@pytest.mark.parametrize("entry", ["manual", "step"])
+@pytest.mark.parametrize("remote_state", ["success", "unknown", "failed", "not_submitted"])
+def test_video_retry_entries_preserve_paid_task(pg, monkeypatch, entry, remote_state):
+    """两个真实重试入口创建新代，实际 worker 只能取回原任务。"""
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from app.db.models import GenerationJob, SeriesProject, User, WorkflowStep
+    from app.providers.base import ProviderResult
+    from app.routers.jobs import retry_job
+    from app.services import job_planner, workflow_service
+    from app.worker import generation_worker as worker
+
+    calls = {"submit": 0, "fetch": 0}
+
+    class Provider:
+        name = "retry_fake"
+
+        def supports(self, req, model=None):
+            return True
+
+        async def submit(self, req, model=None):
+            calls["submit"] += 1
+            return ProviderResult(success=False, provider=self.name, error_code="invalid_request")
+
+        async def get_status(self, task, protocol=None):
+            return ProviderResult(success=True, provider=self.name)
+
+        async def fetch_result(self, task, protocol=None):
+            calls["fetch"] += 1
+            assert task == "paid-task"
+            return ProviderResult(success=False, provider=self.name, error_code="artifact_invalid")
+
+    provider = Provider()
+
+    async def noop(*args, **kwargs):
+        pass
+
+    async def no_abort(*args):
+        return False
+
+    async def advance(session, run_id):
+        step = await session.scalar(select(WorkflowStep).where(WorkflowStep.run_id == run_id))
+        old = await session.scalar(select(GenerationJob).where(GenerationJob.workflow_step_id == step.id))
+        await job_planner._get_or_create_job(
+            session,
+            idempotency_key=f"step-retry:{old.id}",
+            operation="generate_video",
+            project_id=old.project_id,
+            params=old.params,
+            logical_job_key=old.logical_job_key,
+            workflow_run_id=run_id,
+            workflow_step_id=step.id,
+            step_attempt=step.attempt,
+        )
+        await session.commit()
+
+    monkeypatch.setattr(workflow_service, "advance_run", advance)
+    monkeypatch.setattr(worker, "_ensure_media_invocation", noop)
+    monkeypatch.setattr(worker, "_should_abort_before_submit", no_abort)
+    monkeypatch.setattr(worker, "finalize_job", noop)
+    monkeypatch.setattr(worker._router, "providers", [provider], raising=False)
+    monkeypatch.setattr(worker, "_resolve_locked_video_provider", lambda *a: (provider, False))
+
+    async def run():
+        project_id, _, run_id, step_id, job_id = await _make_run_with_render_step(pg)
+        async with pg() as session:
+            user = User(username=f"u-{job_id}", password_hash="x")
+            session.add(user)
+            await session.flush()
+            project = await session.get(SeriesProject, project_id)
+            project.user_id = user.id
+            old = await session.get(GenerationJob, job_id)
+            old.operation = "generate_video"
+            old.provider = provider.name
+            old.model = "m"
+            old.status = "failed"
+            old.external_task_id = "" if remote_state == "not_submitted" else "paid-task"
+            old.params = {
+                "prompt": "test",
+                "duration": 5,
+                "external_task_failed": remote_state == "failed",
+                "routing_snapshot": {"provider": provider.name, "model": "m", "estimated_total_cost": "1.5"},
+            }
+            step = await session.get(WorkflowStep, step_id)
+            step.status = "failed"
+            await session.commit()
+            if entry == "manual":
+                response = await retry_job(
+                    job_id, session=session, user=SimpleNamespace(id=user.id, is_admin=False)
+                )
+                new = await session.get(GenerationJob, response["id"])
+            else:
+                await workflow_service.retry_step(session, step_id)
+                new = await session.scalar(
+                    select(GenerationJob).where(
+                        GenerationJob.workflow_step_id == step_id, GenerationJob.step_attempt == 1
+                    )
+                )
+            resume = remote_state in {"success", "unknown"}
+            assert bool(new.external_task_id) == resume
+            new.attempt = 1
+            await worker.execute_generate_video(session, new)
+            assert calls == ({"submit": 0, "fetch": 1} if resume else {"submit": 1, "fetch": 0})
+
+    asyncio.run(run())
+
+
+def test_cancel_paid_video_accounts_once_across_retries_and_concurrent_writers(pg, monkeypatch):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from app.db.models import GenerationJob, UsageEvent
+    from app.routers import jobs
+    from app.services import job_service, usage_service
+
+    async def noop(*a, **k):
+        pass
+
+    monkeypatch.setattr(jobs.workflow_service, "on_job_finished", noop)
+    monkeypatch.setattr(jobs._media_runtime, "get", lambda *a: None)
+
+    async def run():
+        project_id, _, _, _, job_id = await _make_run_with_render_step(pg)
+        async with pg() as session:
+            job = await session.get(GenerationJob, job_id)
+            job.operation = "generate_video"
+            job.provider = "cancel_fake"
+            job.external_task_id = f"paid-{job_id}"
+            job.params = {"fetch_attempts": 1, "routing_snapshot": {"estimated_total_cost": "1.5"}}
+            job.attempt = 1
+            job.error_code = "network_error"
+            await session.commit()
+
+            async def checked(*a):
+                return job
+
+            monkeypatch.setattr(jobs, "_get_job_checked", checked)
+            await jobs.cancel_job(job_id, session=session, user=SimpleNamespace(id=1))
+            event = (await session.scalars(select(UsageEvent).where(UsageEvent.job_id == job_id))).one()
+            assert event.estimated_cost == Decimal("1.5")
+            assert event.status == "canceled"
+            external = job.external_task_id
+            retry = await job_service.create_job(
+                session,
+                operation="generate_video",
+                project_id=project_id,
+                params=job.params,
+                idempotency_key=f"charge-retry:{job_id}",
+            )
+            await session.commit()
+            retry_id = retry.id
+
+        async def write():
+            async with pg() as session:
+                await usage_service.record_usage(
+                    session,
+                    operation="generate_video",
+                    job_id=retry_id,
+                    provider="cancel_fake",
+                    provider_request_id=external,
+                    estimated_cost="1.5",
+                    status="failed",
+                )
+                await session.commit()
+
+        await asyncio.gather(write(), write())
+        async with pg() as session:
+            events = (
+                await session.scalars(select(UsageEvent).where(UsageEvent.provider_request_id == external))
+            ).all()
+            assert len(events) == 1
+
+    asyncio.run(run())
+
+
+def test_video_usage_is_idempotent_across_jobs_and_sessions(pg):
+    """不依赖取消流程，直接验证重复/并发收尾也只入一笔账。"""
+    from sqlalchemy import select
+
+    from app.db.models import GenerationJob, UsageEvent
+    from app.services import usage_service
+
+    async def run():
+        project_id, _, _, _, job_id = await _make_run_with_render_step(pg)
+        external = f"idempotent-{job_id}"
+        async with pg() as session:
+            retry = GenerationJob(
+                project_id=project_id,
+                operation="generate_video",
+                params={},
+                idempotency_key=f"idempotent-retry:{job_id}",
+            )
+            session.add(retry)
+            await session.commit()
+            ids = [job_id, retry.id, retry.id]
+
+        async def write(job_id):
+            async with pg() as session:
+                await usage_service.record_usage(
+                    session,
+                    job_id=job_id,
+                    provider="fake",
+                    provider_request_id=external,
+                    operation="generate_video",
+                    estimated_cost="1.5",
+                    status="failed",
+                )
+                await session.commit()
+
+        await asyncio.gather(*(write(job_id) for job_id in ids))
+        async with pg() as session:
+            events = (
+                await session.scalars(select(UsageEvent).where(UsageEvent.provider_request_id == external))
+            ).all()
+            assert len(events) == 1
+            assert str(events[0].estimated_cost) == "1.500000"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("late_actual", [False, True])
+def test_video_charge_upsert_preserves_best_information(pg, late_actual):
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from app.db.models import UsageEvent
+    from app.services.usage_service import record_usage
+
+    async def run():
+        task = f"upsert-{late_actual}"
+
+        async def write(**fields):
+            async with pg() as session:
+                await record_usage(
+                    session, operation="generate_video", provider="fake", provider_request_id=task, **fields
+                )
+                await session.commit()
+
+        await write(estimated_cost="1.5", status="failed", output_units=0)
+        await write(actual_cost="0.8" if late_actual else None, status="success", output_units=5)
+        await write(estimated_cost="2", status="canceled", output_units=0)
+        async with pg() as session:
+            events = (
+                await session.scalars(select(UsageEvent).where(UsageEvent.provider_request_id == task))
+            ).all()
+            assert len(events) == 1
+            assert events[0].status == "success"
+            assert events[0].output_units == 5
+            assert events[0].actual_cost == (Decimal("0.8") if late_actual else None)
+        # 已有实际金额的失败账目也能补成成功，金额和实际用量不被估价覆盖。
+        task = f"{task}-actual-first"
+        await write(actual_cost="0.7", status="failed", output_units=4)
+        await write(estimated_cost="2", status="success", output_units=0)
+        async with pg() as session:
+            event = (
+                await session.scalars(select(UsageEvent).where(UsageEvent.provider_request_id == task))
+            ).one()
+            assert event.actual_cost == Decimal("0.7")
+            assert event.output_units == 4
+            assert event.status == "success"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", [True, False, None, "exception"])
+def test_cancel_records_provider_outcome_and_only_uncertain_charge(pg, monkeypatch, outcome):
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from app.db.models import GenerationJob, UsageEvent
+    from app.routers import jobs
+
+    async def cancel(task):
+        if outcome == "exception":
+            raise TimeoutError("fake timeout")
+        return outcome
+
+    async def noop(*a, **k):
+        pass
+
+    monkeypatch.setattr(
+        jobs._media_runtime, "get", lambda *a: SimpleNamespace(provider=SimpleNamespace(cancel=cancel))
+    )
+    monkeypatch.setattr(jobs.workflow_service, "on_job_finished", noop)
+
+    async def run():
+        _, _, _, _, job_id = await _make_run_with_render_step(pg)
+        async with pg() as session:
+            job = await session.get(GenerationJob, job_id)
+            job.operation = "generate_video"
+            job.provider = "cancel-fake"
+            job.external_task_id = f"cancel-{job_id}"
+            job.params = {"routing_snapshot": {"estimated_total_cost": "1.5"}}
+            await session.commit()
+
+            async def checked(*a):
+                return job
+
+            monkeypatch.setattr(jobs, "_get_job_checked", checked)
+            await jobs.cancel_job(job_id, session=session, user=SimpleNamespace(id=1))
+            events = (await session.scalars(select(UsageEvent).where(UsageEvent.job_id == job_id))).all()
+            assert len(events) == (0 if outcome is True else 1)
+            assert job.params["cancel_result"]["status"] == (
+                "succeeded" if outcome is True else "unknown" if outcome in (None, "exception") else "failed"
+            )
+
+    asyncio.run(run())
+
+
+def test_step_retry_paid_task_with_exact_initial_budget(pg, monkeypatch):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.db.models import GenerationJob, Scene, Shot, WorkflowRun, WorkflowStep
+    from app.providers.base import ProviderResult
+    from app.services import job_planner, workflow_service
+    from app.worker import generation_worker as worker
+
+    calls = {"fetch": 0}
+
+    class Provider:
+        name = "budget-fake"
+
+        async def submit(self, *a, **k):
+            raise AssertionError("paid task must not submit")
+
+        async def get_status(self, task, **k):
+            return ProviderResult(success=True, provider=self.name)
+
+        async def fetch_result(self, task, **k):
+            calls["fetch"] += 1
+            return ProviderResult(success=True, provider=self.name, external_request_id=task)
+
+    async def noop(*a, **k):
+        pass
+
+    shot_ids = []
+
+    async def shots(*a):
+        return [SimpleNamespace(id=shot_ids[0], visual_prompt="test", duration_ms=5000, aspect_ratio="9:16")]
+
+    async def inputs(*a):
+        return None, None
+
+    async def routing(*a, **k):
+        return {"estimated_total_cost": "1.5"}
+
+    monkeypatch.setattr(job_planner, "load_shot_video_inputs", inputs)
+    monkeypatch.setattr(job_planner, "resolve_shot_video_plan", routing)
+
+    async def advance(session, run_id):
+        run = await session.get(WorkflowRun, run_id)
+        from sqlalchemy import select
+
+        step = await session.scalar(select(WorkflowStep).where(WorkflowStep.run_id == run_id))
+        jobs = await job_planner.plan_shot_video_jobs(session, run=run, step=step, episode_id=step.entity_id)
+        assert len(jobs) == 1
+        jobs[0].attempt = 1
+        await worker.execute_generate_video(session, jobs[0])
+        assert jobs[0].status == "succeeded"
+
+    monkeypatch.setattr(job_planner, "_current_revision_shots", shots)
+    monkeypatch.setattr(workflow_service, "advance_run", advance)
+    monkeypatch.setattr(workflow_service, "on_job_finished", noop)
+    monkeypatch.setattr(worker, "_ensure_media_invocation", noop)
+    monkeypatch.setattr(worker._router, "providers", [Provider()], raising=False)
+
+    async def run_test():
+        _, _, run_id, step_id, job_id = await _make_run_with_render_step(pg)
+        async with pg() as session:
+            run = await session.get(WorkflowRun, run_id)
+            run.estimated_cost = run.cost_limit = Decimal("1.5")
+            step = await session.get(WorkflowStep, step_id)
+            step.status = "failed"
+            scene = Scene(episode_id=step.entity_id)
+            session.add(scene)
+            await session.flush()
+            shot = Shot(scene_id=scene.id, visual_prompt="test", duration_ms=5000)
+            session.add(shot)
+            await session.flush()
+            shot_ids.append(shot.id)
+            job = await session.get(GenerationJob, job_id)
+            job.operation = "generate_video"
+            job.logical_job_key = job_planner.make_logical_job_key(
+                "generate_video", run_id, step.node_key, shot_ids[0]
+            )
+            job.provider = "budget-fake"
+            job.model = "m"
+            job.external_task_id = "paid-budget-task"
+            job.status = "failed"
+            job.params = {"prompt": "test", "routing_snapshot": {"estimated_total_cost": "1.5"}}
+            await session.commit()
+            await workflow_service.retry_step(session, step_id)
+            assert calls["fetch"] == 1
+            await session.refresh(run)
+            assert run.estimated_cost == Decimal("1.5")
+
+    asyncio.run(run_test())
+
+
+@pytest.mark.parametrize("failure_count", [1, 3, None])
+def test_video_usage_insert_failure_recovers_or_exhausts_bounded_retries(
+    pg, monkeypatch, tmp_path, failure_count
+):
+    from sqlalchemy import select, text
+    from sqlalchemy.sql.dml import Insert
+
+    from app.db.models import Artifact, GenerationJob, UsageEvent
+    from app.providers.base import ProviderResult
+    from app.worker import generation_worker as worker
+
+    calls = {"fetch": 0, "insert": 0}
+    fetched_tasks = []
+    errors = []
+
+    def capture_error(message, *args, **kwargs):
+        if "external_task_id=" in message:
+            errors.append(message % args)
+
+    monkeypatch.setattr(worker.logger, "error", capture_error)
+
+    class Provider:
+        name = "insert-fake"
+
+        async def get_status(self, task, **k):
+            return ProviderResult(success=True, provider=self.name)
+
+        async def fetch_result(self, task, **k):
+            calls["fetch"] += 1
+            fetched_tasks.append(task)
+            return ProviderResult(
+                success=True,
+                provider=self.name,
+                external_request_id=task,
+                artifacts=[{"storage_key": "recovered.mp4", "type": "video"}],
+            )
+
+        async def submit(self, *a, **k):
+            raise AssertionError("must not resubmit")
+
+    async def noop(*a, **k):
+        pass
+
+    monkeypatch.setattr(worker.asset_service, "STORAGE_DIR", tmp_path)
+    monkeypatch.setattr(worker.media_probe, "attach_l1_check", noop)
+    monkeypatch.setattr(worker.lineage_service, "attach_lineage", noop)
+    monkeypatch.setattr(worker, "_ensure_media_invocation", noop)
+    monkeypatch.setattr(worker._router, "providers", [Provider()], raising=False)
+
+    async def run():
+        _, _, _, _, job_id = await _make_run_with_render_step(pg)
+        async with pg() as session:
+            job = await session.get(GenerationJob, job_id)
+            job.operation = "generate_video"
+            job.provider = "insert-fake"
+            external_task_id = f"paid-insert-task-{job_id}"
+            job.external_task_id = external_task_id
+            job.params = {"prompt": "test", "routing_snapshot": {"estimated_total_cost": "1.5"}}
+            job.attempt = 1
+            await session.commit()
+            execute = session.execute
+
+            async def failing_insert(statement, *a, **k):
+                if isinstance(statement, Insert) and statement.table.name == "usage_events":
+                    calls["insert"] += 1
+                    if failure_count is None or calls["insert"] <= failure_count:
+                        # 真实 PG 错误使事务进入 aborted 状态，必须先 rollback。
+                        return await execute(
+                            text("INSERT INTO usage_events (missing_test_column) VALUES (1)")
+                        )
+                return await execute(statement, *a, **k)
+
+            monkeypatch.setattr(session, "execute", failing_insert)
+            job.max_attempts = 3
+            await session.commit()
+            for attempt in range(1, 4):
+                job.attempt = attempt  # 模拟 lease_jobs 的持久化 attempt
+                await session.commit()
+                await worker._process_job(session, job)
+                assert job.external_task_id == external_task_id
+                assert fetched_tasks == [external_task_id] * attempt
+                if failure_count is not None and calls["insert"] > failure_count:
+                    assert job.status == "succeeded"
+                    assert await session.get(Artifact, job.result["artifact_id"]) is not None
+                    events = (
+                        await session.scalars(select(UsageEvent).where(UsageEvent.job_id == job_id))
+                    ).all()
+                    assert len(events) == 1
+                    assert str(events[0].estimated_cost) == "1.500000"
+                    assert calls == {"fetch": attempt, "insert": failure_count + 1}
+                    return
+                if attempt < 3:
+                    assert job.status == "pending" and job.dead_lettered_at is None
+                    assert job.error_code == "accounting_retry"
+                    assert job.lease_until is not None
+                    assert not errors
+            assert job.status == "failed"
+            assert job.error_code == "accounting_failed"
+            assert job.dead_lettered_at is not None
+            assert calls == {"fetch": 3, "insert": 9}
+            assert len(errors) == 1 and external_task_id in errors[0]
+            assert not (await session.scalars(select(UsageEvent).where(UsageEvent.job_id == job_id))).all()
+            leased = await worker.job_service.lease_jobs(session, operations=["generate_video"])
+            assert job_id not in [item.id for item in leased]
+
+    asyncio.run(run())

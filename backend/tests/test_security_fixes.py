@@ -136,6 +136,11 @@ class TestBindAssetToShot:
             raise PermissionError("shot and asset belong to different projects")
 
         monkeypatch.setattr("app.routers.series.asset_service.get_asset_for_user", fake_get_asset)
+
+        async def fake_owned_shot(session, shot_id, user):
+            return SimpleNamespace(id="project-B")
+
+        monkeypatch.setattr("app.routers.series._owned_shot_project", fake_owned_shot)
         monkeypatch.setattr("app.routers.series.asset_service.bind_asset_to_shot", fake_bind)
 
         resp = client.post(

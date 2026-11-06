@@ -443,3 +443,15 @@ def fetch_to_file(
 async def afetch(url: str, **kwargs) -> FetchResult:
     """fetch 的异步封装（放线程里跑，不阻塞事件循环）。"""
     return await asyncio.to_thread(fetch, url, **kwargs)
+
+
+def is_transient_fetch_error(error: Exception) -> bool:
+    """FetchError 是否值得重试：5xx / 429 / 408、超时、连接或读取中断算暂时性；
+    4xx（链接过期 / 无权限）、MIME 不符、超限、重定向异常、UnsafeURLError 重试也不会好。"""
+    if not isinstance(error, FetchError):
+        return False
+    message = str(error)
+    if message.startswith("HTTP "):
+        code = message[5:8]
+        return code in {"408", "429"} or code.startswith("5")
+    return not message.startswith(("MIME", "内容超过", "重定向"))

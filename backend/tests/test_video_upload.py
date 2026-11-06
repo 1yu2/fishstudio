@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -9,6 +11,11 @@ def test_upload_video_saves_supported_file(real_media, tmp_path, monkeypatch):
     from app.routers import chat
 
     monkeypatch.setattr(chat, "_STORAGE_DIR", tmp_path)
+
+    async def _fake_create_artifact(session, **kwargs):
+        return SimpleNamespace(id="art-test")  # 上传会建 Artifact；这里 session 是 None，替掉落库
+
+    monkeypatch.setattr(chat.asset_service, "create_artifact", _fake_create_artifact)
     response = client.post(
         "/api/upload-video",
         files={"file": ("sample.mp4", real_media["mp4"], "video/mp4")},

@@ -66,6 +66,20 @@ def mock_providers_enabled() -> bool:
     return os.getenv("ALLOW_MOCK_PROVIDERS", "false").strip().lower() in ("1", "true", "yes")
 
 
+def api_docs_enabled() -> bool:
+    """读取 API_DOCS_ENABLED：是否开放 /docs、/redoc、/openapi.json。默认关闭，公网部署不要打开。"""
+    import os
+
+    return os.getenv("API_DOCS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
+
+def fastapi_docs_kwargs() -> dict:
+    """FastAPI(...) 的文档路由参数：关闭时三个地址都不挂（404）。"""
+    if api_docs_enabled():
+        return {}
+    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()

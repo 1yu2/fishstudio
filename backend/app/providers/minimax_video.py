@@ -35,6 +35,7 @@ H3 V2 实验分支（MINIMAX_H3_EXPERIMENTAL=true 才启用，默认 false）：
   /v2 查询与 content.url 直链下载保持不变）。
 """
 
+import asyncio
 import base64
 import logging
 import os
@@ -43,11 +44,15 @@ from pathlib import Path
 import httpx
 
 from app.providers.base import ProviderResult, VideoGenerationRequest, VideoProvider
+from app.services import safe_fetch
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent.parent
 VIDEOS_DIR = BASE_DIR / "storage" / "videos"
+
+# 视频产物下载大小上限
+_MAX_VIDEO_BYTES = 512 * 1024 * 1024
 
 # 官方 Base URL（路径在请求时拼接）
 DEFAULT_BASE_URL = "https://api.minimaxi.com"
@@ -553,9 +558,6 @@ class MiniMaxVideoProvider(VideoProvider):
                         error_message="未能获取下载地址",
                         raw_metadata={"raw": data},
                     )
-                async with httpx.AsyncClient(timeout=300) as dl_client:
-                    vresp = await dl_client.get(download_url)
-                    vresp.raise_for_status()
         except httpx.HTTPError as e:
             return ProviderResult(
                 success=False,
@@ -569,7 +571,26 @@ class MiniMaxVideoProvider(VideoProvider):
         # regenerate 独立文件名，避免覆盖源视频产物
         prefix = "minimax_regen_" if task.get("task_type") == "regeneration" else "minimax_"
         filename = f"{prefix}{external_task_id}.mp4"
-        (VIDEOS_DIR / filename).write_bytes(vresp.content)
+        # 下载地址来自厂商响应，属不可信 URL：走 safe_fetch（逐跳校验 IP、限大小 / 总时限），线程里跑不阻塞事件循环
+        try:
+            await asyncio.to_thread(
+                safe_fetch.fetch_to_file,
+                download_url,
+                VIDEOS_DIR / filename,
+                max_bytes=_MAX_VIDEO_BYTES,
+                timeout=300,
+                total_timeout=600,
+            )
+        except (safe_fetch.FetchError, ValueError) as e:
+            transient = safe_fetch.is_transient_fetch_error(e)
+            return ProviderResult(
+                success=False,
+                provider=self.name,
+                external_request_id=external_task_id,
+                error_code="network_error" if transient else "artifact_invalid",
+                error_message=str(e)[:500],
+                retryable=transient,
+            )
         return ProviderResult(
             success=True,
             provider=self.name,

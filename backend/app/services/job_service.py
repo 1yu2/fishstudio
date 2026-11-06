@@ -32,6 +32,24 @@ def trace_from_context() -> dict:
     return trace
 
 
+def can_resume_external(job: GenerationJob) -> bool:
+    """未知查询错误也保留任务号；只有厂商明确终态失败才允许重新提交。"""
+    return bool(job.external_task_id) and not (job.params or {}).get("external_task_failed", False)
+
+
+def inherit_external_task(job: GenerationJob, previous: GenerationJob) -> None:
+    if job.operation != "generate_video" or not can_resume_external(previous):
+        return
+    job.external_task_id = previous.external_task_id
+    job.provider = previous.provider
+    job.model = previous.model
+    # 保留提交时的协议、价格与取回计数；新一代不能重置累计取回上限。
+    job.params = {**(previous.params or {}), **(job.params or {})}
+    for key in ("protocol_version", "routing_snapshot", "price_snapshot", "fetch_attempts"):
+        if key in (previous.params or {}):
+            job.params = {**job.params, key: previous.params[key]}
+
+
 async def create_job(
     session: AsyncSession,
     *,
@@ -77,6 +95,19 @@ async def create_job(
         logical_job_key=logical_job_key,
         status="pending",
     )
+    if operation == "generate_video" and workflow_step_id and logical_job_key and step_attempt > 0:
+        previous = await session.scalar(
+            select(GenerationJob)
+            .where(
+                GenerationJob.workflow_step_id == workflow_step_id,
+                GenerationJob.logical_job_key == logical_job_key,
+                GenerationJob.step_attempt < step_attempt,
+            )
+            .order_by(GenerationJob.step_attempt.desc(), GenerationJob.created_at.desc())
+            .limit(1)
+        )
+        if previous is not None:
+            inherit_external_task(job, previous)
     session.add(job)
     await session.flush()
     from app.services import job_event_service
@@ -294,7 +325,7 @@ async def mark_canceled(session: AsyncSession, job: GenerationJob) -> None:
     await job_event_service.emit(session, job, "job.canceled")
 
 
-async def cancel_job(session: AsyncSession, job_id: str) -> bool:
+async def cancel_job(session: AsyncSession, job_id: str, *, cancel_result: Optional[dict] = None) -> bool:
     """原子取消（P1-9/P1-10 并发保护）：UPDATE ... WHERE status IN (pending/leased/running)。
 
     影响行数 0（job 不存在或已终态）返回 False——防止 worker 已标
@@ -310,6 +341,13 @@ async def cancel_job(session: AsyncSession, job_id: str) -> bool:
     )
     result = await session.execute(stmt)
     await session.flush()
+    if result.rowcount > 0:
+        job = await session.get(GenerationJob, job_id)
+        if job is not None:
+            await session.refresh(job)
+            job.params = {**(job.params or {}), "cancel_result": cancel_result or {"status": "unknown"}}
+            await account_canceled_video(session, job)
+            await session.flush()
     return result.rowcount > 0
 
 
@@ -368,3 +406,39 @@ async def heartbeat(session: AsyncSession, job_id: str, worker_id: str, *, lease
     )
     await session.flush()
     return result.rowcount > 0
+
+
+async def account_canceled_video(session: AsyncSession, job: GenerationJob) -> None:
+    """明确取消成功不计费；未知/失败按估价与 worker 共用一笔厂商账目。"""
+    if job.operation != "generate_video" or not job.external_task_id:
+        return
+    from app.providers.pricing import estimate_video_cost
+    from app.services import usage_service
+
+    params = job.params or {}
+    if (params.get("cancel_result") or {}).get("status") == "succeeded":
+        return
+    estimated = (params.get("routing_snapshot") or {}).get("estimated_total_cost")
+    if estimated is None:
+        estimated = estimate_video_cost(
+            job.provider,
+            job.model,
+            params.get("resolution", "768P"),
+            output_seconds=params.get("duration", params.get("duration_ms", 5000) // 1000),
+        )
+    await usage_service.record_usage(
+        session,
+        job_id=job.id,
+        project_id=job.project_id,
+        user_id=await session.scalar(select(SeriesProject.user_id).where(SeriesProject.id == job.project_id)),
+        run_id=(params.get("trace") or {}).get("run_id") or job.workflow_run_id or "",
+        workflow_run_id=job.workflow_run_id,
+        workflow_step_id=job.workflow_step_id,
+        operation="generate_video",
+        provider=job.provider,
+        model=job.model,
+        provider_request_id=job.external_task_id,
+        status="canceled",
+        estimated_cost=estimated,
+        event_metadata={"cancel_result": params.get("cancel_result") or {"status": "unknown"}},
+    )

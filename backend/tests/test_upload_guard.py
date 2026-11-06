@@ -19,7 +19,24 @@ def storage(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client():
+def artifacts(monkeypatch):
+    """上传现在会建 Artifact；测试里 session 是 None，用记录器替掉 create_artifact。"""
+    from types import SimpleNamespace
+
+    from app.routers import chat
+
+    created = []
+
+    async def fake_create_artifact(session, **kwargs):
+        created.append(kwargs)
+        return SimpleNamespace(id=f"art-{len(created)}")
+
+    monkeypatch.setattr(chat.asset_service, "create_artifact", fake_create_artifact)
+    return created
+
+
+@pytest.fixture
+def client(artifacts):
     return TestClient(app, headers={"Authorization": "Bearer test"})  # 中间件要求带 Authorization 头
 
 
@@ -147,6 +164,71 @@ def test_video_magic_plus_garbage_rejected(client, storage):
 def test_limits_constants():
     assert upload_guard.AUDIO_MAX_BYTES == 20 * 1024 * 1024
     assert upload_guard.IMAGE_MAX_BYTES == 15 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    ("route", "kind", "mime", "dirname"),
+    [
+        ("/api/upload-image", "image", "image/png", "images"),
+        ("/api/upload-audio", "audio", "audio/wav", "audios"),
+    ],
+)
+def test_chat_uploads_create_owned_artifact(
+    client, storage, artifacts, real_media, route, kind, mime, dirname
+):
+    """聊天侧上传要建 Artifact（无项目、归属上传者），响应带 artifact_id，旧的 url / filename 保持不变。"""
+    content = real_media["png"] if kind == "image" else real_media["wav"]
+    response = client.post(route, files={"file": (f"原始.{kind}", content, mime)})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifact_id"] == "art-1"
+    assert body["url"] == f"/storage/uploads/1/{dirname}/{body['filename']}"
+    (created,) = artifacts
+    assert created["project_id"] is None and created["type"] == kind and created["mime_type"] == mime
+    assert created["storage_key"] == f"uploads/1/{dirname}/{body['filename']}"
+    assert created["meta"]["source"] == "chat_upload" and created["meta"]["owner_user_id"] == 1
+
+
+def test_rejected_upload_creates_no_artifact(client, storage, artifacts):
+    assert (
+        client.post("/api/upload-image", files={"file": ("a.png", b"<svg>", "image/png")}).status_code == 400
+    )
+    assert artifacts == []
+
+
+def test_chat_upload_artifact_downloadable_only_by_owner(storage, monkeypatch):
+    """无项目的 chat_upload Artifact：上传者本人和 admin 可下载，别人 404。"""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.routers import artifacts as artifacts_router
+
+    monkeypatch.setattr(artifacts_router, "_STORAGE_ROOT", storage.resolve())
+    (storage / "uploads" / "1" / "images").mkdir(parents=True)
+    (storage / "uploads" / "1" / "images" / "a.png").write_bytes(b"png")
+    artifact = SimpleNamespace(
+        id="art-1",
+        project_id=None,
+        storage_key="uploads/1/images/a.png",
+        storage_backend="local",
+        mime_type="image/png",
+        artifact_metadata={"source": "chat_upload", "owner_user_id": 1},
+    )
+
+    class Session:
+        async def get(self, model, key):
+            return artifact
+
+    def download(user):
+        return asyncio.run(artifacts_router.download_artifact("art-1", session=Session(), user=user))
+
+    assert download(SimpleNamespace(id=1, is_admin=False)).status_code == 200
+    assert download(SimpleNamespace(id=9, is_admin=True)).status_code == 200
+    with pytest.raises(HTTPException) as denied:
+        download(SimpleNamespace(id=2, is_admin=False))
+    assert denied.value.status_code == 404
 
 
 @pytest.mark.no_bypass_auth

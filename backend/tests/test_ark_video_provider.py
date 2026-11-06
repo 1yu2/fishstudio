@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import json
 from decimal import Decimal
 
@@ -14,6 +15,7 @@ from app.providers import ark_video
 from app.providers.ark_video import ArkVideoProvider
 from app.providers.base import VideoGenerationRequest
 from app.providers.pricing import estimate_video_cost_from_entry, estimate_video_tokens, pricing_entry
+from app.services import safe_fetch
 
 BASE = "https://ark.test/api/v3"
 VIDEO_URL = "https://cdn.ark.test/out.mp4"
@@ -198,40 +200,55 @@ def _succeeded(**content):
     }
 
 
-def test_fetch_result_downloads_video_and_last_frame(monkeypatch, storage):
+def _downloads(monkeypatch, files, errors=None):
+    """产物下载走 safe_fetch.fetch_to_file：按 URL 写入假内容；errors 里的 URL 抛对应异常。返回调用 URL 列表。"""
+    calls = []
+
+    def fake(url, dest, **kwargs):
+        calls.append((url, kwargs))
+        if errors and url in errors:
+            raise errors[url]
+        dest.write_bytes(files[url])
+
+    monkeypatch.setattr("app.providers.ark_video.safe_fetch.fetch_to_file", fake)
+    return calls
+
+
+def _api_only(monkeypatch, data=None):
+    """方舟 API（查询）仍走 httpx；产物下载若误走 httpx 会直接失败。"""
+
     def handler(request):
-        url = str(request.url)
-        if url == VIDEO_URL:
-            return httpx.Response(200, content=b"mp4-bytes", headers={"content-type": "video/mp4"})
-        if url == FRAME_URL:
-            return httpx.Response(200, content=b"frame", headers={"content-type": "image/png"})
-        return httpx.Response(200, json=_succeeded())
+        assert "cdn." not in request.url.host, "产物下载必须走 safe_fetch"
+        return httpx.Response(200, json=data or _succeeded())
 
     _client(monkeypatch, handler)
+
+
+def test_fetch_result_downloads_video_and_last_frame(monkeypatch, storage):
+    _api_only(monkeypatch)
+    calls = _downloads(monkeypatch, {VIDEO_URL: b"mp4-bytes", FRAME_URL: b"frame"})
     result = _run(_provider().fetch_result("cgt-9"))
 
     assert result.success
     artifact = result.artifacts[0]
     assert (storage / artifact["storage_key"]).read_bytes() == b"mp4-bytes"
     assert (storage / artifact["last_frame_storage_key"]).read_bytes() == b"frame"
+    assert artifact["sha256"] == hashlib.sha256(b"mp4-bytes").hexdigest()
     assert artifact["duration_ms"] == 5000
     assert result.usage == {"output_video_seconds": 5.0, "completion_tokens": 108000, "total_tokens": 108000}
+    # 大小 / MIME 限制随调用传给 safe_fetch
+    video_kwargs = calls[0][1]
+    assert video_kwargs["max_bytes"] == 512 * 1024 * 1024 and "video/mp4" in video_kwargs["allowed_mime"]
 
 
 def test_last_frame_failure_does_not_fail_video(monkeypatch, storage):
-    def handler(request):
-        url = str(request.url)
-        if url == VIDEO_URL:
-            return httpx.Response(200, content=b"mp4-bytes", headers={"content-type": "video/mp4"})
-        if url == FRAME_URL:
-            return httpx.Response(404)
-        return httpx.Response(200, json=_succeeded())
-
-    _client(monkeypatch, handler)
+    _api_only(monkeypatch)
+    _downloads(monkeypatch, {VIDEO_URL: b"mp4-bytes"}, errors={FRAME_URL: safe_fetch.FetchError("HTTP 404")})
     result = _run(_provider().fetch_result("cgt-9"))
 
     assert result.success
     assert "last_frame_storage_key" not in result.artifacts[0]
+    assert not list((storage / "images").glob("ark_*_last.png"))
 
 
 @pytest.mark.parametrize(
@@ -244,23 +261,45 @@ def test_last_frame_failure_does_not_fail_video(monkeypatch, storage):
     ],
 )
 def test_fetch_result_rejects_unsafe_artifact_urls(monkeypatch, storage, video_url, config):
-    _client(monkeypatch, lambda request: httpx.Response(200, json=_succeeded(video_url=video_url)))
+    _api_only(monkeypatch, _succeeded(video_url=video_url))
+    calls = _downloads(monkeypatch, {})
 
     result = _run(_provider(config=config).fetch_result("cgt-9"))
 
-    assert not result.success and result.error_code == "artifact_invalid"
+    assert not result.success and result.error_code == "artifact_invalid" and not result.retryable
+    assert calls == []
 
 
-def test_fetch_result_enforces_size_limit(monkeypatch, storage):
-    def handler(request):
-        if str(request.url) == VIDEO_URL:
-            return httpx.Response(200, content=b"x" * 2048, headers={"content-type": "video/mp4"})
-        return httpx.Response(200, json=_succeeded(last_frame_url=""))
+def test_fetch_result_blocks_private_resolution_via_safe_fetch(monkeypatch, storage):
+    """域名解析到内网：由 safe_fetch 拒绝（真实 safe_fetch，不 mock 下载）。"""
+    _api_only(monkeypatch)
+    monkeypatch.setattr(safe_fetch, "_getaddrinfo", lambda host, port: ["10.0.0.5"])
+    monkeypatch.setattr(safe_fetch, "allow_private_fetch", lambda: False)
 
-    _client(monkeypatch, handler)
-    result = _run(_provider(config={"max_artifact_bytes": 1024}).fetch_result("cgt-9"))
+    result = _run(_provider().fetch_result("cgt-9"))
 
-    assert result.error_code == "artifact_invalid"
+    assert not result.success and result.error_code == "artifact_invalid" and not result.retryable
+    assert not list((storage / "videos").glob("*"))
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "retryable"),
+    [
+        (safe_fetch.FetchError("内容超过大小限制 1024 字节"), "artifact_invalid", False),
+        (safe_fetch.FetchError("MIME 不允许: text/html"), "artifact_invalid", False),
+        (safe_fetch.FetchError("HTTP 403"), "artifact_invalid", False),
+        (safe_fetch.FetchError("HTTP 502"), "network_error", True),
+        (safe_fetch.FetchError("下载超时"), "network_error", True),
+    ],
+)
+def test_fetch_result_classifies_download_errors(monkeypatch, storage, error, code, retryable):
+    _api_only(monkeypatch)
+    _downloads(monkeypatch, {}, errors={VIDEO_URL: error})
+
+    result = _run(_provider().fetch_result("cgt-9"))
+
+    assert result.error_code == code and result.retryable is retryable
+    assert result.external_request_id == "cgt-9"
 
 
 def test_fetch_result_without_video_url_is_reported(monkeypatch, storage):

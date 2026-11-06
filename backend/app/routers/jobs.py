@@ -164,8 +164,7 @@ async def retry_job(
     workflow_step_id/provider/model 快照；新 idempotency_key=retry:{原key}
     （已存在则追加 :2/:3...）；params.retry_of_job_id 记录血缘；旧 job 保持
     failed 不动，但回填 superseded_by=新 job.id；logical_job_key/step_attempt
-    继承原 job；external_task_id 不带入新 job（worker 会重新 submit，
-    而不是继续轮询已失败的外部任务）。
+    继承原 job；尚未明确失败的厂商任务号也继承，worker 只重新取回。
 
     R0.7/R1.6：FOR UPDATE 锁定旧 Job，锁内检查 superseded_by 防止并发双击；
     预算预留 → 创建新 job → flush → 回填 superseded_by → 只提交一次。
@@ -198,7 +197,7 @@ async def retry_job(
     await session.refresh(job)
 
     # 重试预算（P1-5）：原 job 有估算费用时先原子预留，不够 → 409 budget_exceeded
-    if job.workflow_run_id:
+    if job.workflow_run_id and not job_service.can_resume_external(job):
         retry_cost = cost_service.estimate_job_retry_cost(job)
         if retry_cost > 0 and not await cost_service.reserve_budget(session, job.workflow_run_id, retry_cost):
             raise HTTPException(
@@ -241,6 +240,7 @@ async def retry_job(
         priority=getattr(job, "priority", 0),
         worker_class=getattr(job, "worker_class", "media"),
     )
+    job_service.inherit_external_task(new_job, job)
     session.add(new_job)
     await session.flush()
     await session.refresh(new_job)  # 应用 ORM 默认值（含 id）
@@ -269,6 +269,7 @@ async def cancel_job(
     （见 workflow_service.on_job_finished 注释）。
     """
     job = await _get_job_checked(session, job_id, user)
+    cancel_result = {"status": "unknown"}
     # best-effort 取消外部任务：不阻塞本地取消，失败仅记日志
     if job.external_task_id and job.provider:
         # 优先按提交时的 Deployment 找（同一类型可能有多台，如多个本地 H3），找不到再按供应商名
@@ -281,13 +282,21 @@ async def cancel_job(
         provider = deployment.provider if deployment else None
         if provider is not None:
             try:
-                await provider.cancel(job.external_task_id)
-            except Exception:
+                canceled = await provider.cancel(job.external_task_id)
+                cancel_result = {
+                    "status": "succeeded"
+                    if canceled is True
+                    else "failed"
+                    if canceled is False
+                    else "unknown"
+                }
+            except Exception as error:
+                cancel_result = {"status": "unknown", "error_type": type(error).__name__}
                 logger.warning(
                     f"provider cancel 失败（忽略，继续本地取消）: job={job.id}",
                     exc_info=True,
                 )
-    ok = await job_service.cancel_job(session, job_id)
+    ok = await job_service.cancel_job(session, job_id, cancel_result=cancel_result)
     if not ok:
         raise HTTPException(status_code=409, detail=f"已终态不可取消: {job.status}")
     await session.refresh(job)
