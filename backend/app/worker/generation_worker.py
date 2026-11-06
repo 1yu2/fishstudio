@@ -276,7 +276,17 @@ async def finalize_job(
     """
     invocation_id = (job.params or {}).get("model_invocation_id")
     if usage_fields:
-        await _record_job_usage(session, job, **usage_fields)
+        for accounting_attempt in range(3):
+            try:
+                await _record_job_usage(session, job, **usage_fields)
+                break
+            except usage_service.VideoAccountingError:
+                # PostgreSQL 写入失败后必须回滚，在新事务重试；保留厂商任务号，绝不重新提交。
+                await session.rollback()
+                await session.refresh(job)
+                if accounting_attempt == 2:
+                    raise
+                await asyncio.sleep(0.1 * 2**accounting_attempt)
     if success:
         await session.refresh(job)
         if job.status == "canceled":
@@ -1656,13 +1666,21 @@ async def _process_job_in_context(session: AsyncSession, job: GenerationJob) -> 
             await session.rollback()  # executor 可能把事务置于失败态，先回滚再标失败
             await session.refresh(job)  # rollback 会过期 ORM 属性，禁止隐式异步加载
             accounting_failed = isinstance(e, usage_service.VideoAccountingError)
+            if accounting_failed and job.attempt >= job.max_attempts:
+                logger.error(
+                    "视频费用重试用尽，需人工补账 job_id=%s external_task_id=%s",
+                    job_id,
+                    job.external_task_id,
+                )
             await finalize_job(
                 session,
                 job,
                 success=False,
-                error_code="accounting_failed" if accounting_failed else "executor_exception",
+                error_code=("accounting_failed" if job.attempt >= job.max_attempts else "accounting_retry")
+                if accounting_failed
+                else "executor_exception",
                 error=str(e),
-                retryable=not accounting_failed,
+                retryable=True,
             )
         finally:
             heartbeat_stop.set()

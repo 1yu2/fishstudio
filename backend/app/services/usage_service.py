@@ -34,7 +34,7 @@ def _auto_fill(fields: dict) -> dict:
 
 
 class VideoAccountingError(RuntimeError):
-    """视频费用未能落账；停止自动取回，等待人工处理。"""
+    """视频费用未能落账；由 worker 有界重试，耗尽后等待人工处理。"""
 
 
 async def record_usage(session: AsyncSession, **fields) -> Optional[UsageEvent]:

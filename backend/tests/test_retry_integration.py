@@ -751,15 +751,26 @@ def test_step_retry_paid_task_with_exact_initial_budget(pg, monkeypatch):
     asyncio.run(run_test())
 
 
-def test_video_usage_insert_failure_rolls_back_and_finishes_job(pg, monkeypatch):
+@pytest.mark.parametrize("failure_count", [1, 3, None])
+def test_video_usage_insert_failure_recovers_or_exhausts_bounded_retries(
+    pg, monkeypatch, tmp_path, failure_count
+):
     from sqlalchemy import select, text
     from sqlalchemy.sql.dml import Insert
 
-    from app.db.models import GenerationJob, UsageEvent
+    from app.db.models import Artifact, GenerationJob, UsageEvent
     from app.providers.base import ProviderResult
     from app.worker import generation_worker as worker
 
     calls = {"fetch": 0, "insert": 0}
+    fetched_tasks = []
+    errors = []
+
+    def capture_error(message, *args, **kwargs):
+        if "external_task_id=" in message:
+            errors.append(message % args)
+
+    monkeypatch.setattr(worker.logger, "error", capture_error)
 
     class Provider:
         name = "insert-fake"
@@ -769,7 +780,13 @@ def test_video_usage_insert_failure_rolls_back_and_finishes_job(pg, monkeypatch)
 
         async def fetch_result(self, task, **k):
             calls["fetch"] += 1
-            return ProviderResult(success=True, provider=self.name, external_request_id=task)
+            fetched_tasks.append(task)
+            return ProviderResult(
+                success=True,
+                provider=self.name,
+                external_request_id=task,
+                artifacts=[{"storage_key": "recovered.mp4", "type": "video"}],
+            )
 
         async def submit(self, *a, **k):
             raise AssertionError("must not resubmit")
@@ -777,6 +794,9 @@ def test_video_usage_insert_failure_rolls_back_and_finishes_job(pg, monkeypatch)
     async def noop(*a, **k):
         pass
 
+    monkeypatch.setattr(worker.asset_service, "STORAGE_DIR", tmp_path)
+    monkeypatch.setattr(worker.media_probe, "attach_l1_check", noop)
+    monkeypatch.setattr(worker.lineage_service, "attach_lineage", noop)
     monkeypatch.setattr(worker, "_ensure_media_invocation", noop)
     monkeypatch.setattr(worker._router, "providers", [Provider()], raising=False)
 
@@ -786,7 +806,8 @@ def test_video_usage_insert_failure_rolls_back_and_finishes_job(pg, monkeypatch)
             job = await session.get(GenerationJob, job_id)
             job.operation = "generate_video"
             job.provider = "insert-fake"
-            job.external_task_id = "paid-insert-task"
+            external_task_id = f"paid-insert-task-{job_id}"
+            job.external_task_id = external_task_id
             job.params = {"prompt": "test", "routing_snapshot": {"estimated_total_cost": "1.5"}}
             job.attempt = 1
             await session.commit()
@@ -795,16 +816,42 @@ def test_video_usage_insert_failure_rolls_back_and_finishes_job(pg, monkeypatch)
             async def failing_insert(statement, *a, **k):
                 if isinstance(statement, Insert) and statement.table.name == "usage_events":
                     calls["insert"] += 1
-                    # 真实 PG 错误使事务进入 aborted 状态，必须先 rollback。
-                    return await execute(text("INSERT INTO usage_events (missing_test_column) VALUES (1)"))
+                    if failure_count is None or calls["insert"] <= failure_count:
+                        # 真实 PG 错误使事务进入 aborted 状态，必须先 rollback。
+                        return await execute(
+                            text("INSERT INTO usage_events (missing_test_column) VALUES (1)")
+                        )
                 return await execute(statement, *a, **k)
 
             monkeypatch.setattr(session, "execute", failing_insert)
-            await worker._process_job(session, job)
+            job.max_attempts = 3
+            await session.commit()
+            for attempt in range(1, 4):
+                job.attempt = attempt  # 模拟 lease_jobs 的持久化 attempt
+                await session.commit()
+                await worker._process_job(session, job)
+                assert job.external_task_id == external_task_id
+                assert fetched_tasks == [external_task_id] * attempt
+                if failure_count is not None and calls["insert"] > failure_count:
+                    assert job.status == "succeeded"
+                    assert await session.get(Artifact, job.result["artifact_id"]) is not None
+                    events = (
+                        await session.scalars(select(UsageEvent).where(UsageEvent.job_id == job_id))
+                    ).all()
+                    assert len(events) == 1
+                    assert str(events[0].estimated_cost) == "1.500000"
+                    assert calls == {"fetch": attempt, "insert": failure_count + 1}
+                    return
+                if attempt < 3:
+                    assert job.status == "pending" and job.dead_lettered_at is None
+                    assert job.error_code == "accounting_retry"
+                    assert job.lease_until is not None
+                    assert not errors
             assert job.status == "failed"
             assert job.error_code == "accounting_failed"
             assert job.dead_lettered_at is not None
-            assert calls == {"fetch": 1, "insert": 1}
+            assert calls == {"fetch": 3, "insert": 9}
+            assert len(errors) == 1 and external_task_id in errors[0]
             assert not (await session.scalars(select(UsageEvent).where(UsageEvent.job_id == job_id))).all()
             leased = await worker.job_service.lease_jobs(session, operations=["generate_video"])
             assert job_id not in [item.id for item in leased]
