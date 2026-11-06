@@ -583,6 +583,84 @@ describe('StoryboardPage video generation mode', () => {
     expect(screen.getAllByText(reason).length).toBeGreaterThan(0)
   })
 
+describe('StoryboardPage cost and reference durations', () => {
+  const costOf = (total: number, is_estimate = false) => ({ actual: is_estimate ? 0 : total, estimated: is_estimate ? total : 0, total, is_estimate })
+
+  it('shows what each shot has cost, with 约 for estimates and nothing when free', async () => {
+    const runs = runsValue()
+    runs.shot_costs = { v1: costOf(0.21), v2: costOf(1.5, true) }
+    setupApi({ runs })
+    renderPage()
+    expect(await screen.findByText('已花 ¥0.210')).toBeInTheDocument()
+    expect(screen.getByText('已花约 ¥1.50')).toBeInTheDocument()
+  })
+
+  it('hides the cost when nothing was spent (mock is 0)', async () => {
+    const runs = runsValue()
+    runs.shot_costs = { v1: costOf(0), v2: costOf(0) }
+    setupApi({ runs })
+    renderPage()
+    await screen.findByText('2 个镜头 · 约 9 秒 · 拖动可调整顺序')
+    expect(screen.queryByText(/已花/)).not.toBeInTheDocument()
+  })
+
+  it('offers 4–15 seconds in reference mode (no 3) and the usual range otherwise', async () => {
+    renderPage()
+    const select = await screen.findByLabelText('时长')
+    expect(within(select).getByRole('option', { name: '3 秒' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: /直接参考角色图/ }))
+    await waitFor(() => expect(within(screen.getByLabelText('时长')).queryByRole('option', { name: '3 秒' })).not.toBeInTheDocument())
+    const options = within(screen.getByLabelText('时长')).getAllByRole('option').map((item) => item.textContent)
+    expect(options[0]).toBe('4 秒')
+    expect(options[options.length - 1]).toBe('15 秒')
+  })
+
+  it('moves an illegal duration to the nearest legal one when switching to reference mode, with a notice', async () => {
+    const nodes = graphNodes()
+    nodes[2].data.duration = 3
+    setupApi({ nodes })
+    renderPage()
+    fireEvent.click(await screen.findByRole('radio', { name: /直接参考角色图/ }))
+    expect(await screen.findByText('参考图模式只支持 4–15 秒，已把时长从 3 秒调到 4 秒')).toBeInTheDocument()
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect(savedData('v1')).toMatchObject({ duration: 4 })
+    expect(screen.getByLabelText('时长')).toHaveValue('4')
+  })
+
+  it('preserves saved 15 seconds when switching back to first-frame mode', async () => {
+    const nodes = graphNodes()
+    nodes[2].data = { ...nodes[2].data, duration: 15, parked_first_frame: 'k1' }
+    setupApi({ nodes, edges: [link('char', 'k1', 'reference'), link('char', 'v1', 'reference'), link('k2', 'v2', 'first_frame')] })
+    api.models.mockResolvedValue({ image: [], video: [{ slug: 'h', name: 'H', model: 'h', provider: 'x', modes: ['frame', 'reference'], pricing: {}, min_duration: 4, max_duration: 15 }], defaults: { image: '', video_preview: 'h', video_final: 'h' } })
+    renderPage()
+    fireEvent.click(await screen.findByRole('radio', { name: /从首帧画面生成/ }))
+    await waitFor(() => expect(api.save).toHaveBeenCalled(), { timeout: 3000 })
+    expect(savedData('v1').duration).toBe(15)
+    expect(screen.getByLabelText('时长')).toHaveValue('15')
+    expect(screen.getByRole('option', { name: '15 秒' })).toBeInTheDocument()
+    expect(screen.queryByText(/参考图模式只支持/)).not.toBeInTheDocument()
+  })
+
+  it('uses the routed deployment min/max for reference mode when the models list has them', async () => {
+    const nodes = graphNodes()
+    nodes[2].data.duration = 12
+    setupApi({ nodes })
+    api.models.mockResolvedValue({
+      image: [],
+      video: [
+        { slug: 'h', name: 'H', model: 'h', provider: 'x', modes: ['reference'], pricing: {}, min_duration: 5, max_duration: 10 },
+        { slug: 'other', name: 'O', model: 'o', provider: 'x', modes: ['frame'], pricing: {}, min_duration: 2, max_duration: 12 },
+      ],
+      defaults: { image: 'seedream', video_preview: 'h', video_final: 'h' },
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('radio', { name: /直接参考角色图/ }))
+    expect(await screen.findByText('参考图模式只支持 5–10 秒，已把时长从 12 秒调到 10 秒')).toBeInTheDocument()
+    const options = within(screen.getByLabelText('时长')).getAllByRole('option').map((item) => item.textContent)
+    expect([options[0], options[options.length - 1]]).toEqual(['5 秒', '10 秒'])
+  })
+})
+
 describe('StoryboardPage cast picker', () => {
   const boy = () => node('boy', 'image', { role: 'character', character: '书生', label: '角色 · 书生' }, -300)
   const savedEdges = () => lastSave()[1].edges!.map((item) => `${item.source}>${item.target}:${item.targetHandle}`)

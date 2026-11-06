@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Artifact, GenerationJob, ModelRoute, NodeCanvas, SeriesProject, User
+from app.db.models import Artifact, GenerationJob, ModelRoute, NodeCanvas, SeriesProject, UsageEvent, User
 from app.services import asset_service, budget_service, feedback_service, job_service, series_service
 
 logger = logging.getLogger(__name__)
@@ -1110,6 +1110,81 @@ def _display_status(job: GenerationJob) -> tuple[str, int]:
     return job.status, 0
 
 
+def _cost_entry(
+    actual: Any, estimated: Any, *, unknown: bool = False, is_estimate: bool = False
+) -> dict[str, Any]:
+    """total=None 表示费用不完整；显式的 0（如 mock）仍为已知费用。"""
+    actual_value, estimated_value = float(actual or 0), float(estimated or 0)
+    return {
+        "actual": actual_value,
+        "estimated": estimated_value,
+        "total": None if unknown else actual_value + estimated_value,
+        "is_estimate": is_estimate or estimated_value > 0,
+    }
+
+
+async def _node_costs(session: AsyncSession, jobs: list[GenerationJob]) -> dict[str, dict[str, Any]]:
+    """usage_events 经 job → 节点汇总。
+
+    不带金额的事件（如视频 submit 记录）只是过程记录，不参与判断；
+    已成功的任务若没有任何带金额的事件，节点费用记为未知（total=None）。
+    未完成、已取消或未提交即失败的任务没有金额时按 0 计。
+    """
+    node_by_job = {
+        job.id: (job.params or {}).get("canvas_node_id")
+        for job in jobs
+        if (job.params or {}).get("canvas_node_id")
+    }
+    if not node_by_job:
+        return {}
+    status_by_job = {job.id: job.status for job in jobs}
+    priced = UsageEvent.actual_cost.is_not(None) | UsageEvent.estimated_cost.is_not(None)
+    rows = (
+        await session.execute(
+            select(
+                UsageEvent.job_id,
+                func.coalesce(func.sum(UsageEvent.actual_cost), 0),
+                func.coalesce(
+                    func.sum(UsageEvent.estimated_cost).filter(UsageEvent.actual_cost.is_(None)), 0
+                ),
+                func.count().filter(priced),
+                func.count().filter(UsageEvent.actual_cost.is_(None), UsageEvent.estimated_cost.is_not(None)),
+            )
+            .where(UsageEvent.job_id.in_(list(node_by_job)))
+            .group_by(UsageEvent.job_id)
+        )
+    ).all()
+    by_job = {row[0]: row[1:] for row in rows}
+    totals: dict[str, dict[str, Any]] = {}
+    for job_id, node_id in node_by_job.items():
+        actual, estimated, priced_count, estimates = by_job.get(job_id, (0, 0, 0, 0))
+        entry = totals.setdefault(
+            node_id, {"actual": 0, "estimated": 0, "unknown": False, "is_estimate": False}
+        )
+        entry["actual"] += actual
+        entry["estimated"] += estimated
+        entry["unknown"] |= status_by_job.get(job_id) == "succeeded" and not priced_count
+        entry["is_estimate"] |= bool(estimates)
+    return {node_id: _cost_entry(**entry) for node_id, entry in totals.items()}
+
+
+def _shot_costs(graph: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """镜头费用汇总保留未知状态与预估标记，避免把部分已知费用当成全部。"""
+    from app.services.canvas_shots import canvas_shots
+
+    out: dict[str, dict[str, Any]] = {}
+    for shot in canvas_shots(graph):
+        ids = [shot["frame_id"], shot["video_id"], *shot["audio_ids"]]
+        costs = [(nodes.get(node_id) or {}).get("cost") for node_id in ids if node_id]
+        out[shot["main_id"]] = _cost_entry(
+            sum(item["actual"] for item in costs if item),
+            sum(item["estimated"] for item in costs if item),
+            unknown=not costs or any(not item or item["total"] is None for item in costs),
+            is_estimate=any(item and item["is_estimate"] for item in costs),
+        )
+    return out
+
+
 async def node_runs(session: AsyncSession, canvas: NodeCanvas) -> dict[str, Any]:
     """每个节点的任务状态与结果（最新在前），以及画布累计花费。"""
     from app.services import cost_report_service
@@ -1198,8 +1273,12 @@ async def node_runs(session: AsyncSession, canvas: NodeCanvas) -> dict[str, Any]
                 {key: upload[key] for key in ("artifact_id", "type", "url")} | {"uploaded": True}
             )
     cost = await cost_report_service.cost_report(session, project_id=canvas.project_id, dimensions=())
+    node_costs = await _node_costs(session, jobs)
+    for node_id, entry in nodes.items():
+        entry["cost"] = node_costs.get(node_id) or _cost_entry(0, 0)
     return {
         "nodes": nodes,
+        "shot_costs": _shot_costs(canvas.graph, nodes),
         "active_jobs": sum(job.status in ACTIVE_JOB_STATUSES for job in jobs),
         "spent": cost["totals"]["effective_cost"] or 0,
         "budget": await budget_service.status(session, canvas.owner_id),
@@ -1290,6 +1369,7 @@ async def available_models(session: AsyncSession) -> dict[str, Any]:
             }
         )
     defaults = {}
+    video_routes = {}
     for purpose, tier, key in (
         ("image_generation", "final", "image"),
         ("shot_video", "preview", "video_preview"),
@@ -1299,9 +1379,16 @@ async def available_models(session: AsyncSession) -> dict[str, Any]:
         if route is None and tier != "final":
             route = await session.get(ModelRoute, (purpose, "final"))
         defaults[key] = route.primary_deployment if route else ""
+        if purpose == "shot_video":
+            video_routes[tier] = (
+                [route.primary_deployment, *(route.fallback_deployments or [])]
+                if route and route.enabled
+                else []
+            )
     return {
         **out,
         "defaults": defaults,
+        "video_routes": video_routes,
         "image_problem": await image_model_problem(session),
         # 基于某张图修改（edit_of）走图片编辑路由，与普通生成的默认模型不同，单独给出原因
         "image_edit_problem": await image_model_problem(session, edit=True),

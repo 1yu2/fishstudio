@@ -2,7 +2,7 @@
  * 分镜页的镜头模型：从画布 graph 推导出镜头列表，以及排序 / 新增 / 修改链等纯函数。
  * 分镜页和画布是同一份数据的两种视图，这里不保存任何额外状态。不依赖 React，便于单测。
  */
-import type { CanvasRuns, NodeResult, Quote, RunRequest, StoredEdge, StoredNode } from '../../api/nodeCanvas'
+import type { CanvasModels, CanvasRuns, CostSummary, NodeResult, Quote, RunRequest, StoredEdge, StoredNode } from '../../api/nodeCanvas'
 import { buildCharacters, type Character } from '../characters/characters'
 import { ACTIVE, MAX_REFERENCES, MAX_VIDEO_REFERENCES, edgeId, newId, resolveInputs, selectedResult, type ImageData, type VideoData } from '../nodeCanvas/graph'
 
@@ -11,6 +11,8 @@ export const SHOT_SIZES = ['远景', '全景', '中景', '近景', '特写'] as 
 export const CAMERA_MOVES = ['固定', '缓慢推近', '拉远', '横移', '跟随', '环绕'] as const
 export const DEFAULT_DURATION = 5
 export const DURATIONS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+/** 参考图模式的模型都没写时长范围时的默认值（秒） */
+export const REFERENCE_DURATION_RANGE = { min: 4, max: 15 }
 
 export type MediaState = 'none' | 'running' | 'failed' | 'done'
 
@@ -43,6 +45,8 @@ export interface Shot {
   state: MediaState
   /** 缩略图：画面节点所选（否则最新）的图片结果 */
   thumbnail?: NodeResult
+  /** 本镜头已花费（画面 + 视频 + 配音）；没有数据时为空 */
+  cost?: CostSummary
 }
 
 const NUMBER_PREFIX = /^\s*\d+\s*[·.、:：-]\s*/
@@ -147,6 +151,7 @@ export function buildShots(nodes: StoredNode[], edges: StoredEdge[], runs: Canva
       frameStatus, videoStatus,
       ...summary,
       thumbnail: frame ? selectedResult(frame, runs) : undefined,
+      cost: runs?.shot_costs?.[main.id],
     }
   })
 }
@@ -374,6 +379,41 @@ export function priceSuffix(quote: Quote | null): string {
   return ` · ${quote.estimated_cost != null ? moneyText(quote.estimated_cost) : '未配置价格'}`
 }
 
+/** 镜头已花费文字：“已花 ¥0.21”，含估算时“已花约 ¥0.21”；没花钱（mock 为 0）或没数据时为空。 */
+export function costLabel(cost: CostSummary | undefined): string {
+  if (!cost || cost.total == null || !(cost.total > 0)) return ''
+  return `已花${cost.is_estimate ? '约' : ''} ${moneyText(cost.total)}`
+}
+
 function moneyText(value: number): string {
   return `¥${value.toFixed(value < 1 ? 3 : 2)}`
+}
+
+export interface DurationRange { min: number; max: number }
+
+/** 参考图模式只取当前档位的路由部署；旧接口缺少完整路由时取所有候选范围的交集。 */
+export function durationRange(mode: VideoMode, video: StoredNode | undefined, models: CanvasModels | null): DurationRange {
+  if (mode !== 'reference') return { min: DURATIONS[0], max: DURATIONS[DURATIONS.length - 1] }
+  const capable = (models?.video || []).filter((item) => item.modes.includes('reference'))
+  const data = video?.data as VideoData | undefined
+  const chosen = data?.model || ''
+  const tier = data?.tier || 'preview'
+  const route = models?.video_routes?.[tier]
+  const routed = route ? capable.filter((item) => route.includes(item.slug)) : capable
+  const selected = routed.find((item) => item.slug === chosen)
+  const candidates = selected ? [selected] : routed
+  if (candidates.length === 0) return REFERENCE_DURATION_RANGE
+  // 缺失的上下界各自回退；路由里有多个部署时取交集，保证每个选项都能使用。
+  const min = Math.max(...candidates.map((item) => item.min_duration ?? REFERENCE_DURATION_RANGE.min))
+  const max = Math.min(...candidates.map((item) => item.max_duration ?? REFERENCE_DURATION_RANGE.max))
+  return { min, max }
+}
+
+export function durationOptions(range: DurationRange): number[] {
+  return Array.from({ length: range.max - range.min + 1 }, (_, index) => range.min + index)
+}
+
+/** 把时长调到最近的合法值。 */
+export function clampDuration(value: number, range: DurationRange): number {
+  return Math.min(range.max, Math.max(range.min, Math.round(value) || range.min))
 }

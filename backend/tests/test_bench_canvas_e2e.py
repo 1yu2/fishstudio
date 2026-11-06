@@ -406,6 +406,37 @@ def test_build_eval_samples_uses_real_per_shot_latency_and_omits_unknown():
     assert failed[0]["failure_reasons"] == ["render: boom"] and "latency_ms" not in failed[0]
 
 
+def test_build_eval_samples_prefers_real_per_shot_cost_and_marks_averaged_as_estimate():
+    real = bench.build_eval_samples(_case("s1", cost=3.0, shot_costs=[0.5, 1.5, 0.0]))
+    assert [s["cost_cny"] for s in real] == [0.5, 1.5, 0.0]  # 真实值，0 也是真实值
+    assert all("cost_estimated" not in s for s in real)
+    # 任一镜头拿不到真实花费：整体退回平均分摊，并标记为估算
+    partial = bench.build_eval_samples(_case("s2", cost=3.0, shot_costs=[0.5, None, 1.0]))
+    assert [s["cost_cny"] for s in partial] == [1.0, 1.0, 1.0] and all(s["cost_estimated"] for s in partial)
+    missing = bench.build_eval_samples(_case("s3", cost=3.0))
+    assert missing[0]["cost_cny"] == 1.0 and missing[0]["cost_estimated"] is True
+    # 总花费也没有：unavailable，不标估算
+    unknown = bench.build_eval_samples(_case("s4", cost=None))
+    assert unknown[0]["cost_cny"] is None and "cost_estimated" not in unknown[0]
+
+
+def test_shot_costs_from_runs_sums_nodes_and_keeps_unknown_as_none():
+    shot_nodes = [
+        {"keyframe": "k1", "video": "v1", "audios": ["a1"]},
+        {"keyframe": "k2", "video": "v2", "audios": []},
+    ]
+    runs = {
+        "nodes": {
+            "k1": {"cost": {"total": 0.1}},
+            "v1": {"cost": {"total": 1.0}},
+            "a1": {"cost": {"total": 0.02}},
+            "k2": {"cost": {"total": 0.1}},
+        }
+    }
+    costs = bench.shot_costs_from_runs(shot_nodes, runs)
+    assert costs[0]["total"] == pytest.approx(1.12) and costs[1] is None  # v2 查不到：不当作 0
+
+
 def test_batch_failure_reason_picks_first_failed_node():
     detail = {
         "status": "failed",
@@ -1053,3 +1084,23 @@ def test_price_consistency_endpoint_is_admin_only_read_only():
     route = next(r for r in eval_router.router.routes if r.path == "/eval/price-consistency")
     assert route.methods == {"GET"}
     assert require_admin in [dep.call for dep in route.dependant.dependencies]
+
+
+@pytest.mark.parametrize("estimated_node", ["k", "v", "a"])
+def test_runs_to_eval_preserves_estimated_node_cost(estimated_node):
+    nodes = {key: {"cost": {"total": 0.1, "is_estimate": key == estimated_node}} for key in ("k", "v", "a")}
+    costs = bench.shot_costs_from_runs([{"keyframe": "k", "video": "v", "audios": ["a"]}], {"nodes": nodes})
+    samples = bench.build_eval_samples(_case("s", shots=1, cost=9, shot_costs=costs))
+    assert samples[0]["cost_cny"] == pytest.approx(0.3)
+    assert samples[0].get("cost_estimated") is True
+
+
+@pytest.mark.parametrize("total", [None, 0])
+def test_runs_unknown_cost_falls_back_but_explicit_zero_does_not(total):
+    costs = bench.shot_costs_from_runs(
+        [{"keyframe": "k", "video": "v", "audios": []}],
+        {"nodes": {key: {"cost": {"total": total}} for key in ("k", "v")}},
+    )
+    sample = bench.build_eval_samples(_case("s", shots=1, cost=2, shot_costs=costs))[0]
+    assert sample["cost_cny"] == (2 if total is None else 0)
+    assert bool(sample.get("cost_estimated")) is (total is None)

@@ -521,6 +521,29 @@ def shot_latencies_ms(shot_nodes: list[dict[str, Any]], seconds: dict[str, float
     return out
 
 
+def shot_costs_from_runs(
+    shot_nodes: list[dict[str, Any]], runs: dict[str, Any]
+) -> list[Optional[dict[str, Any]]]:
+    """镜头费用保留 total/is_estimate；任一关联节点费用未知则交由 eval 回退。"""
+    nodes = runs.get("nodes") or {}
+    out: list[Optional[dict[str, Any]]] = []
+    for shot in shot_nodes:
+        costs = [
+            (nodes.get(node_id) or {}).get("cost")
+            for node_id in [shot["keyframe"], shot["video"], *shot["audios"]]
+        ]
+        if any(not isinstance(cost, dict) or cost.get("total") is None for cost in costs):
+            out.append(None)
+            continue
+        out.append(
+            {
+                "total": sum(float(cost["total"]) for cost in costs),
+                "is_estimate": any(cost.get("is_estimate", False) for cost in costs),
+            }
+        )
+    return out
+
+
 # ── 纯逻辑：统计与报告 ────────────────────────────────────────────────────
 
 
@@ -724,7 +747,7 @@ def build_eval_samples(case: dict[str, Any]) -> list[dict[str, Any]]:
     """一个用例 → /api/eval/runs 的 samples（每个镜头一条）。
 
     只填能从运行结果直接得到的字段：success、latency_ms（该镜头自己的任务真实耗时，缺则不填）、cost_cny
-    （用例总花费按镜头数平均，接口拿不到分镜头花费）、failure_reasons；qc 通过映射为 technical_quality，
+    （优先用接口给的该镜头真实花费；任一镜头拿不到时退回用例总花费按镜头数平均，并标 cost_estimated=True）、failure_reasons；qc 通过映射为 technical_quality，
     音画时长检查映射为 av_sync，其余质量维度不编造。
     """
     shots = max(1, int(case.get("shots") or 1))
@@ -732,15 +755,28 @@ def build_eval_samples(case: dict[str, Any]) -> list[dict[str, Any]]:
     qc = case.get("qc") or {}
     checks = qc.get("checks") or {}
     latencies = case.get("shot_latency_ms") or []
+    shot_costs = case.get("shot_costs") or []
+    # 每个镜头都有真实花费才整体采用；否则全部退回平均分摊（与总花费保持一致），并标记为估算
+    real_costs = len(shot_costs) == shots and all(item is not None for item in shot_costs)
     samples = []
     for index in range(shots):
+        if real_costs:
+            item = shot_costs[index]
+            # 兼容已有 bench JSON 中的数字；新记录保留接口的预估标记。
+            cost: Optional[float] = item["total"] if isinstance(item, dict) else item
+        else:
+            cost = (case["cost_yuan"] / shots) if case.get("cost_yuan") is not None else None
         sample: dict[str, Any] = {
             "success": ok,
-            "cost_cny": (case["cost_yuan"] / shots) if case.get("cost_yuan") is not None else None,
+            "cost_cny": cost,
             "failure_reasons": []
             if ok
             else [f"{case.get('failed_step') or 'unknown'}: {case.get('error') or ''}"[:200]],
         }
+        if cost is not None and (
+            not real_costs or (isinstance(shot_costs[index], dict) and shot_costs[index].get("is_estimate"))
+        ):
+            sample["cost_estimated"] = True
         latency = latencies[index] if index < len(latencies) else None
         if latency is not None:
             sample["latency_ms"] = latency
@@ -1210,6 +1246,12 @@ class Runner:
                 except (ApiError, httpx.HTTPError):
                     record["cost_yuan"] = self.case_cost(ctx)
                 record["shot_latency_ms"] = shot_latencies_ms(ctx.shot_nodes, ctx.job_seconds)
+                try:
+                    record["shot_costs"] = shot_costs_from_runs(
+                        ctx.shot_nodes, self.api.json("GET", f"/api/node-canvases/{ctx.canvas_id}/runs")
+                    )
+                except (ApiError, httpx.HTTPError):
+                    record["shot_costs"] = []  # 拿不到按镜头花费：eval 样本退回平均分摊并标记估算
             else:
                 record.setdefault("cost_yuan", 0.0)
         return record

@@ -4,7 +4,7 @@ import type { BatchKind, BatchRun } from '../../api/nodeCanvas'
 import { ProtectedImage } from '../common/ProtectedMedia'
 import { kindsLabel, money } from '../nodeCanvas/BatchDialog'
 import type { Estimate } from './useStoryboard'
-import { totalSeconds, type Shot } from './shots'
+import { costLabel, totalSeconds, type Shot } from './shots'
 
 const BATCH_LABEL: Record<BatchKind, string> = { image: '生成剩余图片', video: '全部转视频' }
 
@@ -117,6 +117,7 @@ export default function StoryStrip(props: StripProps) {
             >
               <Thumb shot={shot} />
               <span className={`sb-card__caption sb-card__caption--${shot.state}`}>{index + 1} · {shot.caption}</span>
+              {costLabel(shot.cost) && <span className="sb-card__cost">{costLabel(shot.cost)}</span>}
             </button>
           </li>
         ))}

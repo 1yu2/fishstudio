@@ -6,7 +6,7 @@ import { buildCharacters } from '../characters/characters'
 import { ProtectedImage } from '../common/ProtectedMedia'
 import { paths } from '../../routePaths'
 import { MAX_VIDEO_REFERENCES, REFERENCE_MISSING, resolveInputs } from '../nodeCanvas/graph'
-import { CAMERA_MOVES, DURATIONS, SHOT_SIZES, applyVideoMode, isCharacterSelected, priceSuffix, toggleShotCharacter, shotReferenceUse, videoMode, type Shot, type VideoMode } from './shots'
+import { CAMERA_MOVES, SHOT_SIZES, applyVideoMode, clampDuration, durationOptions, durationRange, isCharacterSelected, priceSuffix, toggleShotCharacter, shotReferenceUse, videoMode, type Shot, type VideoMode } from './shots'
 import ShotLines from './ShotLines'
 import type { Storyboard } from './useStoryboard'
 
@@ -61,9 +61,19 @@ function VideoModePicker({ shot, sb }: { shot: Shot; sb: Storyboard }) {
   const mode = videoMode(shot, sb.edges)
   const { characters, used, unused } = shotReferenceUse(shot, sb.nodes, sb.edges)
   const noCharacters = characters.length === 0
+  const [notice, setNotice] = useState('')
+  useEffect(() => { setNotice('') }, [shot.id])
   const choose = (next: VideoMode) => {
     if (next === mode) return
-    sb.update((current) => applyVideoMode(shot, next, current.nodes, current.edges))
+    // 参考图模式的模型只支持一段时长范围：当前时长不在范围内时一并调到最近的合法值，并提示
+    const range = durationRange(next, shot.video, sb.models)
+    const fixed = next === 'reference' ? clampDuration(shot.duration, range) : shot.duration
+    setNotice(fixed !== shot.duration ? `参考图模式只支持 ${range.min}–${range.max} 秒，已把时长从 ${shot.duration} 秒调到 ${fixed} 秒` : '')
+    sb.update((current) => {
+      const result = applyVideoMode(shot, next, current.nodes, current.edges)
+      if (fixed === shot.duration || !shot.video) return result
+      return { ...result, nodes: result.nodes.map((node) => node.id === shot.video!.id ? { ...node, data: { ...node.data, duration: fixed } } : node) }
+    })
   }
   return (
     <fieldset className="sb-field sb-modes">
@@ -78,6 +88,7 @@ function VideoModePicker({ shot, sb }: { shot: Shot; sb: Storyboard }) {
           </label>
         )
       })}
+      {notice && <span className="sb-hint" role="status">{notice}</span>}
       {mode !== 'reference' && noCharacters && <span className="sb-hint">先在“出镜角色”里选角色</span>}
       {mode === 'reference' && used > 0 && <span className="sb-hint">本镜头参考 {used} 张角色图</span>}
       {mode === 'reference' && used === 0 && <span className="sb-hint" role="alert">{REFERENCE_MISSING}</span>}
@@ -142,6 +153,9 @@ export default function ShotFields({ shot, total, canvasId, sb, onMove }: Props)
   const [customOpen, setCustomOpen] = useState(cameraCustom)
   useEffect(() => { setCustomOpen(cameraCustom) }, [shot.id, cameraCustom])
   const cameraValue = customOpen || cameraCustom ? CUSTOM : shot.camera
+  const mode = video ? videoMode(shot, sb.edges) : 'frame'
+  const range = durationRange(mode, video, sb.models)
+  const durationChoices = durationOptions(range)
   const imageProblem = frame && !String((frame.data as { model?: string }).model || '') && sb.models?.image_problem ? sb.models.image_problem : ''
   return (
     <div className="sb-fields">
@@ -177,7 +191,8 @@ export default function ShotFields({ shot, total, canvasId, sb, onMove }: Props)
         </label>
         <label className="sb-field">时长
           <select value={shot.duration} disabled={!video} onChange={(event) => video && sb.updateData(video.id, { duration: Number(event.target.value) })}>
-            {DURATIONS.map((item) => <option key={item} value={item}>{item} 秒</option>)}
+            {!durationChoices.includes(shot.duration) && <option value={shot.duration}>{shot.duration} 秒{mode === 'reference' ? '（超出范围，请调整）' : ''}</option>}
+            {durationChoices.map((item) => <option key={item} value={item}>{item} 秒</option>)}
           </select>
         </label>
       </div>

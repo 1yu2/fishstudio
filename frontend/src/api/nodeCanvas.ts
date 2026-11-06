@@ -73,8 +73,18 @@ export interface DailyBudget {
   remaining: number | null
 }
 
+/** actual/estimated 是已知费用部分；total=null 表示费用不完整（隐藏显示），显式 0 表示免费；is_estimate 保留预估标记。 */
+export interface CostSummary {
+  actual: number
+  estimated: number
+  total: number | null
+  is_estimate: boolean
+}
+
 export interface CanvasRuns {
-  nodes: Record<string, { jobs: NodeJob[]; results: NodeResult[] }>
+  nodes: Record<string, { jobs: NodeJob[]; results: NodeResult[]; cost?: CostSummary }>
+  /** 每个镜头（key = 镜头主节点 id）的花费 = 画面 + 视频 + 配音 */
+  shot_costs?: Record<string, CostSummary>
   active_jobs: number
   spent: number
   budget?: DailyBudget
@@ -96,6 +106,7 @@ export interface CanvasModels {
   image: CanvasModel[]
   video: CanvasModel[]
   defaults: { image: string; video_preview: string; video_final: string }
+  video_routes?: { preview: string[]; final: string[] }
   /** 用默认模型生成图片会遇到的问题；空字符串表示可以生成 */
   image_problem?: string
   /** 基于某张图修改（图片编辑路由）会遇到的问题；空字符串表示可以修改 */
