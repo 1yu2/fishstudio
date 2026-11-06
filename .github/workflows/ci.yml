@@ -161,7 +161,8 @@ jobs:
   # 首轮观察 mock、浏览器和渲染环境的稳定性；稳定后移除 continue-on-error。
   e2e:
     name: browser e2e (mock)
-    runs-on: ubuntu-latest
+    # Playwright 1.56 只支持到 Ubuntu 24.04；ubuntu-latest 已是 26.04。
+    runs-on: ubuntu-24.04
     continue-on-error: true
     services:
       postgres:
