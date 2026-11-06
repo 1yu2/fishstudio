@@ -135,10 +135,8 @@ async def list_eval_runs(
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    stmt = select(EvalRun).order_by(EvalRun.created_at.desc()).limit(200)
-    if not user.is_admin:
-        owned_projects = select(SeriesProject.id).where(SeriesProject.user_id == user.id)
-        stmt = stmt.where(or_(EvalRun.project_id.is_(None), EvalRun.project_id.in_(owned_projects)))
+    stmt = eval_service.visible_eval_runs(None if user.is_admin else user.id)
+    stmt = stmt.order_by(EvalRun.created_at.desc()).limit(200)
     if dataset_id:
         stmt = stmt.where(EvalRun.dataset_id == dataset_id)
     if deployment:
@@ -147,8 +145,10 @@ async def list_eval_runs(
 
 
 @router.get("/eval/routing-stats")
-async def get_routing_stats(session: AsyncSession = Depends(get_session)):
-    return await eval_service.routing_stats(session)
+async def get_routing_stats(
+    session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)
+):
+    return await eval_service.routing_stats(session, user_id=None if user.is_admin else user.id)
 
 
 @router.get("/eval/projects/{project_id}/feedback")

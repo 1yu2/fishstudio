@@ -51,6 +51,7 @@ def test_agent_registers_write_memory_tool():
     patches = [patch.object(agent_service, attr, tool) for attr, tool in fake_tools.items()]
     with (
         patch.object(agent_service, "create_llm", return_value=object()),
+        patch.object(agent_service, "get_execution_context", return_value=SimpleNamespace(user_id="17")),
         patch.object(
             agent_service.workspace_service,
             "get_workspace_context",
@@ -62,6 +63,7 @@ def test_agent_registers_write_memory_tool():
             p.start()
         try:
             agent_service.create_agent()
+            agent_service.workspace_service.get_workspace_context.assert_called_once_with("17")
         finally:
             for p in reversed(patches):
                 p.stop()

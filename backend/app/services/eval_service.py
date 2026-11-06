@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -25,6 +25,7 @@ from app.db.models import (
     PublicationMetric,
     QCReport,
     RegenerationRequest,
+    SeriesProject,
     UsageEvent,
 )
 
@@ -234,10 +235,26 @@ async def create_eval_run(
     return row
 
 
-async def routing_stats(session: AsyncSession) -> list[dict[str, Any]]:
+def visible_eval_runs(user_id: Optional[int] = None):
+    """内部/管理员可汇总全局；普通用户仅可见自己的项目及本人独立评测。"""
+    stmt = select(EvalRun)
+    if user_id is not None:
+        owned_projects = select(SeriesProject.id).where(SeriesProject.user_id == user_id)
+        stmt = stmt.where(
+            or_(
+                EvalRun.project_id.in_(owned_projects),
+                and_(EvalRun.project_id.is_(None), EvalRun.created_by == user_id),
+            )
+        )
+    return stmt
+
+
+async def routing_stats(session: AsyncSession, user_id: Optional[int] = None) -> list[dict[str, Any]]:
     rows = [
         row
-        for row in (await session.execute(select(EvalRun).where(EvalRun.status == "completed"))).scalars()
+        for row in (
+            await session.execute(visible_eval_runs(user_id).where(EvalRun.status == "completed"))
+        ).scalars()
         # 局部运行（只跑了前 N 个镜头）与完整基准不可比，不进入路由统计
         if "partial" not in (row.metrics or {})
     ]

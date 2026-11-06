@@ -43,7 +43,7 @@ from app.routers import traces as traces_router
 from app.routers import workflow as workflow_router
 from app.routers import workspace as workspace_router
 from app.services import workspace_service
-from app.services.connection_manager import manager
+from app.services.connection_manager import canvas_channel, manager
 from app.upload_limit import UploadLimitMiddleware
 from app.utils.logger import setup_logging
 
@@ -326,13 +326,14 @@ async def _ws_authenticate(websocket: WebSocket, canvas_id: str) -> bool:
     if canvas is None:
         await websocket.close(code=4404)
         return False
-    if canvas.owner_id is None:
+    if canvas.owner_id is None and not user.is_admin:
         # 历史无主 canvas：需一次性迁移认领归属，不在运行时放行给任意登录用户
         await websocket.close(code=4403)
         return False
-    if canvas.owner_id != user.id:
+    if canvas.owner_id is not None and canvas.owner_id != user.id:
         await websocket.close(code=4403)
         return False
+    websocket.state.canvas_channel = canvas_channel(canvas_id, user.id)
     return True
 
 
@@ -341,12 +342,13 @@ async def websocket_endpoint(websocket: WebSocket, canvas_id: str):
     """Subscribe a browser canvas to live chat stream events."""
     if not await _ws_authenticate(websocket, canvas_id):
         return
-    await manager.connect(canvas_id, websocket)
+    channel = getattr(websocket.state, "canvas_channel", canvas_id)
+    await manager.connect(channel, websocket)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        manager.disconnect(canvas_id, websocket)
+        manager.disconnect(channel, websocket)
 
 
 @app.get("/")

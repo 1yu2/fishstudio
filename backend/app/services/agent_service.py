@@ -11,6 +11,7 @@ from langgraph.prebuilt import create_react_agent
 
 from app.llm.factory import create_llm
 from app.services import skill_service, workspace_service
+from app.services.execution_context import get_execution_context
 from app.services.prompt import get_full_prompt
 from app.services.stream_processor import StreamProcessor
 from app.tools.audio_mixing import concatenate_audio_tool, mix_audio_with_bgm_tool, select_bgm_tool
@@ -89,7 +90,7 @@ def create_agent(project_type: Optional[str] = None):
 
     # 使用prompt模块生成完整提示词
     skills_context = skill_service.get_skills_context()
-    workspace_context = workspace_service.get_workspace_context()
+    workspace_context = workspace_service.get_workspace_context(get_execution_context().user_id)
     full_prompt = get_full_prompt(
         tools_list_text=tools_list_text,
         skills_context=skills_context,

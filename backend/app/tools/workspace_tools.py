@@ -7,6 +7,7 @@ import logging
 from langchain_core.tools import tool
 
 from app.services import workspace_service
+from app.services.execution_context import get_execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +29,15 @@ def write_memory(section: str, content: str) -> str:
     Returns:
         操作结果说明
     """
+    user_id = get_execution_context().user_id
+    if user_id is None:
+        return "❌ 写入记忆需要当前用户身份"
+
     if section not in _VALID_SECTIONS:
         return f"❌ 无效的章节名称：'{section}'。有效章节：{', '.join(_VALID_SECTIONS)}"
 
     try:
-        memory_content = workspace_service.load_workspace_file("MEMORY.md")
+        memory_content = workspace_service.load_workspace_file("MEMORY.md", user_id)
     except Exception as e:
         logger.error(f"读取 MEMORY.md 失败: {e}")
         return f"❌ 读取 MEMORY.md 失败：{e}"
@@ -57,7 +62,7 @@ def write_memory(section: str, content: str) -> str:
             memory_content = before + f"\n{content.strip()}\n" + after
 
     try:
-        workspace_service.save_workspace_file("MEMORY.md", memory_content)
+        workspace_service.save_workspace_file("MEMORY.md", memory_content, user_id)
         logger.info(f"✅ 成功写入 MEMORY.md [{section}]")
         return f"✅ 已成功将内容写入 MEMORY.md 的「{section}」章节。"
     except Exception as e:

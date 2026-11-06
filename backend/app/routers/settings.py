@@ -401,14 +401,20 @@ class WorkspaceFileUpdatePayload(BaseModel):
     content: str
 
 
+def _check_workspace_user(user: User, user_id: int | None) -> None:
+    if user_id is not None and user_id != user.id:
+        raise HTTPException(status_code=403, detail="只能访问本人的工作空间")
+
+
 @router.get("/settings/workspace")
-async def get_workspace_files():
+async def get_workspace_files(user: User = Depends(get_current_user), user_id: int | None = None):
     """返回所有工作空间文件列表及内容"""
-    workspace_service.ensure_workspace_defaults()
+    _check_workspace_user(user, user_id)
+    workspace_service.ensure_workspace_defaults(user.id)
     result = []
     for filename, (name, desc) in workspace_service.WORKSPACE_FILES.items():
         try:
-            content = workspace_service.load_workspace_file(filename)
+            content = workspace_service.load_workspace_file(filename, user.id)
         except Exception as e:
             logger.warning(f"Failed to load workspace file {filename}: {e}")
             content = ""
@@ -417,13 +423,16 @@ async def get_workspace_files():
 
 
 @router.get("/settings/workspace/{filename}")
-async def get_workspace_file(filename: str):
+async def get_workspace_file(
+    filename: str, user: User = Depends(get_current_user), user_id: int | None = None
+):
     """返回指定工作空间文件内容"""
     if filename not in workspace_service.WORKSPACE_FILES:
         raise HTTPException(status_code=404, detail=f"Unknown workspace file: {filename}")
-    workspace_service.ensure_workspace_defaults()
+    _check_workspace_user(user, user_id)
+    workspace_service.ensure_workspace_defaults(user.id)
     try:
-        content = workspace_service.load_workspace_file(filename)
+        content = workspace_service.load_workspace_file(filename, user.id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read {filename}: {e}")
     name, desc = workspace_service.WORKSPACE_FILES[filename]
@@ -432,13 +441,19 @@ async def get_workspace_file(filename: str):
 
 @router.put("/settings/workspace/{filename}")
 async def put_workspace_file(
-    filename: str, payload: WorkspaceFileUpdatePayload, _admin: User = Depends(require_admin)
+    filename: str,
+    payload: WorkspaceFileUpdatePayload,
+    user: User = Depends(get_current_user),
+    user_id: int | None = None,
 ):
     """保存指定工作空间文件内容"""
     if filename not in workspace_service.WORKSPACE_FILES:
         raise HTTPException(status_code=404, detail=f"Unknown workspace file: {filename}")
+    _check_workspace_user(user, user_id)
+    if filename not in workspace_service.USER_WORKSPACE_FILES and not user.is_admin:
+        raise HTTPException(status_code=403, detail="全局工作空间文件仅管理员可修改")
     try:
-        workspace_service.save_workspace_file(filename, payload.content)
+        workspace_service.save_workspace_file(filename, payload.content, user.id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save {filename}: {e}")
     return {"ok": True}

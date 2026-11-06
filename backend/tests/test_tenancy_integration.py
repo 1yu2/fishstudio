@@ -110,6 +110,8 @@ def tenancy():
     from app.auth.security import create_access_token, hash_password
     from app.db.models import (
         Artifact,
+        AssetCard,
+        Canvas,
         Episode,
         GenerationJob,
         SeriesProject,
@@ -130,6 +132,17 @@ def tenancy():
             proj_b = SeriesProject(user_id=b.id, title="B 的项目")
             orphan = SeriesProject(user_id=None, title="历史无主项目")
             s.add_all([proj_a, proj_b, orphan])
+            s.add_all(
+                [
+                    Canvas(id="tenant-canvas-a", owner_id=a.id, name="A 私有画布"),
+                    Canvas(id="tenant-canvas-orphan", owner_id=None, name="历史无主画布"),
+                    Canvas(id="tenant-canvas-orphan-delete", owner_id=None, name="管理员可删除"),
+                    Canvas(id="tenant-canvas-orphan-claim", owner_id=None, name="管理员可认领"),
+                ]
+            )
+            personal_a = AssetCard(scope="personal", user_id=a.id, type="character", name="A 私有角色")
+            orphan_asset = AssetCard(scope="personal", user_id=None, type="character", name="历史无主角色")
+            s.add_all([personal_a, orphan_asset])
             await s.flush()
             s.add_all(
                 [
@@ -167,6 +180,8 @@ def tenancy():
                 orphan=orphan.id,
                 art_a=art_a.id,
                 step_b=step_b.id,
+                personal_a=personal_a.id,
+                orphan_asset=orphan_asset.id,
             )
 
     class Simple:
@@ -320,3 +335,437 @@ class TestFeedbackCrossStep:
             headers=_h(tenancy.token_a),
         )
         assert r.status_code == 200, r.text
+
+
+@pytest.fixture
+def private_workspace(monkeypatch, tmp_path):
+    from app.services import workspace_service
+
+    monkeypatch.setattr(workspace_service, "get_workspace_dir", lambda: tmp_path)
+    return tmp_path
+
+
+class TestWorkspaceIsolation:
+    def test_agent_memory_is_private(self, tenancy, private_workspace):
+        from app.services import workspace_service
+        from app.services.execution_context import (
+            ExecutionContext,
+            reset_execution_context,
+            set_execution_context,
+        )
+        from app.tools.workspace_tools import write_memory
+
+        token = set_execution_context(ExecutionContext(user_id=str(tenancy.ids.a)))
+        try:
+            result = write_memory.invoke({"section": "用户偏好记录", "content": "A 的私密创作偏好"})
+        finally:
+            reset_execution_context(token)
+        assert result.startswith("✅")
+        assert "A 的私密创作偏好" in workspace_service.get_workspace_context(tenancy.ids.a)
+        assert "A 的私密创作偏好" not in workspace_service.get_workspace_context(tenancy.ids.b)
+        assert "A 的私密创作偏好" not in workspace_service.get_workspace_context(None)
+        response = tenancy.client.get("/api/settings/workspace/MEMORY.md", headers=_h(tenancy.token_b))
+        assert response.status_code == 200
+        assert "A 的私密创作偏好" not in response.json()["content"]
+
+    @pytest.mark.parametrize("filename", ["USER.md", "MEMORY.md"])
+    def test_personal_files_api(self, tenancy, private_workspace, filename):
+        url = f"/api/settings/workspace/{filename}"
+        for token, content in [(tenancy.token_a, "A 私密内容"), (tenancy.token_b, "B 私密内容")]:
+            assert tenancy.client.put(url, headers=_h(token), json={"content": content}).status_code == 200
+            assert tenancy.client.get(url, headers=_h(token)).json()["content"] == content
+        targeted = f"{url}?user_id={tenancy.ids.a}"
+        assert tenancy.client.get(targeted, headers=_h(tenancy.token_b)).status_code == 403
+        assert (
+            tenancy.client.put(targeted, headers=_h(tenancy.token_b), json={"content": "越权"}).status_code
+            == 403
+        )
+        listed = tenancy.client.get("/api/settings/workspace", headers=_h(tenancy.token_b))
+        assert listed.status_code == 200
+        assert "A 私密内容" not in listed.text
+        assert "A 私密内容" == tenancy.client.get(url, headers=_h(tenancy.token_a)).json()["content"]
+
+    @pytest.mark.parametrize("filename", ["AGENTS.md", "TOOLS.md", "IDENTITY.md", "SOUL.md"])
+    def test_global_files_admin_write_only(self, tenancy, private_workspace, filename):
+        url = f"/api/settings/workspace/{filename}"
+        assert (
+            tenancy.client.put(url, headers=_h(tenancy.token_a), json={"content": "规则"}).status_code == 403
+        )
+        assert (
+            tenancy.client.put(url, headers=_h(tenancy.token_admin), json={"content": "共享规则"}).status_code
+            == 200
+        )
+        assert tenancy.client.get(url, headers=_h(tenancy.token_b)).json()["content"] == "共享规则"
+
+    def test_legacy_global_user_files_never_injected(self, tenancy, private_workspace):
+        from app.services import workspace_service
+
+        for filename in ("USER.md", "MEMORY.md"):
+            (private_workspace / filename).write_text("历史私密内容", encoding="utf-8")
+        for user_id in (tenancy.ids.a, tenancy.ids.b, tenancy.ids.admin, None):
+            assert "历史私密内容" not in workspace_service.get_workspace_context(user_id)
+        assert (
+            "历史私密内容"
+            not in tenancy.client.get("/api/settings/workspace", headers=_h(tenancy.token_admin)).text
+        )
+
+    def test_memory_tool_requires_identity(self, private_workspace):
+        from app.services.execution_context import (
+            ExecutionContext,
+            reset_execution_context,
+            set_execution_context,
+        )
+        from app.tools.workspace_tools import write_memory
+
+        token = set_execution_context(ExecutionContext())
+        try:
+            assert write_memory.invoke({"section": "角色资产", "content": "不得写入"}).startswith("❌")
+        finally:
+            reset_execution_context(token)
+        assert not list(private_workspace.rglob("MEMORY.md"))
+
+    @pytest.mark.parametrize("user_id", ["../1", "/tmp/1", "0", "-1", "abc"])
+    def test_workspace_rejects_invalid_user_id(self, private_workspace, user_id):
+        from app.services import workspace_service
+
+        with pytest.raises(ValueError):
+            workspace_service.save_workspace_file("MEMORY.md", "不得写入", user_id)
+
+
+class TestCanvasIsolation:
+    def test_orphan_canvas_hidden_and_protected(self, tenancy):
+        for token in (tenancy.token_a, tenancy.token_b):
+            headers = _h(token)
+            rows = tenancy.client.get("/api/canvases", headers=headers).json()
+            assert "tenant-canvas-orphan" not in {row["id"] for row in rows}
+            assert (
+                tenancy.client.delete("/api/canvases/tenant-canvas-orphan", headers=headers).status_code
+                == 404
+            )
+            assert (
+                tenancy.client.post(
+                    "/api/canvases", headers=headers, json={"id": "tenant-canvas-orphan"}
+                ).status_code
+                == 403
+            )
+            assert (
+                tenancy.client.post(
+                    "/api/chat", headers=headers, json={"message": "hi", "canvas_id": "tenant-canvas-orphan"}
+                ).status_code
+                == 403
+            )
+
+    def test_canvas_cross_user_read_write_delete(self, tenancy):
+        headers = _h(tenancy.token_b)
+        rows = tenancy.client.get("/api/canvases", headers=headers).json()
+        assert "tenant-canvas-a" not in {row["id"] for row in rows}
+        assert (
+            tenancy.client.post("/api/canvases", headers=headers, json={"id": "tenant-canvas-a"}).status_code
+            == 403
+        )
+        assert tenancy.client.delete("/api/canvases/tenant-canvas-a", headers=headers).status_code == 404
+        assert (
+            tenancy.client.post(
+                "/api/chat", headers=headers, json={"message": "hi", "canvas_id": "tenant-canvas-a"}
+            ).status_code
+            == 403
+        )
+
+    def test_admin_can_manage_orphan_canvas(self, tenancy):
+        headers = _h(tenancy.token_admin)
+        rows = tenancy.client.get("/api/canvases", headers=headers).json()
+        assert "tenant-canvas-orphan" in {row["id"] for row in rows}
+        assert "tenant-canvas-a" not in {row["id"] for row in rows}
+        assert (
+            tenancy.client.delete("/api/canvases/tenant-canvas-orphan-delete", headers=headers).status_code
+            == 200
+        )
+        assert (
+            tenancy.client.post(
+                "/api/canvases", headers=headers, json={"id": "tenant-canvas-orphan-claim"}
+            ).status_code
+            == 200
+        )
+        assert (
+            tenancy.client.post(
+                "/api/canvases", headers=_h(tenancy.token_a), json={"id": "tenant-canvas-orphan-claim"}
+            ).status_code
+            == 403
+        )
+
+    def test_new_canvas_ignores_supplied_owner(self, tenancy):
+        assert (
+            tenancy.client.post(
+                "/api/canvases",
+                headers=_h(tenancy.token_a),
+                json={"id": "tenant-new-canvas", "owner_id": tenancy.ids.b},
+            ).status_code
+            == 200
+        )
+        rows_a = tenancy.client.get("/api/canvases", headers=_h(tenancy.token_a)).json()
+        rows_b = tenancy.client.get("/api/canvases", headers=_h(tenancy.token_b)).json()
+        assert "tenant-new-canvas" in {row["id"] for row in rows_a}
+        assert "tenant-new-canvas" not in {row["id"] for row in rows_b}
+        assert (
+            tenancy.client.delete("/api/canvases/tenant-new-canvas", headers=_h(tenancy.token_a)).status_code
+            == 200
+        )
+
+
+class TestSharedDataAudit:
+    @pytest.mark.parametrize("asset_key", ["personal_a", "orphan_asset"])
+    def test_personal_and_orphan_assets_cannot_be_versioned_by_b(self, tenancy, asset_key):
+        asset_id = getattr(tenancy.ids, asset_key)
+        response = tenancy.client.post(
+            f"/api/series/assets/{asset_id}/versions", headers=_h(tenancy.token_b), json={"updates": {}}
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.parametrize(
+        "tool_name,args",
+        [
+            ("init_skill_tool", {"skill_name": "tenant-test"}),
+            ("write_skill_file_tool", {"path": "tenant-test/SKILL.md", "content": "私密内容"}),
+            ("delete_skill_file_tool", {"path": "tenant-test/SKILL.md"}),
+        ],
+    )
+    def test_shared_skill_tools_require_admin(self, tenancy, monkeypatch, tmp_path, tool_name, args):
+        from app.services.execution_context import (
+            ExecutionContext,
+            reset_execution_context,
+            set_execution_context,
+        )
+        from app.tools import skill_tools
+
+        monkeypatch.setattr(skill_tools, "_CUSTOM_ROOT", tmp_path)
+        tool = getattr(skill_tools, tool_name)
+        for user_id in (None, str(tenancy.ids.a), str(tenancy.ids.b)):
+            token = set_execution_context(ExecutionContext(user_id=user_id))
+            try:
+                assert "仅管理员" in asyncio.run(tool.ainvoke(args))
+            finally:
+                reset_execution_context(token)
+        assert not list(tmp_path.iterdir())
+
+    def test_admin_can_write_shared_skill(self, tenancy, monkeypatch, tmp_path):
+        from app.services.execution_context import (
+            ExecutionContext,
+            reset_execution_context,
+            set_execution_context,
+        )
+        from app.tools import skill_tools
+
+        monkeypatch.setattr(skill_tools, "_CUSTOM_ROOT", tmp_path)
+        token = set_execution_context(ExecutionContext(user_id=str(tenancy.ids.admin)))
+        try:
+            assert asyncio.run(
+                skill_tools.write_skill_file_tool.ainvoke({"path": "admin/SKILL.md", "content": "共享技能"})
+            ).startswith("✅")
+            assert asyncio.run(
+                skill_tools.delete_skill_file_tool.ainvoke({"path": "admin/SKILL.md"})
+            ).startswith("✅")
+        finally:
+            reset_execution_context(token)
+
+    @pytest.mark.parametrize(
+        "url,payload",
+        [
+            ("/api/settings/skills", {"skills": []}),
+            ("/api/settings/mcp", {"mcpServers": {}}),
+        ],
+    )
+    def test_shared_settings_require_admin(self, tenancy, url, payload):
+        assert tenancy.client.put(url, headers=_h(tenancy.token_b), json=payload).status_code == 403
+
+
+@pytest.mark.parametrize("token_attr,allowed", [("token_a", False), ("token_admin", True)])
+def test_orphan_canvas_websocket_access(tenancy, monkeypatch, token_attr, allowed):
+    from starlette.websockets import WebSocketDisconnect
+
+    monkeypatch.setenv("WS_AUTH_DISABLED", "false")
+    url = f"/ws/tenant-canvas-orphan?token={getattr(tenancy, token_attr)}"
+    if allowed:
+        with tenancy.client.websocket_connect(url):
+            pass
+    else:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with tenancy.client.websocket_connect(url):
+                pass
+        assert exc.value.code == 4403
+
+
+def test_chat_stream_preserves_memory_identity(tenancy, private_workspace, monkeypatch):
+    from app.services import workspace_service
+    from app.tools.workspace_tools import write_memory
+
+    async def fake_stream(messages, session_id):
+        result = await write_memory.ainvoke({"section": "角色资产", "content": "SSE 中 A 的私有角色"})
+        assert result.startswith("✅")
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr("app.routers.chat.process_chat_stream", fake_stream)
+    response = tenancy.client.post("/api/chat", headers=_h(tenancy.token_a), json={"message": "记住角色"})
+    assert response.status_code == 200
+    assert "SSE 中 A 的私有角色" in workspace_service.get_workspace_context(tenancy.ids.a)
+    assert "SSE 中 A 的私有角色" not in workspace_service.get_workspace_context(tenancy.ids.b)
+
+
+def test_eval_results_and_stats_are_private(tenancy):
+    headers_a = _h(tenancy.token_a)
+    headers_b = _h(tenancy.token_b)
+    dataset = tenancy.client.get("/api/eval/datasets", headers=headers_a).json()[0]
+    created_ids = set()
+    for project_id in (None, tenancy.ids.proj_a):
+        response = tenancy.client.post(
+            "/api/eval/runs",
+            headers=headers_a,
+            json={
+                "dataset_id": dataset["id"],
+                "project_id": project_id,
+                "provider": "mock",
+                "deployment": "A-private-eval",
+                "model": "mock",
+                "samples": [{} for _ in range(dataset["shot_count"])],
+            },
+        )
+        assert response.status_code == 200, response.text
+        created_ids.add(response.json()["id"])
+    rows_a = tenancy.client.get("/api/eval/runs", headers=headers_a).json()
+    rows_b = tenancy.client.get("/api/eval/runs", headers=headers_b).json()
+    assert created_ids <= {row["id"] for row in rows_a}
+    assert not created_ids & {row["id"] for row in rows_b}
+    assert "A-private-eval" not in tenancy.client.get("/api/eval/routing-stats", headers=headers_b).text
+    stats_a = tenancy.client.get("/api/eval/routing-stats", headers=headers_a).json()
+    assert any(row["deployment"] == "A-private-eval" and row["sample_runs"] == 2 for row in stats_a)
+    rows_admin = tenancy.client.get("/api/eval/runs", headers=_h(tenancy.token_admin)).json()
+    assert created_ids <= {row["id"] for row in rows_admin}
+
+
+def test_unsaved_chat_reserves_owner_before_save_and_websocket(tenancy, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    from app.db.database import SessionLocal
+    from app.db.models import User
+    from app.routers.chat import ChatRequest, chat
+
+    monkeypatch.setenv("WS_AUTH_DISABLED", "false")
+
+    async def fake_stream(messages, session_id):
+        yield 'data: {"content":"A private memory"}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr("app.routers.chat.process_chat_stream", fake_stream)
+    cid = "tenant-unsaved-chat-reservation"
+
+    async def scenario():
+        async with SessionLocal() as session:
+            user = await session.get(User, tenancy.ids.a)
+            response = await chat(ChatRequest(message="private", canvas_id=cid), session, user)
+        # A 已开聊，生成器继续前 B 抢先保存并尝试订阅。
+        stolen = await asyncio.to_thread(
+            tenancy.client.post,
+            "/api/canvases",
+            headers=_h(tenancy.token_b),
+            json={"id": cid, "name": "B stolen"},
+        )
+
+        def subscribe_b():
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with tenancy.client.websocket_connect(f"/ws/{cid}?token={tenancy.token_b}"):
+                    pass
+            assert exc.value.code == 4403
+
+        await asyncio.to_thread(subscribe_b)
+        chunks = [chunk async for chunk in response.body_iterator]
+        assert any("A private memory" in chunk for chunk in chunks)
+        assert stolen.status_code == 403
+        saved = await asyncio.to_thread(
+            tenancy.client.post,
+            "/api/canvases",
+            headers=_h(tenancy.token_a),
+            json={"id": cid, "name": "A saved"},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["name"] == "A saved"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("rival", ["chat", "save"])
+def test_concurrent_canvas_binding_has_one_owner(tenancy, rival):
+    from app.db.database import SessionLocal
+    from app.db.models import Canvas
+    from app.services.history_service import history_service
+
+    cid = f"tenant-concurrent-bind-{rival}"
+
+    async def bind(user_id, save=False):
+        async with SessionLocal() as session:
+            if save:
+                try:
+                    await history_service.save_canvas(session, {"id": cid}, user_id)
+                    return True
+                except PermissionError:
+                    return False
+            return await history_service.can_access_canvas(session, cid, user_id)
+
+    async def scenario():
+        results = await asyncio.gather(bind(tenancy.ids.a), bind(tenancy.ids.b, rival == "save"))
+        assert sorted(results) == [False, True]
+        async with SessionLocal() as session:
+            canvas = await session.get(Canvas, cid)
+            assert canvas.owner_id == (tenancy.ids.a if results[0] else tenancy.ids.b)
+
+    asyncio.run(scenario())
+
+
+def test_stale_websocket_does_not_receive_new_owners_chat(tenancy, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    from app.db.database import SessionLocal
+    from app.db.models import User
+    from app.main import websocket_endpoint
+    from app.routers.chat import ChatRequest, chat
+    from app.services.history_service import history_service
+
+    monkeypatch.setenv("WS_AUTH_DISABLED", "false")
+    cid = "tenant-reused-canvas-channel"
+
+    async def fake_stream(messages, session_id):
+        yield 'data: {"content":"private A answer"}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr("app.routers.chat.process_chat_stream", fake_stream)
+
+    class Socket:
+        def __init__(self):
+            from starlette.datastructures import State
+
+            self.query_params = {"token": tenancy.token_b}
+            self.state = State()
+            self.messages = []
+
+        async def accept(self):
+            pass
+
+        async def send_text(self, message):
+            self.messages.append(message)
+
+        async def receive_text(self):
+            # B 订阅后删除画布，A 使用同一个 ID 开聊；旧 B 连接必须收不到任何事件。
+            async with SessionLocal() as session:
+                assert await history_service.delete_canvas(session, cid, tenancy.ids.b)
+                user = await session.get(User, tenancy.ids.a)
+                response = await chat(ChatRequest(message="private A question", canvas_id=cid), session, user)
+                chunks = [chunk async for chunk in response.body_iterator]
+                assert any("private A answer" in chunk for chunk in chunks)
+            raise WebSocketDisconnect()
+
+    async def scenario():
+        async with SessionLocal() as session:
+            await history_service.save_canvas(session, {"id": cid}, tenancy.ids.b)
+        ws = Socket()
+        await websocket_endpoint(ws, cid)
+        assert ws.messages == []
+
+    asyncio.run(scenario())

@@ -14,6 +14,14 @@ def test_websocket_receives_external_chat_events(monkeypatch):
 
     monkeypatch.setattr("app.routers.chat.process_chat_stream", fake_process_chat_stream)
 
+    # 此单测沿用 HTTP user=1 的认证替身，WS 也使用同一用户频道。
+    from app.services.connection_manager import canvas_channel
+
+    async def fake_authenticate(websocket, canvas_id):
+        websocket.state.canvas_channel = canvas_channel(canvas_id, 1)
+        return True
+
+    monkeypatch.setattr("app.main._ws_authenticate", fake_authenticate)
     client = TestClient(app)
     with client.websocket_connect("/ws/canvas-test") as websocket:
         with client.stream(

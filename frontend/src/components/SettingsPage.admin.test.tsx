@@ -23,7 +23,7 @@ function mockFetch(putStatus = 200) {
       calls.push({ url, method })
       if (method === 'PUT') return new Response('{}', { status: putStatus })
       let body: unknown = {}
-      if (url.endsWith('/api/settings/workspace')) body = [{ id: 'SOUL.md', name: 'SOUL', content: 'hi' }]
+      if (url.endsWith('/api/settings/workspace')) body = ['SOUL', 'USER', 'MEMORY'].map((name) => ({ id: `${name}.md`, name, content: 'hi' }))
       if (url.endsWith('/api/settings/skills')) body = { skills: [{ id: 't1', name: '工具一', description: 'd', enabled: true, category: 'image' }] }
       if (url.endsWith('/api/settings/skills/installed')) body = [{ id: 's1', name: 'Skill', description: 'd', enabled: true }]
       if (url.endsWith('/api/settings/mcp')) body = { mcpServers: { a: { command: 'npx', args: [] } } }
@@ -52,6 +52,23 @@ describe('SettingsPage global settings are admin-only', () => {
     expect(await screen.findByTestId('admin-only-note')).toHaveTextContent(NOTE)
     const textarea = await screen.findByPlaceholderText(/在此编辑/)
     expect(textarea).toHaveAttribute('readonly')
+    expect(screen.getByRole('button', { name: /保存/ })).toBeDisabled()
+  })
+
+  it.each(['USER.md', 'MEMORY.md'])('non-admin can edit and save own %s, then global files stay read-only', async (fileId) => {
+    setUser(false)
+    const calls = mockFetch()
+    render(<SettingsPage theme="dark" onToggleTheme={() => undefined} managedByAppShell />)
+    fireEvent.click(await screen.findByText(fileId))
+    const textarea = screen.getByPlaceholderText(/在此编辑/)
+    expect(textarea).not.toHaveAttribute('readonly')
+    expect(screen.queryByTestId('admin-only-note')).toBeNull()
+    fireEvent.change(textarea, { target: { value: 'my private notes' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存/ }))
+    await waitFor(() => expect(calls).toContainEqual({ url: `/api/settings/workspace/${fileId}`, method: 'PUT' }))
+    expect(await screen.findByText('已保存')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('SOUL.md'))
+    expect(screen.getByPlaceholderText(/在此编辑/)).toHaveAttribute('readonly')
     expect(screen.getByRole('button', { name: /保存/ })).toBeDisabled()
   })
 

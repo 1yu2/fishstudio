@@ -19,6 +19,8 @@ WORKSPACE_FILES: Dict[str, Tuple[str, str]] = {
     "MEMORY.md": ("创作记忆", "跨对话的长期记忆，Agent 自动维护"),
 }
 
+USER_WORKSPACE_FILES = frozenset({"USER.md", "MEMORY.md"})
+
 # 单文件注入字符上限
 _MAX_CHARS = 5000
 _HEAD_RATIO = 0.70
@@ -100,35 +102,45 @@ def get_workspace_dir() -> Path:
     return Path(__file__).parent.parent.parent / "workspace"
 
 
-def ensure_workspace_defaults() -> None:
-    """首次运行时创建默认工作空间文件（已存在则跳过）"""
-    workspace_dir = get_workspace_dir()
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    for filename, template in _DEFAULT_TEMPLATES.items():
-        file_path = workspace_dir / filename
-        if not file_path.exists():
-            file_path.write_text(template, encoding="utf-8")
-            logger.info(f"📝 创建工作空间默认文件: {filename}")
-
-
-def load_workspace_file(filename: str) -> str:
-    """读取指定工作空间文件内容，文件不存在时返回空字符串"""
+def _workspace_path(filename: str, user_id: int | str | None) -> Path:
     if filename not in WORKSPACE_FILES:
         raise ValueError(f"未知的工作空间文件: {filename}")
-    file_path = get_workspace_dir() / filename
+    root = get_workspace_dir()
+    if filename in USER_WORKSPACE_FILES:
+        # 只接受数据库用户 ID，缺少身份时绝不回退到旧全局文件。
+        if user_id is None or not str(user_id).isascii() or not str(user_id).isdecimal() or int(user_id) <= 0:
+            raise ValueError("用户工作空间需要有效的 user_id")
+        root = root / "users" / str(int(user_id))
+    return root / filename
+
+
+def ensure_workspace_defaults(user_id: int | str | None = None) -> None:
+    """创建全局及当前用户的默认文件，旧全局 USER/MEMORY 保留但不再使用。"""
+    for filename, template in _DEFAULT_TEMPLATES.items():
+        if filename in USER_WORKSPACE_FILES and user_id is None:
+            continue
+        file_path = _workspace_path(filename, user_id)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with file_path.open("x", encoding="utf-8") as handle:
+                handle.write(template)
+        except FileExistsError:
+            pass
+
+
+def load_workspace_file(filename: str, user_id: int | str | None = None) -> str:
+    """读取全局或当前用户文件，不读取历史全局用户内容。"""
+    file_path = _workspace_path(filename, user_id)
     if not file_path.exists():
-        return ""
+        return _DEFAULT_TEMPLATES[filename]
     return file_path.read_text(encoding="utf-8")
 
 
-def save_workspace_file(filename: str, content: str) -> None:
-    """保存内容到指定工作空间文件"""
-    if filename not in WORKSPACE_FILES:
-        raise ValueError(f"未知的工作空间文件: {filename}")
-    workspace_dir = get_workspace_dir()
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    (workspace_dir / filename).write_text(content, encoding="utf-8")
-    logger.info(f"💾 保存工作空间文件: {filename} ({len(content)} 字符)")
+def save_workspace_file(filename: str, content: str, user_id: int | str | None = None) -> None:
+    """保存全局或当前用户的工作空间文件；权限由入口校验。"""
+    file_path = _workspace_path(filename, user_id)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(content, encoding="utf-8")
 
 
 def _truncate(content: str) -> str:
@@ -155,7 +167,7 @@ def _is_empty_or_template(content: str, filename: str) -> bool:
     return False
 
 
-def get_workspace_context() -> str:
+def get_workspace_context(user_id: int | str | None) -> str:
     """
     返回拼接好的工作空间 prompt 注入块。
     仅注入有实质内容的文件，空文件/纯模板文件跳过。
@@ -170,11 +182,12 @@ def get_workspace_context() -> str:
     </工作空间>
 
     """
-    ensure_workspace_defaults()
     sections = []
     for filename, (display_name, _) in WORKSPACE_FILES.items():
+        if filename in USER_WORKSPACE_FILES and user_id is None:
+            continue
         try:
-            content = load_workspace_file(filename)
+            content = load_workspace_file(filename, user_id)
         except Exception as e:
             logger.warning(f"读取工作空间文件失败 {filename}: {e}")
             continue
