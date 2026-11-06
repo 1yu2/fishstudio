@@ -17,7 +17,7 @@ from app.db.database import get_session
 from app.db.models import SeriesProject, User
 from app.services import upload_guard
 from app.services.agent_service import process_chat_stream
-from app.services.connection_manager import manager
+from app.services.connection_manager import canvas_channel, manager
 from app.services.execution_context import (
     ExecutionContext,
     get_execution_context,
@@ -42,7 +42,7 @@ async def get_canvases(
     user: User = Depends(get_current_user),
 ):
     """获取当前用户的画布历史"""
-    return await history_service.get_canvases(session, owner_id=user.id)
+    return await history_service.get_canvases(session, owner_id=user.id, is_admin=user.is_admin)
 
 
 @router.post("/canvases")
@@ -59,7 +59,7 @@ async def save_canvas(
     """
     payload = await request.json()
     try:
-        return await history_service.save_canvas(session, payload, owner_id=user.id)
+        return await history_service.save_canvas(session, payload, owner_id=user.id, is_admin=user.is_admin)
     except PermissionError:
         raise HTTPException(status_code=403, detail="无权修改该画布")
 
@@ -70,8 +70,10 @@ async def delete_canvas(
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    """删除画布（仅 owner 可删）"""
-    deleted = await history_service.delete_canvas(session, canvas_id, owner_id=user.id)
+    """删除画布（owner 可删，历史无主画布仅管理员可删）"""
+    deleted = await history_service.delete_canvas(
+        session, canvas_id, owner_id=user.id, is_admin=user.is_admin
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="画布不存在或无权删除")
     return {"success": True}
@@ -164,10 +166,11 @@ async def chat(
     支持OpenAI格式的流式输出
     """
     try:
-        # canvas 归属校验：canvas 存在且属于别的用户时拒绝
+        # 原子预留新画布 owner，历史无主画布仅管理员可认领
         if request.canvas_id and session is not None:
-            owner_id = await history_service.get_canvas_owner(session, request.canvas_id)
-            if owner_id is not None and owner_id != user.id:
+            if not await history_service.can_access_canvas(
+                session, request.canvas_id, user.id, is_admin=user.is_admin
+            ):
                 raise HTTPException(status_code=403, detail="无权访问该画布")
 
         # 构建消息历史
@@ -183,6 +186,9 @@ async def chat(
             project_id = await session.scalar(
                 select(SeriesProject.id).where(SeriesProject.canvas_id == request.canvas_id)
             )
+        if session is not None:
+            # 流式响应可能持续数分钟，进入流之前归还数据库连接，避免长聊天占满连接池
+            await session.close()
         stream_ctx = ExecutionContext(
             request_id=base_ctx.request_id,
             run_id=base_ctx.run_id,
@@ -193,12 +199,14 @@ async def chat(
             prompt_version="agent_system_v1",
         )
 
+        channel = canvas_channel(request.canvas_id, user.id) if request.canvas_id else None
+
         async def stream_and_broadcast():
             ctx_token = set_execution_context(stream_ctx)
             try:
                 if request.canvas_id:
                     await manager.broadcast(
-                        request.canvas_id,
+                        channel,
                         json.dumps({"type": "user_message", "content": request.message}, ensure_ascii=False),
                     )
 
@@ -211,11 +219,9 @@ async def chat(
                     if not data_str:
                         continue
                     if data_str == "[DONE]":
-                        await manager.broadcast(
-                            request.canvas_id, json.dumps({"type": "done"}, ensure_ascii=False)
-                        )
+                        await manager.broadcast(channel, json.dumps({"type": "done"}, ensure_ascii=False))
                     else:
-                        await manager.broadcast(request.canvas_id, data_str)
+                        await manager.broadcast(channel, data_str)
             finally:
                 reset_execution_context(ctx_token)
 

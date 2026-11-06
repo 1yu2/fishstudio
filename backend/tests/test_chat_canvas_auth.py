@@ -14,10 +14,10 @@ def test_chat_returns_403_when_canvas_belongs_to_other_user(monkeypatch):
 
     app.dependency_overrides[get_session] = fake_get_session
 
-    async def fake_get_canvas_owner(session, canvas_id):
-        return 999  # 与 fake user（id=1）不同
+    async def fake_can_access_canvas(session, canvas_id, owner_id, *, is_admin=False):
+        return False  # 即使管理员也不能访问他人的有主画布
 
-    monkeypatch.setattr("app.routers.chat.history_service.get_canvas_owner", fake_get_canvas_owner)
+    monkeypatch.setattr("app.routers.chat.history_service.can_access_canvas", fake_can_access_canvas)
 
     client = TestClient(app)
     response = client.post("/api/chat", json={"message": "hi", "canvas_id": "someone-elses-canvas"})

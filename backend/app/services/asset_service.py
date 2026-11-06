@@ -360,15 +360,16 @@ async def get_asset_for_user(
         return None
     if card.project_id is None:
         # 个人资产（P2-3）：仅归属用户可见
-        if card.user_id is not None and card.user_id != user_id:
+        if user_id is None or card.user_id != user_id:
             return None
         return card
     project = await session.get(SeriesProject, card.project_id)
-    if project is not None:
-        try:
-            check_project_access(project, user_id=user_id)
-        except PermissionError:
-            return None
+    if project is None:
+        return None
+    try:
+        check_project_access(project, user_id=user_id)
+    except PermissionError:
+        return None
     return card
 
 

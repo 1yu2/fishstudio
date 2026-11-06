@@ -521,8 +521,10 @@ function WorkspacePanel() {
     setToast(null)
   }
 
+  const canEdit = isAdmin || selectedId === 'USER.md' || selectedId === 'MEMORY.md'
+
   const handleSave = async () => {
-    if (!selectedId || !isAdmin) return
+    if (!selectedId || !canEdit) return
     setSaving(true)
     setToast(null)
     try {
@@ -554,7 +556,7 @@ function WorkspacePanel() {
         <div className="settings-panel__desc">
           Agent 每次对话会自动读取这些文件，作为身份记忆注入 System Prompt。
         </div>
-        {!isAdmin && <AdminOnlyNote />}
+        {!canEdit && <AdminOnlyNote />}
 
         {toast && (
           <span className={`settings-toast settings-toast--${toast.type}`} style={{ marginBottom: 10, display: 'flex' }}>
@@ -627,14 +629,14 @@ function WorkspacePanel() {
               className="workspace-editor__textarea"
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
-              readOnly={!isAdmin}
+              readOnly={!canEdit}
               placeholder={`在此编辑 ${selectedFile.id}…`}
               spellCheck={false}
             />
           )}
 
           <div className="workspace-editor__footer">
-            <button className="settings-save-btn" onClick={handleSave} disabled={saving || !isAdmin}>
+            <button className="settings-save-btn" onClick={handleSave} disabled={saving || !canEdit}>
               {saving ? '保存中…' : <><Save size={15} />保存</>}
             </button>
           </div>

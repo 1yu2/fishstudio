@@ -21,6 +21,11 @@ CHANNEL = "fishstudio:canvas-broadcast"
 RELAY_RETRY_SECONDS = 2.0
 
 
+def canvas_channel(canvas_id: str, user_id: int) -> str:
+    """归属变化或 ID 重用后，旧订阅也不会收到其他用户的聊天。"""
+    return json.dumps([user_id, canvas_id], ensure_ascii=False)
+
+
 class ConnectionManager:
     def __init__(self):
         # canvas_id -> list of WebSocket connections

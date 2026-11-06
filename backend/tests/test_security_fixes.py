@@ -513,7 +513,7 @@ class TestWsCanvasAuth:
         from app.auth.security import create_access_token
 
         monkeypatch.setenv("WS_AUTH_DISABLED", "false")
-        self._patch_session(monkeypatch, SimpleNamespace(id=1, username="admin"), None)
+        self._patch_session(monkeypatch, SimpleNamespace(id=1, username="admin", is_admin=False), None)
 
         code = self._connect_code(client, "ghost-canvas", create_access_token("admin"))
         assert code == 4404
@@ -523,7 +523,7 @@ class TestWsCanvasAuth:
 
         monkeypatch.setenv("WS_AUTH_DISABLED", "false")
         canvas = SimpleNamespace(id="c1", owner_id=None)
-        self._patch_session(monkeypatch, SimpleNamespace(id=1, username="admin"), canvas)
+        self._patch_session(monkeypatch, SimpleNamespace(id=1, username="admin", is_admin=False), canvas)
 
         code = self._connect_code(client, "c1", create_access_token("admin"))
         assert code == 4403
@@ -533,7 +533,7 @@ class TestWsCanvasAuth:
 
         monkeypatch.setenv("WS_AUTH_DISABLED", "false")
         canvas = SimpleNamespace(id="c1", owner_id=999)
-        self._patch_session(monkeypatch, SimpleNamespace(id=1, username="admin"), canvas)
+        self._patch_session(monkeypatch, SimpleNamespace(id=1, username="admin", is_admin=False), canvas)
 
         code = self._connect_code(client, "c1", create_access_token("admin"))
         assert code == 4403
@@ -543,7 +543,7 @@ class TestWsCanvasAuth:
 
         monkeypatch.setenv("WS_AUTH_DISABLED", "false")
         canvas = SimpleNamespace(id="c1", owner_id=1)
-        self._patch_session(monkeypatch, SimpleNamespace(id=1, username="admin"), canvas)
+        self._patch_session(monkeypatch, SimpleNamespace(id=1, username="admin", is_admin=False), canvas)
 
         # 连接成功（不断言后续消息，立即关闭）
         with client.websocket_connect(f"/ws/c1?token={create_access_token('admin')}"):

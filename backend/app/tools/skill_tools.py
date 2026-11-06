@@ -18,6 +18,8 @@ from typing import Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.services.execution_context import get_execution_context
+
 logger = logging.getLogger(__name__)
 
 # skills/ 目录的绝对路径（backend/skills/）
@@ -135,6 +137,19 @@ def _safe_resolve_custom(path_str: str) -> Path | None:
         return None
 
 
+async def _can_edit_shared_skills() -> bool:
+    """共享技能仅管理员可维护，身份来自执行上下文而非模型参数。"""
+    from app.db.database import SessionLocal
+    from app.db.models import User
+
+    user_id = get_execution_context().user_id
+    if user_id is None or not str(user_id).isdecimal():
+        return False
+    async with SessionLocal() as session:
+        user = await session.get(User, int(user_id))
+        return user is not None and user.is_admin
+
+
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")
 
 
@@ -145,12 +160,15 @@ class InitSkillInput(BaseModel):
 
 
 @tool("init_skill", args_schema=InitSkillInput)
-def init_skill_tool(skill_name: str) -> str:
+async def init_skill_tool(skill_name: str) -> str:
     """
     在 skills/custom/ 下初始化一个新 Skill 目录。
     创建 SKILL.md 模板、scripts/、references/、assets/ 三个子目录及示例文件。
     skill_name 必须是 hyphen-case（小写字母、数字、连字符），最长 64 字符。
     """
+    if not await _can_edit_shared_skills():
+        return "Error: 共享 Skill 仅管理员可修改"
+
     if not _SKILL_NAME_RE.match(skill_name):
         return f"Error: skill_name '{skill_name}' 格式无效，必须是 hyphen-case（小写字母、数字、连字符）"
 
@@ -190,12 +208,15 @@ class WriteSkillFileInput(BaseModel):
 
 
 @tool("write_skill_file", args_schema=WriteSkillFileInput)
-def write_skill_file_tool(path: str, content: str) -> str:
+async def write_skill_file_tool(path: str, content: str) -> str:
     """
     在 skills/custom/ 下写入（或覆盖）文件。
     用于创建或编辑 SKILL.md、references/、scripts/ 等文件。
     路径必须在 skills/custom/ 目录内，不可写入 public/。
     """
+    if not await _can_edit_shared_skills():
+        return "Error: 共享 Skill 仅管理员可修改"
+
     resolved = _safe_resolve_custom(path)
     if resolved is None:
         return f"Error: 路径不在允许范围内（必须在 skills/custom/ 内）: {path}"
@@ -214,12 +235,15 @@ class DeleteSkillFileInput(BaseModel):
 
 
 @tool("delete_skill_file", args_schema=DeleteSkillFileInput)
-def delete_skill_file_tool(path: str) -> str:
+async def delete_skill_file_tool(path: str) -> str:
     """
     删除 skills/custom/ 下的指定文件。
     用于清理 init_skill 生成的不需要的示例文件（如 scripts/example.py）。
     只允许删除文件，不可删除目录。路径必须在 skills/custom/ 内。
     """
+    if not await _can_edit_shared_skills():
+        return "Error: 共享 Skill 仅管理员可修改"
+
     resolved = _safe_resolve_custom(path)
     if resolved is None:
         return f"Error: 路径不在允许范围内（必须在 skills/custom/ 内）: {path}"
