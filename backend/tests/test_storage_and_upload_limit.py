@@ -81,6 +81,11 @@ def test_uploaded_file_readable_by_owner_only(client, monkeypatch, tmp_path, rea
 
     monkeypatch.setattr(chat, "_STORAGE_DIR", STORAGE_DIR)
 
+    async def _fake_create_artifact(session, **kwargs):
+        return SimpleNamespace(id="art-test")  # 上传会建 Artifact；这里 session 是 None，替掉落库
+
+    monkeypatch.setattr(chat.asset_service, "create_artifact", _fake_create_artifact)
+
     class FakeSession:
         async def __aenter__(self):
             return self

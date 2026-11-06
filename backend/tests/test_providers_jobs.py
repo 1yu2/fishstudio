@@ -19,6 +19,7 @@ from app.providers.pricing import (
 )
 from app.providers.video_router import NoProviderError, VideoProviderRouter
 from app.providers.volcano_video import VolcanoVideoProvider
+from app.services import safe_fetch
 
 
 def _req(**overrides) -> VideoGenerationRequest:
@@ -546,6 +547,20 @@ async def test_minimax_get_status_h3_experimental(monkeypatch):
     assert r.success and r.raw_metadata["download_url"] == "http://cdn/x.mp4"
 
 
+def _patch_safe_download(monkeypatch, content=b"", error=None):
+    """MiniMax 产物下载走 safe_fetch.fetch_to_file：替换成写文件的假实现并记录调用的 URL。"""
+    urls = []
+
+    def fake(url, dest, **kw):
+        urls.append(url)
+        if error:
+            raise error
+        dest.write_bytes(content)
+
+    monkeypatch.setattr("app.providers.minimax_video.safe_fetch.fetch_to_file", fake)
+    return urls
+
+
 async def test_minimax_fetch_result(monkeypatch, tmp_path):
     """官方 V1 下载链：query 拿 file_id → files/retrieve 拿 download_url → 下载落盘。"""
     monkeypatch.setattr("app.providers.minimax_video.VIDEOS_DIR", tmp_path)
@@ -565,11 +580,13 @@ async def test_minimax_fetch_result(monkeypatch, tmp_path):
                 200,
                 {"file": {"file_id": 9, "download_url": "http://cdn/x.mp4"}, "base_resp": {"status_code": 0}},
             )
-        return _FakeResponse(200, content=b"\x00\x01fake-mp4")
+        raise AssertionError("下载不应走 httpx")
 
     _patch_httpx(monkeypatch, handler)
+    urls = _patch_safe_download(monkeypatch, b"\x00\x01fake-mp4")
     p = MiniMaxVideoProvider(api_key="k")
     r = await p.fetch_result("task_9")
+    assert urls == ["http://cdn/x.mp4"]
     assert r.success
     assert r.artifacts[0]["storage_key"] == "videos/minimax_task_9.mp4"
     assert (tmp_path / "minimax_task_9.mp4").read_bytes() == b"\x00\x01fake-mp4"
@@ -593,13 +610,41 @@ async def test_minimax_fetch_result_regeneration_new_file(monkeypatch, tmp_path)
                     }
                 },
             )
-        return _FakeResponse(200, content=b"regen")
+        raise AssertionError("下载不应走 httpx")
 
     _patch_httpx(monkeypatch, handler)
+    _patch_safe_download(monkeypatch, b"regen")
     p = MiniMaxVideoProvider(api_key="k")
     r = await p.fetch_result("task_r1", protocol="h3")
     assert r.success
     assert r.artifacts[0]["storage_key"] == "videos/minimax_regen_task_r1.mp4"
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "retryable"),
+    [
+        (safe_fetch.UnsafeURLError("内网地址"), "artifact_invalid", False),
+        (safe_fetch.FetchError("HTTP 403"), "artifact_invalid", False),
+        (safe_fetch.FetchError("内容超过大小限制 1 字节"), "artifact_invalid", False),
+        (safe_fetch.FetchError("HTTP 503"), "network_error", True),
+        (safe_fetch.FetchError("下载超时"), "network_error", True),
+    ],
+)
+async def test_minimax_download_failure_is_classified(monkeypatch, tmp_path, error, code, retryable):
+    """下载失败（SSRF 拒绝 / 过期 / 超限 / 暂时性故障）要分类：只有暂时性故障可重试（重试只会重新取回）。"""
+    monkeypatch.setattr("app.providers.minimax_video.VIDEOS_DIR", tmp_path)
+
+    def handler(method, url, **kw):
+        if "query/video_generation" in url:
+            return _FakeResponse(200, {"task_id": "t", "status": "Success", "file_id": "f", "base_resp": {}})
+        return _FakeResponse(
+            200, {"file": {"download_url": "http://cdn/x.mp4"}, "base_resp": {"status_code": 0}}
+        )
+
+    _patch_httpx(monkeypatch, handler)
+    _patch_safe_download(monkeypatch, error=error)
+    r = await MiniMaxVideoProvider(api_key="k").fetch_result("t")
+    assert not r.success and r.error_code == code and r.retryable is retryable
 
 
 def test_minimax_supports_and_availability_default_h3_disabled(monkeypatch):

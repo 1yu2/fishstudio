@@ -1,11 +1,13 @@
-"""UsageEvent 记录与聚合。用量失败不影响主流程（只 log 不抛）。"""
+"""UsageEvent 记录与聚合；已收费视频的幂等入账必须与终态同事务。"""
 
 import logging
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import UsageEvent
@@ -31,8 +33,70 @@ def _auto_fill(fields: dict) -> dict:
     return fields
 
 
+class VideoAccountingError(RuntimeError):
+    """视频费用未能落账；停止自动取回，等待人工处理。"""
+
+
 async def record_usage(session: AsyncSession, **fields) -> Optional[UsageEvent]:
-    """写一条 UsageEvent（金额字段转 Decimal）。任何失败只 log 不抛。"""
+    """写一条 UsageEvent；视频账目写入失败上抛，其余历史用量仍只记录日志。"""
+    if (
+        fields.get("operation") == "generate_video"
+        and fields.get("provider_request_id")
+        and (
+            fields.get("status") == "success"
+            or any(fields.get(key) is not None for key in ("estimated_cost", "actual_cost"))
+        )
+    ):
+        # 使用现有主键作跨 job、跨事务的幂等键；ON CONFLICT 防止取消与 worker 并发重复记账。
+        fields = _auto_fill(fields)
+        fields["id"] = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"video-charge:{fields.get('provider', '')}:{fields['provider_request_id']}",
+            )
+        )
+        for key in _MONEY_FIELDS:
+            if fields.get(key) is not None:
+                fields[key] = Decimal(str(fields[key]))
+        statement = insert(UsageEvent).values(**fields)
+        incoming = statement.excluded
+        # 实际金额优先；成功取回可以完善估价账目，迟到的估价不得降级实际账目。
+        improve = or_(
+            incoming.actual_cost.is_not(None),
+            (UsageEvent.actual_cost.is_(None)) & (incoming.status == "success"),
+        )
+        updates = {
+            key: case((improve, getattr(incoming, key)), else_=getattr(UsageEvent, key))
+            for key in (
+                "input_units",
+                "output_units",
+                "input_tokens",
+                "output_tokens",
+                "gpu_seconds",
+                "unit_type",
+                "cost_source",
+                "event_metadata",
+                "error_code",
+            )
+            if key in fields
+        }
+        updates["actual_cost"] = func.coalesce(incoming.actual_cost, UsageEvent.actual_cost)
+        updates["status"] = case(
+            (incoming.status == "success", incoming.status),
+            (UsageEvent.status == "success", UsageEvent.status),
+            (improve, incoming.status),
+            else_=UsageEvent.status,
+        )
+        try:
+            result = await session.execute(
+                statement.on_conflict_do_update(index_elements=[UsageEvent.id], set_=updates)
+                .returning(UsageEvent)
+                .execution_options(populate_existing=True)
+            )
+            return result.scalar_one_or_none()
+        except Exception as error:
+            raise VideoAccountingError("视频费用入账失败") from error
+
     try:
         fields = _auto_fill(fields)
         for key in _MONEY_FIELDS:

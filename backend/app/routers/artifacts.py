@@ -2,7 +2,7 @@
 
 - project_id 非空：仅项目 owner（或 admin）可下载。
 - project_id 为 NULL：artifact 本身没有 user 字段，无法判定创建者，
-  过渡期内仅 admin 可下载；角色库上传的图（metadata.source=library_upload）本人也可下载。
+  过渡期内仅 admin 可下载；角色库 / 聊天上传（metadata.source=library_upload / chat_upload）本人也可下载。
 - 一律 404 响应无权/不存在，不泄露 artifact 存在性。
 """
 
@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _STORAGE_ROOT = STORAGE_DIR.resolve()
+
+# 无项目 artifact 里“上传者本人可下载”的来源（meta.owner_user_id == 当前用户）
+_OWNER_UPLOAD_SOURCES = {"library_upload", "chat_upload"}
 
 
 def _resolve_storage_path(storage_key: str) -> Path:
@@ -54,10 +57,10 @@ async def download_artifact(
         except PermissionError:
             raise HTTPException(status_code=404, detail="artifact not found") from None
     elif not user.is_admin:
-        # project_id 为 NULL 的 artifact 没有创建者字段：角色库上传的图在 metadata 里记了 owner_user_id，
+        # project_id 为 NULL 的 artifact 没有创建者字段：角色库 / 聊天上传在 metadata 里记了 owner_user_id，
         # 本人可下载；其余过渡期仅 admin 可下
         meta = getattr(artifact, "artifact_metadata", None) or {}
-        if not (meta.get("source") == "library_upload" and meta.get("owner_user_id") == user.id):
+        if not (meta.get("source") in _OWNER_UPLOAD_SOURCES and meta.get("owner_user_id") == user.id):
             raise HTTPException(status_code=404, detail="artifact not found")
 
     if getattr(artifact, "storage_backend", "local") in {"s3", "minio"}:

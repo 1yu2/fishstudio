@@ -27,7 +27,6 @@ from app.db.models import (
     PublishPackage,
     QCReport,
     ReferenceAnalysis,
-    Scene,
     ScriptRevision,
     SeriesProject,
     Shot,
@@ -91,6 +90,21 @@ async def _owned_project(session: AsyncSession, project_id: str, user: User):
     if project is None:
         raise HTTPException(status_code=404, detail="项目不存在")
     return project
+
+
+async def _check_project_reference(session, model, resource_id, project_id):
+    """先校验外部引用归属，避免混合路径与请求体绕过外层鉴权。"""
+    if not resource_id:
+        return
+    row = await session.get(model, resource_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="引用资源不存在")
+    owner_project = getattr(row, "project_id", None)
+    if owner_project is None and getattr(row, "episode_id", None):
+        episode = await session.get(Episode, row.episode_id)
+        owner_project = episode.project_id if episode else None
+    if owner_project != project_id:
+        raise HTTPException(status_code=404, detail="引用资源不存在或不属于当前项目")
 
 
 async def _owned_episode_project(session: AsyncSession, episode_id: str, user: User):
@@ -613,6 +627,9 @@ async def create_director_plan(
     user: User = Depends(get_current_user),
 ):
     episode, _ = await _owned_episode_project(session, episode_id, user)
+    await _check_project_reference(
+        session, ScriptRevision, body.based_on_script_revision_id, episode.project_id
+    )
     try:
         row = await director_service.create_plan(
             session,
@@ -654,6 +671,12 @@ async def create_observer_review(
     user: User = Depends(get_current_user),
 ):
     episode, _ = await _owned_episode_project(session, episode_id, user)
+    target_model = {"script": ScriptRevision, "storyboard": StoryboardRevision}.get(body.target_type)
+    if target_model:
+        await _check_project_reference(session, target_model, body.target_id, episode.project_id)
+    from app.db.models import ModelInvocation
+
+    await _check_project_reference(session, ModelInvocation, body.model_invocation_id, episode.project_id)
     deterministic = [item.model_dump(mode="json") for item in body.deterministic_findings]
     if body.target_type == "script":
         target = await session.get(ScriptRevision, body.target_id)
@@ -752,6 +775,9 @@ async def run_observer_review(
     user: User = Depends(get_current_user),
 ):
     episode, _ = await _owned_episode_project(session, episode_id, user)
+    target_model = {"script": ScriptRevision, "storyboard": StoryboardRevision}.get(body.target_type)
+    if target_model:
+        await _check_project_reference(session, target_model, body.target_id, episode.project_id)
     if body.target_type == "script":
         target = await session.get(ScriptRevision, body.target_id)
         target_payload = target.structured_payload if target else None
@@ -852,6 +878,7 @@ async def get_storyboard(
     user: User = Depends(get_current_user),
 ):
     project = await _owned_project(session, project_id, user)
+    await _check_project_reference(session, Episode, episode_id, project.id)
     return await storyboard_service.list_episodes_with_storyboard(session, project.id, episode_id=episode_id)
 
 
@@ -868,6 +895,7 @@ async def save_storyboard(
     user: User = Depends(get_current_user),
 ):
     _, project = await _owned_episode_project(session, episode_id, user)
+    await _check_project_reference(session, ScriptRevision, body.based_on_script_revision_id, project.id)
     try:
         kwargs: dict[str, Any] = {"created_by": str(user.id)}
         if body.based_on_script_revision_id is not None:
@@ -1053,10 +1081,8 @@ async def _owned_candidate(session: AsyncSession, shot_id: str, candidate_id: st
     candidate = await session.get(ArtifactCandidate, candidate_id)
     if shot is None or candidate is None or candidate.shot_id != shot_id:
         raise HTTPException(status_code=404, detail="候选不存在")
-    scene = await session.get(Scene, shot.scene_id)
-    if scene is None:
-        raise HTTPException(status_code=404, detail="镜头不存在")
-    await _owned_project(session, scene.project_id, user)
+    # Scene 没有 project_id（要经 episode 反查），统一走 shot → project 归属校验
+    await _owned_shot_project(session, shot_id, user)
     return candidate
 
 
@@ -1064,13 +1090,7 @@ async def _owned_candidate(session: AsyncSession, shot_id: str, candidate_id: st
 async def list_shot_candidates(
     shot_id: str, session: AsyncSession = Depends(get_session), user: User = Depends(get_current_user)
 ):
-    shot = await session.get(Shot, shot_id)
-    if shot is None:
-        raise HTTPException(status_code=404, detail="镜头不存在")
-    scene = await session.get(Scene, shot.scene_id)
-    if scene is None:
-        raise HTTPException(status_code=404, detail="镜头不存在")
-    await _owned_project(session, scene.project_id, user)
+    await _owned_shot_project(session, shot_id, user)
     return [_candidate_out(c) for c in await candidate_service.list_candidates(session, shot_id)]
 
 
@@ -1223,6 +1243,8 @@ async def create_timeline_revision(
     user: User = Depends(get_current_user),
 ):
     _, project = await _owned_episode_project(session, episode_id, user)
+    await _check_project_reference(session, TimelineRevision, body.parent_revision_id, project.id)
+    await _check_project_reference(session, StoryboardRevision, body.storyboard_revision_id, project.id)
     try:
         row = await timeline_service.create_revision(
             session,
@@ -1280,6 +1302,7 @@ async def run_episode_qc(
     user: User = Depends(get_current_user),
 ):
     _, project = await _owned_episode_project(session, episode_id, user)
+    await _check_project_reference(session, Artifact, body.render_artifact_id, project.id)
     if body.phase not in {"director_review", "final_qc"}:
         raise HTTPException(status_code=400, detail="phase must be director_review or final_qc")
     try:
@@ -1481,6 +1504,8 @@ async def bind_asset_to_shot(
     asset = await asset_service.get_asset_for_user(session, asset_id, user.id)
     if asset is None:
         raise HTTPException(status_code=404, detail="资产不存在或无权访问")
+    shot_project = await _owned_shot_project(session, body.shot_id, user)
+    await _check_project_reference(session, Artifact, body.artifact_id, shot_project.id)
     try:
         if (
             body.reference_type is None
@@ -1902,6 +1927,7 @@ async def analyze_reference_video(
     user: User = Depends(get_current_user),
 ):
     await _owned_project(session, project_id, user)
+    await _check_project_reference(session, Artifact, body.artifact_id, project_id)
     try:
         row = await reference_analysis_service.create_analysis(
             session,
@@ -2034,6 +2060,12 @@ async def get_clone_voice_quote(
     asset = await session.get(AssetCard, asset_id)
     if asset is None or asset.project_id != project_id:
         raise HTTPException(status_code=404, detail="voice 资产不存在")
+    await _check_project_reference(
+        session,
+        Artifact,
+        reference_audio_artifact_id,
+        project_id,
+    )
     if asset.type != "voice":
         raise HTTPException(status_code=400, detail="仅 voice 类型资产支持音色复刻")
 
@@ -2157,6 +2189,12 @@ async def create_clone_voice_job(
     asset = await session.get(AssetCard, asset_id, with_for_update=True)
     if asset is None or asset.project_id != project_id:
         raise HTTPException(status_code=404, detail="voice 资产不存在")
+    await _check_project_reference(
+        session,
+        Artifact,
+        body.reference_audio_artifact_id,
+        project_id,
+    )
     if asset.type != "voice":
         raise HTTPException(status_code=400, detail="仅 voice 类型资产支持音色复刻")
 

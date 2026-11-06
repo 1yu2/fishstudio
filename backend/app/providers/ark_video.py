@@ -5,11 +5,12 @@ DELETE .../tasks/{id} 取消排队中的任务。请求体为 model + content �
 image_url 项通过 role 区分 first_frame / last_frame / reference_image。
 
 方舟返回的 video_url / last_frame_url 约 24 小时后失效，所以任务成功后立即下载到本地存储。
-全程使用 httpx 异步调用，不阻塞事件循环。
+API 调用全程使用 httpx 异步调用；产物下载走 safe_fetch（线程里跑，不阻塞事件循环），防 SSRF / DNS rebinding。
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import ipaddress
@@ -22,6 +23,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.providers.base import ProviderResult, VideoGenerationRequest, VideoProvider
+from app.services import safe_fetch
 
 BASE_DIR = Path(__file__).parent.parent.parent
 STORAGE_DIR = BASE_DIR / "storage"
@@ -233,6 +235,19 @@ class ArkVideoProvider(VideoProvider):
             **base, error_code="invalid_input", error_message=str(error)[:500], retryable=False
         )
 
+    def _download_error(self, error: Exception, task_id: str) -> ProviderResult:
+        """产物下载失败分类：暂时性故障可重试（只重新取回，不会重新提交）；其余为产物本身不可用。"""
+        transient = safe_fetch.is_transient_fetch_error(error)
+        return ProviderResult(
+            success=False,
+            provider=self.name,
+            model=self.model_name,
+            external_request_id=task_id,
+            error_code="network_error" if transient else "artifact_invalid",
+            error_message=str(error)[:500],
+            retryable=transient,
+        )
+
     # ── 生命周期 ───────────────────────────────────────────────────────────
 
     async def health(self) -> dict[str, Any]:
@@ -370,23 +385,21 @@ class ArkVideoProvider(VideoProvider):
         ):
             raise ValueError("方舟产物 URL 主机不在允许列表")
 
-    async def _download(self, client: httpx.AsyncClient, url: str, allowed_mime: set[str]) -> bytes:
+    async def _download(self, url: str, dest: Path, allowed_mime: set[str]) -> None:
+        """经 safe_fetch 流式下载到 dest：逐跳校验 IP，大小 / MIME / 总时限由 safe_fetch 把关。"""
         self._validate_artifact_url(url)
-        chunks: list[bytes] = []
-        size = 0
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            if mime and mime not in allowed_mime:
-                raise ValueError(f"方舟产物 MIME 不合法: {mime}")
-            async for chunk in response.aiter_bytes():
-                size += len(chunk)
-                if size > self.max_artifact_bytes:
-                    raise ValueError("方舟产物超过大小限制")
-                chunks.append(chunk)
-        if not size:
+        await asyncio.to_thread(
+            safe_fetch.fetch_to_file,
+            url,
+            dest,
+            max_bytes=self.max_artifact_bytes,
+            timeout=self.artifact_timeout,
+            total_timeout=self.artifact_timeout,
+            allowed_mime=allowed_mime,
+        )
+        if dest.stat().st_size == 0:
+            dest.unlink(missing_ok=True)
             raise ValueError("方舟产物为空")
-        return b"".join(chunks)
 
     async def fetch_result(self, external_task_id: str, *, protocol: str | None = None) -> ProviderResult:
         try:
@@ -420,40 +433,36 @@ class ArkVideoProvider(VideoProvider):
                 retryable=False,
                 raw_metadata=data,
             )
-        try:
-            async with httpx.AsyncClient(timeout=self.artifact_timeout, follow_redirects=False) as client:
-                video = await self._download(client, video_url, _VIDEO_MIME)
-                last_frame: Optional[bytes] = None
-                last_frame_url = str(content.get("last_frame_url") or "")
-                if last_frame_url:
-                    try:
-                        last_frame = await self._download(client, last_frame_url, _IMAGE_MIME)
-                    except (httpx.HTTPError, ValueError):
-                        last_frame = None  # 尾帧只用于镜头接力，下载失败不影响视频结果
-        except (httpx.HTTPError, ValueError) as error:
-            result = self._error(error, task_id=external_task_id)
-            if isinstance(error, ValueError):
-                result.error_code = "artifact_invalid"
-                result.retryable = False
-            return result
-
         suffix = uuid.uuid4().hex[:8]
         VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
         video_name = f"ark_{external_task_id}_{suffix}.mp4"
-        (VIDEOS_DIR / video_name).write_bytes(video)
+        video_path = VIDEOS_DIR / video_name
+        frame_path: Optional[Path] = None
+        try:
+            await self._download(video_url, video_path, _VIDEO_MIME)
+            last_frame_url = str(content.get("last_frame_url") or "")
+            if last_frame_url:
+                IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+                candidate = IMAGES_DIR / f"ark_{external_task_id}_{suffix}_last.png"
+                try:
+                    await self._download(last_frame_url, candidate, _IMAGE_MIME)
+                    frame_path = candidate
+                except (safe_fetch.FetchError, ValueError):
+                    candidate.unlink(missing_ok=True)  # 尾帧只用于镜头接力，下载失败不影响视频结果
+        except (safe_fetch.FetchError, ValueError) as error:
+            video_path.unlink(missing_ok=True)
+            return self._download_error(error, external_task_id)
+
         artifact: dict[str, Any] = {
             "type": "video",
             "storage_key": f"videos/{video_name}",
-            "sha256": hashlib.sha256(video).hexdigest(),
+            "sha256": _sha256_file(video_path),
         }
         duration = data.get("duration")
         if isinstance(duration, (int, float)):
             artifact["duration_ms"] = int(float(duration) * 1000)
-        if last_frame is not None:
-            IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-            frame_name = f"ark_{external_task_id}_{suffix}_last.png"
-            (IMAGES_DIR / frame_name).write_bytes(last_frame)
-            artifact["last_frame_storage_key"] = f"images/{frame_name}"
+        if frame_path is not None:
+            artifact["last_frame_storage_key"] = f"images/{frame_path.name}"
 
         usage_raw = data.get("usage") or {}
         usage: dict[str, Any] = {}
@@ -476,6 +485,14 @@ class ArkVideoProvider(VideoProvider):
                 "protocol": "ark_v3",
             },
         )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _error_detail(response: httpx.Response) -> str:

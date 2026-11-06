@@ -208,7 +208,7 @@ class TestCancelAndAggregation:
         async def _fake_checked(session, job_id, user):
             return job
 
-        async def _fake_cancel(session, job_id):
+        async def _fake_cancel(session, job_id, *, cancel_result=None):
             job.status = "canceled"
             return True
 
@@ -402,7 +402,7 @@ class TestRetryJobCreatesNew:
         assert new_job.id != old.id
         assert new_job.idempotency_key == f"retry:{old.idempotency_key}"
         assert new_job.params["retry_of_job_id"] == old.id
-        assert new_job.external_task_id == ""  # 不带入旧外部任务
+        assert new_job.external_task_id == old.external_task_id  # 只重新取回已提交任务
         assert new_job.workflow_run_id == old.workflow_run_id
         assert new_job.workflow_step_id == old.workflow_step_id
         assert new_job.provider == old.provider and new_job.model == old.model

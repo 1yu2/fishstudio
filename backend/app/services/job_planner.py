@@ -312,9 +312,33 @@ async def plan_shot_video_jobs(
     shots = await _current_revision_shots(session, episode_id)
     policy = _run_policy(run)
     from app.model_runtime.video import VideoRoutingError
+    from app.services import job_service
 
+    resumed = {}
+    if step.attempt > 0:
+        for shot in shots:
+            previous = (
+                (
+                    await session.execute(
+                        select(GenerationJob)
+                        .where(
+                            GenerationJob.workflow_step_id == step.id,
+                            GenerationJob.logical_job_key
+                            == make_logical_job_key("generate_video", run.id, step.node_key, shot.id),
+                            GenerationJob.step_attempt < step.attempt,
+                        )
+                        .order_by(GenerationJob.step_attempt.desc(), GenerationJob.created_at.desc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if previous is not None and job_service.can_resume_external(previous):
+                resumed[shot.id] = previous
+    new_shots = [shot for shot in shots if shot.id not in resumed]
     # 每个镜头只读取一次首帧与参考输入，路由与 Job 参数使用同一份。
-    inputs = {shot.id: await load_shot_video_inputs(session, shot) for shot in shots}
+    inputs = {shot.id: await load_shot_video_inputs(session, shot) for shot in new_shots}
 
     # R8.3：优先消费已确认 Quote 中的路由计划，不再独立解析
     confirmed_plans = _confirmed_shot_plans(run, step.node_key)
@@ -324,10 +348,12 @@ async def plan_shot_video_jobs(
     if confirmed_plans:
         for plan in confirmed_plans:
             shot_plans[plan.get("shot_id")] = plan
+            if plan.get("shot_id") in resumed:
+                continue
             cost = plan.get("estimated_total_cost", "0")
             estimated += Decimal(cost) if cost else Decimal("0")
     else:
-        for s in shots:
+        for s in new_shots:
             first_frame, compiled = inputs[s.id]
             try:
                 routing = await resolve_shot_video_plan(
@@ -348,19 +374,39 @@ async def plan_shot_video_jobs(
         step.error = "已确认报价的 Route Plan 与当前分镜不一致，请重新确认费用"
         await session.flush()
         return []
-    if not await _cost_quote_still_valid(session, run):
+    if new_shots and not await _cost_quote_still_valid(session, run):
         step.status = "failed"
         step.error_code = "cost_quote_invalid"
         step.error = "费用报价已失效（分镜/参数变化或过期），请重新确认费用"
         await session.flush()
         return []
-    if not await _reserve_budget_or_fail(session, run, step, estimated):
+    if new_shots and not await _reserve_budget_or_fail(session, run, step, estimated):
         await session.flush()
         return []
 
     jobs: list[GenerationJob] = []
     fallback_count = 0
     for shot in shots:
+        if shot.id in resumed:
+            previous = resumed[shot.id]
+            job, _ = await _get_or_create_job(
+                session,
+                idempotency_key=make_job_idempotency_key(
+                    "video", run.id, step.node_key, shot.id, step.attempt
+                ),
+                project_id=run.project_id,
+                shot_id=shot.id,
+                workflow_run_id=run.id,
+                workflow_step_id=step.id,
+                operation="generate_video",
+                provider=previous.provider,
+                model=previous.model,
+                step_attempt=step.attempt,
+                logical_job_key=previous.logical_job_key,
+                params={**(previous.params or {}), "step_id": step.id, "run_id": run.id},
+            )
+            jobs.append(job)
+            continue
         # R8.3：优先使用已确认 Quote plan，不再独立解析
         plan = shot_plans.get(shot.id)
         if plan is None:
