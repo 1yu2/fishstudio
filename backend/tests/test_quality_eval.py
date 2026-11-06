@@ -35,6 +35,17 @@ def test_eval_is_repeatable_for_same_samples_and_explains_failures():
     assert "unavailable" in explanation
 
 
+def test_averaged_cost_samples_are_counted_as_estimates():
+    samples = [
+        {**_sample(0.8, 100, "1.0"), "cost_estimated": True},
+        _sample(0.8, 100, "2.0"),
+        {**_sample(0.8, 100, None), "cost_estimated": True},  # 没有价格：算 unavailable，不算估算
+    ]
+    metrics, _, _, explanation = aggregate_samples(samples)
+    assert metrics["cost_cny"]["estimated_count"] == 1 and metrics["cost_cny"]["unavailable_count"] == 1
+    assert "1 个样本花费为平均分摊的估算值" in explanation
+
+
 def test_unknown_price_is_not_zero_cost():
     metrics, _, _, _ = aggregate_samples([_sample(0.9, 100, None)])
     assert metrics["cost_cny"]["total"] == "unavailable"

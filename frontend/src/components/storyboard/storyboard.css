@@ -41,6 +41,7 @@
 .sb-card--on .sb-card__thumb { outline: 2px solid var(--text-primary); outline-offset: 2px; }
 .sb-card--over .sb-card__thumb { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .sb-card__caption { font-size: 11px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-card__cost { font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .sb-card__caption--none { color: var(--text-secondary); }
 .sb-card__caption--running { color: var(--status-running); }
 .sb-card__caption--failed { color: var(--status-failed); }

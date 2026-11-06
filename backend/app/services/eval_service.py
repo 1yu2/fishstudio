@@ -154,6 +154,10 @@ def aggregate_samples(samples: list[dict[str, Any]]) -> tuple[dict[str, Any], di
         Decimal(str(sample["cost_cny"])) for sample in samples if sample.get("cost_cny") is not None
     ]
     unavailable = sum(sample.get("cost_cny") is None for sample in samples)
+    # 花费是按总花费平均分摊出来的估算值（拿不到镜头自己的用量事件）的样本数
+    estimated = sum(
+        bool(sample.get("cost_estimated")) and sample.get("cost_cny") is not None for sample in samples
+    )
     successes = sum(bool(sample.get("success", True)) for sample in samples)
     reasons = Counter(str(reason) for sample in samples for reason in (sample.get("failure_reasons") or []))
     total_cost = sum(priced_costs, Decimal("0")) if priced_costs else None
@@ -165,6 +169,7 @@ def aggregate_samples(samples: list[dict[str, Any]]) -> tuple[dict[str, Any], di
         "cost_cny": {
             "total": str(total_cost) if total_cost is not None else "unavailable",
             "unavailable_count": unavailable,
+            "estimated_count": estimated,
             "unit_quality_cost": str(unit_quality_cost.quantize(Decimal("0.000001")))
             if unit_quality_cost is not None
             else "unavailable",
@@ -176,6 +181,8 @@ def aggregate_samples(samples: list[dict[str, Any]]) -> tuple[dict[str, Any], di
     explanation = f"综合质量 {score:.3f}；主要弱项：" + "、".join(
         f"{key}={value:.3f}" for key, value in weakest
     )
+    if estimated:
+        explanation += f"；{estimated} 个样本花费为平均分摊的估算值"
     if unavailable:
         explanation += f"；{unavailable} 个样本价格 unavailable，未按零成本计算"
     return metrics, dict(reasons), score, explanation

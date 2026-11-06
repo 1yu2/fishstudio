@@ -82,7 +82,7 @@ def _steps(
 ) -> list[dict[str, str]]:
     """五步进度。render 是最新成片的状态：fresh（已渲染且素材没变）/ stale（渲染后素材变了）/ None（没渲染过）。characters 是各角色的 {name, final}；剧本看文本节点，分镜看镜头完成数，其余待后续任务补全。
 
-    voice 是 (配音节点数, 已有结果的配音节点数)：有配音节点 → 全部有结果才完成；
+    voice 是 (配音节点数, 已有结果的配音节点数)：有配音节点 → 全部有结果且分镜已完成才算完成；
     没有配音节点（0, 0）→ 分镜完成就算完成（配音可跳过）。不传表示不统计配音，配音永远不算完成（旧口径）。
 
     角色步骤：没有角色 → 有剧本即算完成（可跳过）；有角色且全部定稿 → 完成；否则进行中（不要求剧本完成）。
@@ -100,7 +100,8 @@ def _steps(
     storyboard_done = done["storyboard"]
     if voice is not None:
         voice_total, voice_done = voice
-        done["voice"] = voice_done >= voice_total if voice_total else storyboard_done
+        # 配音完成必须以分镜完成为前提：分镜还没出完时，已有的配音结果不能让配音步骤提前显示完成
+        done["voice"] = storyboard_done and (voice_done >= voice_total if voice_total else True)
     # 成片目前没有数据；
     # 有镜头：分镜未完成 → 分镜进行中，分镜完成 → 配音进行中（配音完成或可跳过 → 成片进行中）；没有镜头：先剧本再分镜；角色待定稿时角色优先（不要求剧本）
     if shots_total > 0:

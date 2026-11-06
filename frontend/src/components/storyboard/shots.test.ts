@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildCharacters } from '../characters/characters'
 import type { CanvasRuns, NodeJob, StoredEdge, StoredNode } from '../../api/nodeCanvas'
-import { appendPhrase, applyVideoMode, buildEditChain, buildShots, editRequest, newShot, priceSuffix, reorderPatch, shotCharacters, shotReferenceUse, shotTitle, totalSeconds, videoMode } from './shots'
+import { appendPhrase, applyVideoMode, buildEditChain, buildShots, clampDuration, costLabel, durationOptions, durationRange, editRequest, newShot, priceSuffix, reorderPatch, shotCharacters, shotReferenceUse, shotTitle, totalSeconds, videoMode } from './shots'
 
 const node = (id: string, type: StoredNode['type'], data: Record<string, unknown> = {}, x = 0, y = 0): StoredNode => ({ id, type, position: { x, y }, data })
 const edge = (source: string, target: string, targetHandle: string): StoredEdge => ({ id: `${source}-${target}`, source, target, sourceHandle: 'out', targetHandle })
@@ -298,5 +298,51 @@ describe('priceSuffix', () => {
     expect(priceSuffix(quote(2))).toBe(' · ¥2.00')
     expect(priceSuffix(quote(null))).toBe(' · 未配置价格')
     expect(priceSuffix(null)).toBe('')
+  })
+})
+
+describe('costLabel', () => {
+  it('formats actual and estimated spend and hides zero', () => {
+    expect(costLabel({ actual: 0.21, estimated: 0, total: 0.21, is_estimate: false })).toBe('已花 ¥0.210')
+    expect(costLabel({ actual: 0, estimated: 2, total: 2, is_estimate: true })).toBe('已花约 ¥2.00')
+    expect(costLabel({ actual: 0, estimated: 0, total: 0, is_estimate: false })).toBe('')
+    expect(costLabel(undefined)).toBe('')
+    expect(costLabel({ actual: 1, estimated: 0, total: null, is_estimate: false })).toBe('')
+  })
+})
+
+describe('durationRange', () => {
+  const video = node('v', 'video', { duration: 3 })
+  const model = (slug: string, modes: string[], min?: number, max?: number) => ({ slug, name: slug, model: slug, provider: 'p', modes, pricing: {}, min_duration: min, max_duration: max })
+  const models = (items: ReturnType<typeof model>[], route = 'a') => ({ image: [], video: items, defaults: { image: '', video_preview: route, video_final: route } })
+
+  it('keeps the usual 2-12 range for first-frame mode', () => {
+    expect(durationRange('frame', video, null)).toEqual({ min: 2, max: 12 })
+  })
+  it('defaults reference mode to 4-15 when no model declares a range', () => {
+    expect(durationRange('reference', video, null)).toEqual({ min: 4, max: 15 })
+    expect(durationRange('reference', video, models([model('a', ['reference'])]))).toEqual({ min: 4, max: 15 })
+  })
+  it('uses the routed reference-capable deployment, else conservative intersection', () => {
+    const items = [model('a', ['reference'], 5, 10), model('b', ['reference'], 4, 15), model('c', ['frame'], 2, 6)]
+    expect(durationRange('reference', video, models(items))).toEqual({ min: 5, max: 10 })
+    expect(durationRange('reference', video, models(items, 'c'))).toEqual({ min: 5, max: 10 })
+  })
+  it('only uses primary and fallback of the current tier, excluding unrouted deployments', () => {
+    const items = [model('a', ['frame'], 2, 12), model('b', ['reference'], 5, 10), model('c', ['reference'], 4, 15)]
+    const catalog = { ...models(items), video_routes: { preview: ['a', 'b'], final: ['c'] } }
+    expect(durationRange('reference', video, catalog)).toEqual({ min: 5, max: 10 })
+    expect(durationRange('reference', node('v', 'video', { model: 'c' }), catalog)).toEqual({ min: 5, max: 10 })
+    expect(durationRange('reference', node('v', 'video', { tier: 'final' }), catalog)).toEqual({ min: 4, max: 15 })
+  })
+  it('defaults each missing duration boundary independently', () => {
+    expect(durationRange('reference', video, models([model('a', ['reference'], 6)]))).toEqual({ min: 6, max: 15 })
+    expect(durationRange('reference', video, models([model('a', ['reference'], undefined, 9)]))).toEqual({ min: 4, max: 9 })
+  })
+  it('lists and clamps whole seconds', () => {
+    expect(durationOptions({ min: 4, max: 7 })).toEqual([4, 5, 6, 7])
+    expect(clampDuration(3, { min: 4, max: 15 })).toBe(4)
+    expect(clampDuration(20, { min: 4, max: 15 })).toBe(15)
+    expect(clampDuration(8, { min: 4, max: 15 })).toBe(8)
   })
 })

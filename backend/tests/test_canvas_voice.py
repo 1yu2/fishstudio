@@ -224,6 +224,75 @@ def test_node_runs_include_audio_results_with_duration(pg, monkeypatch):
     assert runs["nodes"]["a"]["jobs"][0]["status"] == "succeeded"
 
 
+@requires_pg
+def test_node_runs_report_cost_per_node_and_shot(pg):
+    """usage_events 经 job → 节点汇总：实际优先、没有才用估算并标记；镜头 = 画面 + 视频 + 配音。"""
+    from app.db.models import GenerationJob, UsageEvent
+
+    async def _run():
+        async with pg() as s:
+            canvas = await service.create_canvas(s, await _user(s), title="t")
+            graph = {
+                "nodes": [
+                    _node("img", "image"),
+                    _node("vid", "video", prompt="推门"),
+                    _node("voice", "audio"),
+                ],
+                "edges": [
+                    {"id": "e1", "source": "img", "target": "vid", "targetHandle": "first_frame"},
+                    _edge("voice", "vid", "voice"),
+                ],
+            }
+            await service.save_graph(s, canvas, graph, revision=1)
+            jobs = {}
+            for node_id in ("img", "vid", "voice"):
+                job = GenerationJob(
+                    project_id=canvas.project_id,
+                    operation="x",
+                    provider="p",
+                    model="m",
+                    status="succeeded",
+                    idempotency_key=f"cost-{node_id}",
+                    params={"canvas_node_id": node_id},
+                )
+                s.add(job)
+                jobs[node_id] = job
+            await s.flush()
+
+            def usage(node_id, **kwargs):
+                return UsageEvent(
+                    project_id=canvas.project_id, job_id=jobs[node_id].id, operation="x", **kwargs
+                )
+
+            s.add_all(
+                [
+                    usage("img", actual_cost=Decimal("0.10"), estimated_cost=Decimal("0.12")),
+                    usage("img", actual_cost=Decimal("0.05"), estimated_cost=Decimal("0.05")),
+                    usage("vid", estimated_cost=Decimal("2.00")),  # 还没结算：只有估算
+                    usage("voice", actual_cost=Decimal("0"), estimated_cost=Decimal("0")),  # mock 为 0
+                ]
+            )
+            await s.flush()
+            return await service.node_runs(s, canvas)
+
+    runs = asyncio.run(_run())
+    img, vid, voice = (runs["nodes"][key]["cost"] for key in ("img", "vid", "voice"))
+    assert img == {
+        "actual": pytest.approx(0.15),
+        "estimated": 0.0,
+        "total": pytest.approx(0.15),
+        "is_estimate": False,
+    }
+    assert (
+        vid["actual"] == 0 and vid["estimated"] == 2.0 and vid["total"] == 2.0 and vid["is_estimate"] is True
+    )
+    assert voice["total"] == 0 and voice["is_estimate"] is False
+    # 镜头 = 视频节点为主节点；花费是三个节点之和，含估算部分所以标记为估算
+    shot = runs["shot_costs"]["vid"]
+    assert shot["total"] == pytest.approx(2.15) and shot["actual"] == pytest.approx(0.15)
+    assert shot["is_estimate"] is True
+
+
 # ── Worker：execute_tts ───────────────────────────────────────────────────
 
 
@@ -440,6 +509,11 @@ def test_voice_step_rules():
     assert _step(overview._steps(3, 3, True, [], (4, 4)), "voice") == "done"
     # 前面步骤没完成时配音是 todo
     assert _step(overview._steps(1, 3, True, [], (4, 0)), "voice") == "todo"
+    # 配音节点都有结果，但分镜还没完成：不能提前显示完成（也不是进行中，分镜才是进行中）
+    steps = overview._steps(1, 3, True, [], (4, 4))
+    assert _step(steps, "voice") == "todo" and _step(steps, "storyboard") == "active"
+    # 没有镜头时同理
+    assert _step(overview._steps(0, 0, True, [], (2, 2)), "voice") == "todo"
     # 没有配音节点：分镜完成后算完成（可跳过），之前是 todo
     assert _step(overview._steps(3, 3, True, [], (0, 0)), "voice") == "done"
     assert _step(overview._steps(1, 3, True, [], (0, 0)), "voice") == "todo"
@@ -683,3 +757,135 @@ def test_duration_limits_exposed_for_extending_shots():
     }
     assert service.duration_limits({"min_duration": "x", "max_duration": 0}) == {}
     assert service.duration_limits(None) == {}
+
+
+@requires_pg
+@pytest.mark.parametrize("missing", ["no_event", "null_event", "partial_job"])
+def test_node_runs_unknown_cost_is_null_and_propagates_to_shot(pg, missing):
+    from app.db.models import GenerationJob, UsageEvent
+
+    async def run():
+        async with pg() as s:
+            canvas = await service.create_canvas(s, await _user(s), title="unknown cost")
+            await service.save_graph(s, canvas, {"nodes": [_node("v", "video")], "edges": []}, revision=1)
+            job = GenerationJob(
+                project_id=canvas.project_id,
+                operation="x",
+                provider="p",
+                model="m",
+                status="succeeded",
+                idempotency_key="unknown-cost",
+                params={"canvas_node_id": "v"},
+            )
+            s.add(job)
+            await s.flush()
+            if missing != "no_event":
+                s.add(UsageEvent(project_id=canvas.project_id, job_id=job.id, operation="x"))
+            if missing == "partial_job":
+                other = GenerationJob(
+                    project_id=canvas.project_id,
+                    operation="x",
+                    provider="p",
+                    model="m",
+                    status="succeeded",
+                    idempotency_key="known-cost",
+                    params={"canvas_node_id": "v"},
+                )
+                s.add(other)
+                await s.flush()
+                s.add(
+                    UsageEvent(
+                        project_id=canvas.project_id, job_id=other.id, operation="x", actual_cost=Decimal("1")
+                    )
+                )
+            await s.flush()
+            return await service.node_runs(s, canvas)
+
+    runs = asyncio.run(run())
+    assert runs["nodes"]["v"]["cost"]["total"] is None
+    assert runs["shot_costs"]["v"]["total"] is None
+
+
+@requires_pg
+def test_node_runs_ignore_unpriced_events_and_unfinished_jobs(pg):
+    """视频 submit 事件不带金额，不能让每个视频节点都变成"费用未知"；未完成/取消的任务按 0 计。"""
+    from app.db.models import GenerationJob, UsageEvent
+
+    async def run():
+        async with pg() as s:
+            canvas = await service.create_canvas(s, await _user(s), title="priced cost")
+            graph = {"nodes": [_node("v", "video"), _node("w", "video")], "edges": []}
+            await service.save_graph(s, canvas, graph, revision=1)
+
+            def job(key, status, node):
+                return GenerationJob(
+                    project_id=canvas.project_id,
+                    operation="x",
+                    provider="p",
+                    model="m",
+                    status=status,
+                    idempotency_key=key,
+                    params={"canvas_node_id": node},
+                )
+
+            done, canceled, pending = (
+                job("done", "succeeded", "v"),
+                job("c", "canceled", "v"),
+                job("p", "pending", "w"),
+            )
+            s.add_all([done, canceled, pending])
+            await s.flush()
+            s.add_all(
+                [
+                    UsageEvent(
+                        project_id=canvas.project_id, job_id=done.id, operation="generate_video.submit"
+                    ),
+                    UsageEvent(
+                        project_id=canvas.project_id,
+                        job_id=done.id,
+                        operation="generate_video",
+                        estimated_cost=Decimal("0.5"),
+                    ),
+                ]
+            )
+            await s.flush()
+            return await service.node_runs(s, canvas)
+
+    runs = asyncio.run(run())
+    assert runs["nodes"]["v"]["cost"] == {"actual": 0.0, "estimated": 0.5, "total": 0.5, "is_estimate": True}
+    assert runs["nodes"]["w"]["cost"]["total"] == 0
+
+
+@requires_pg
+def test_available_models_exposes_current_tier_primary_and_fallback(pg, monkeypatch):
+    from app.db.models import ModelRoute
+
+    async def problem(*args, **kwargs):
+        return ""
+
+    monkeypatch.setattr(service, "image_model_problem", problem)
+
+    async def run():
+        async with pg() as s:
+            s.add_all(
+                [
+                    ModelRoute(
+                        purpose="shot_video",
+                        modality="video",
+                        tier="preview",
+                        primary_deployment="a",
+                        fallback_deployments=["b"],
+                    ),
+                    ModelRoute(
+                        purpose="shot_video",
+                        modality="video",
+                        tier="final",
+                        primary_deployment="c",
+                        fallback_deployments=[],
+                    ),
+                ]
+            )
+            await s.flush()
+            return await service.available_models(s)
+
+    assert asyncio.run(run())["video_routes"] == {"preview": ["a", "b"], "final": ["c"]}
