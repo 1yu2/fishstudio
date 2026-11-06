@@ -157,3 +157,67 @@ jobs:
       - name: Bandit (Python 安全静态分析)
         working-directory: backend
         run: bandit -r app/ -ll || true
+
+  # 首轮观察 mock、浏览器和渲染环境的稳定性；稳定后移除 continue-on-error。
+  e2e:
+    name: browser e2e (mock)
+    # Playwright 1.56 只支持到 Ubuntu 24.04；ubuntu-latest 已是 26.04。
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fishstudio_test_c2
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      E2E_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/fishstudio_test_c2
+      E2E_PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            e2e/package-lock.json
+      - name: Install system and Python deps
+        run: |
+          sudo apt-get update
+          # 渲染用 imageio-ffmpeg 自带的 ffmpeg；不装系统 ffmpeg（24.04 镜像源慢，依赖上百个包）
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+          pip install -r backend/requirements.txt
+      - name: Install frontend deps
+        run: npm ci --prefix frontend --no-audit --no-fund
+      - name: Install E2E deps and Chromium
+        working-directory: e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Run E2E
+        working-directory: e2e
+        run: npx playwright test
+      - name: Upload failed traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-artifacts
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
