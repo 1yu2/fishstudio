@@ -1,13 +1,21 @@
-import { memo } from 'react'
+import { memo, type CSSProperties } from 'react'
 import type { NodeProps } from '@xyflow/react'
 import { ChevronsDownUp } from 'lucide-react'
 import { ProtectedImage } from '../common/ProtectedMedia'
-import type { ShotGroup } from './groups'
+import { useCanvas } from './context'
+import { aspectCss, type ShotGroup } from './groups'
 
 export interface ShotGroupData extends Record<string, unknown> {
   group: ShotGroup
   collapsed: boolean
   onToggle: (shotId: string) => void
+}
+
+/** 缩略图按画布画幅显示：横屏 / 方形固定宽 64，竖屏固定高 48，另一边由 aspect-ratio 推出 */
+export function thumbStyle(aspectRatio: string): CSSProperties {
+  const css = aspectCss(aspectRatio)
+  const [w, h] = css.split(' / ').map(Number)
+  return w >= h ? { aspectRatio: css, width: 64 } : { aspectRatio: css, height: 48 }
 }
 
 /** “镜头 3 · 近景 · 4 秒” */
@@ -21,11 +29,12 @@ export function groupHeading(group: ShotGroup): string {
  */
 export const ShotGroupNode = memo(function ShotGroupNode({ data }: NodeProps) {
   const { group, collapsed, onToggle } = data as ShotGroupData
+  const { aspectRatio } = useCanvas()
   if (collapsed) {
     return <div className={`nc-group-card nc-group-card--${group.state}`} role="button" tabIndex={0} aria-label={`展开镜头 ${group.index + 1}`} title={group.title}
       onClick={() => onToggle(group.shotId)}
       onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onToggle(group.shotId) } }}>
-      <span className="nc-group-card__thumb">
+      <span className="nc-group-card__thumb" style={thumbStyle(aspectRatio)}>
         {group.thumbnail ? <ProtectedImage src={group.thumbnail.url} alt="" /> : group.state === 'failed' ? '!' : null}
       </span>
       <span className="nc-group-card__text">

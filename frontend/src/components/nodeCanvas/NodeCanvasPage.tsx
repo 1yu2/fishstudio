@@ -67,6 +67,21 @@ function storedEdges(edges: Edge[]): StoredEdge[] {
   return edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle ?? null, targetHandle: edge.targetHandle ?? null }))
 }
 
+const NARROW_QUERY = '(max-width: 899px)'
+/** 窄屏（< 900px）：工具栏放不下一行，次要按钮收进“更多”。没有 matchMedia（测试环境）时按宽屏处理。 */
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia(NARROW_QUERY).matches)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia(NARROW_QUERY)
+    const onChange = () => setNarrow(query.matches)
+    onChange()
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [])
+  return narrow
+}
+
 /** 工具栏上的下拉菜单：打开后焦点进第一项，上下键移动，Esc / 执行菜单项后焦点还给触发按钮，点外面关闭。 */
 function ToolbarMenu({ label, icon, disabled, children }: { label: string; icon: ReactNode; disabled?: boolean; children: (close: () => void) => ReactNode }) {
   const [open, setOpen] = useState(false)
@@ -597,6 +612,7 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
   const saveLabel = { saved: '已保存', saving: '保存中…', dirty: '未保存', error: '保存失败' }[saveState]
 
   const running = batch?.status === 'running'
+  const narrow = useNarrow()
 
   return <CanvasContext.Provider value={actions}>
     <div className={`nc-page${copilot ? ' nc-page--copilot' : ''}`}>
@@ -621,12 +637,20 @@ function Canvas({ detail, models }: { detail: CanvasDetail; models: CanvasModels
                 </>}
               </ToolbarMenu>
               <span className="nc-divider" />
-              <button className="nc-tool" disabled={groups.length === 0} onClick={toggleAll}>
-                {allCollapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />}{allCollapsed ? '全部展开' : '全部折叠'}
-              </button>
-              <button className="nc-tool" onClick={addShot}><Plus size={14} />添加镜头</button>
+              {!narrow && <>
+                <button className="nc-tool" disabled={groups.length === 0} onClick={toggleAll}>
+                  {allCollapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />}{allCollapsed ? '全部展开' : '全部折叠'}
+                </button>
+                <button className="nc-tool" onClick={addShot}><Plus size={14} />添加镜头</button>
+              </>}
               <ToolbarMenu label="更多" icon={<MoreHorizontal size={14} />}>
                 {(close) => <>
+                  {narrow && <>
+                    <button role="menuitem" className="nc-menu__item" disabled={groups.length === 0} onClick={() => { close(); toggleAll() }}>
+                      {allCollapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />}{allCollapsed ? '全部展开' : '全部折叠'}
+                    </button>
+                    <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addShot() }}><Plus size={14} />添加镜头</button>
+                  </>}
                   <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('text') }}><Type size={14} />新建文本节点</button>
                   <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('image') }}><ImageIcon size={14} />新建图片节点</button>
                   <button role="menuitem" className="nc-menu__item" onClick={() => { close(); addNode('video') }}><Film size={14} />新建视频节点</button>

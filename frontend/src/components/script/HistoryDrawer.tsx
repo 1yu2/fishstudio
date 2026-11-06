@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { Loader2, X } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { scriptApi, type ScriptPayload, type ScriptRevisionBrief } from '../../api/script'
+import Modal from '../ui/Modal'
 import { toast } from '../ui/Toast'
-import { useModal } from './useModal'
 import { SOURCE_LABEL, flattenScript } from './model'
 
 function when(value: string | null): string {
@@ -24,7 +24,6 @@ export default function HistoryDrawer({ canvasId, revisions, current, onRestore,
   const [preview, setPreview] = useState<{ revision: number; payload: ScriptPayload } | null>(null)
   const [loading, setLoading] = useState<number | null>(null)
   const [restoring, setRestoring] = useState(false)
-  const modal = useModal<HTMLElement>(onClose)
 
   const open = async (revision: number) => {
     setLoading(revision)
@@ -49,8 +48,7 @@ export default function HistoryDrawer({ canvasId, revisions, current, onRestore,
   }
 
   return (
-    <aside className="sc-drawer" role="dialog" aria-modal="true" aria-label="历史版本" ref={modal.ref} onKeyDown={modal.onKeyDown}>
-      <header className="sc-drawer__head"><strong>历史版本</strong><button type="button" className="sc-icon" aria-label="关闭历史版本" onClick={onClose}><X size={14} aria-hidden="true" /></button></header>
+    <Modal title="历史版本" variant="drawer" closeLabel="关闭历史版本" onClose={onClose}>
       {revisions.length === 0 ? <p className="sc-muted sc-drawer__pad">还没有保存过的版本</p> : (
         <ul className="sc-versions">
           {revisions.map((item) => (
@@ -74,6 +72,6 @@ export default function HistoryDrawer({ canvasId, revisions, current, onRestore,
           <pre className="sc-preview" aria-label={`v${preview.revision} 内容`}>{flattenScript(preview.payload) || '（空）'}</pre>
         </div>
       )}
-    </aside>
+    </Modal>
   )
 }

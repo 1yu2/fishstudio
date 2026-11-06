@@ -1,3 +1,4 @@
+import { placeBar } from './caret'
 import { describe, expect, it } from 'vitest'
 import type { ScriptPayload, ScriptScene } from '../../api/script'
 import {
@@ -99,4 +100,14 @@ describe('script model', () => {
     expect(ensureBlockIds(fixed)).toBe(fixed)
     expect(addScene({ acts: [] }, 0)!.payload.acts[0].scenes[0].blocks[0].id).toMatch(/^b-/)
   })
+})
+
+describe('placeBar', () => {
+  it('puts the bar above the line when there is room', () => expect(placeBar(200, 20, 0, 800)).toBe(160))
+  it('flips below the line when the space above is too small', () => expect(placeBar(10, 20, 0, 800)).toBe(36))
+  it('keeps the bar inside the visible area when the selection start is scrolled out', () => {
+    expect(placeBar(-300, 20, 0, 800)).toBe(0)
+    expect(placeBar(2000, 20, 0, 800)).toBe(766)
+  })
+  it('respects a scroll container whose top is below the window top', () => expect(placeBar(120, 20, 100, 800)).toBe(146))
 })

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { MemoryRouter, Outlet, Route, Routes, useLocation } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConflictError, nodeCanvasApi, type StoredNode } from '../../api/nodeCanvas'
 import { scriptApi, type ScriptBlock, type ScriptPayload, type ScriptRevision } from '../../api/script'
 import type { FooterOverride } from '../project/outletContext'
@@ -756,5 +756,83 @@ describe('ScriptPage review fixes', () => {
     fireEvent.change(await screen.findByLabelText('剧本想法'), { target: { value: '我自己写的' } })
     await act(async () => late2.resolve(detail('晚到的想法')))
     expect(screen.getByLabelText('剧本想法')).toHaveValue('我自己写的')
+  })
+})
+
+describe('ScriptPage cleanup items', () => {
+  it('shows the free-quota note in the footer while the script has no shots yet', async () => {
+    renderPage()
+    expect(await screen.findByText('拆分免费额度内')).toBeInTheDocument()
+  })
+
+  it('does not show the split note once shots exist', async () => {
+    setup({ nodes: shotNodes(), edges: shotEdges() })
+    renderPage()
+    await screen.findByRole('button', { name: '剧本已确认，去定角色 →' })
+    expect(screen.queryByText('拆分免费额度内')).not.toBeInTheDocument()
+  })
+
+  it('floats the rewrite toolbar at the selection: follows it, flips below near the top, stays in view', async () => {
+    // jsdom 不排版：文本框自身 offsetTop 固定 100，镜像里的标记点位置由 markerTop 决定
+    let markerTop = 100
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return this.tagName === 'SPAN' ? markerTop : 100 })
+    renderPage()
+    const area = await screen.findByLabelText('场 1 块 2 对白') as HTMLTextAreaElement
+    let areaTop = 100  // 文本框在视口里的位置
+    vi.spyOn(area, 'getBoundingClientRect').mockImplementation(() => ({ top: areaTop, bottom: areaTop + 50, left: 0, right: 0, width: 0, height: 50, x: 0, y: areaTop, toJSON: () => ({}) }))
+    let end = 5  // React 会忽略没变的选区，所以每次选不同长度
+    const pick = () => { area.focus(); end += 1; area.setSelectionRange(0, end); fireEvent.select(area) }
+    const barTop = () => screen.getByRole('toolbar', { name: '选中文字操作' }).style.top
+
+    pick()  // 行在视口 200：上方放得下 → 行上方 40px
+    expect(barTop()).toBe('160px')
+    expect(screen.getByRole('toolbar', { name: '选中文字操作' }).style.left).toBe('0px')
+
+    markerTop = 300  // 选区换到别处：位置跟着变
+    pick()
+    expect(barTop()).toBe('360px')
+
+    areaTop = 0; markerTop = 10  // 行在视口 10：上方不足 → 放到行下方（10 + 行高 20 + 间距 6）
+    pick()
+    expect(barTop()).toBe('136px')
+    vi.restoreAllMocks()
+  })
+
+  describe('outline follows scrolling', () => {
+    type Entry = { target: Element; isIntersecting: boolean }
+    let callback: (entries: Entry[]) => void = () => undefined
+    const observed: string[] = []
+    beforeEach(() => {
+      observed.length = 0
+      vi.stubGlobal('IntersectionObserver', class {
+        constructor(cb: (entries: Entry[]) => void) { callback = cb }
+        observe(el: Element) { observed.push(el.id) }
+        unobserve() {}
+        disconnect() {}
+      })
+    })
+    afterEach(() => { vi.unstubAllGlobals() })
+
+    it('highlights the first scene in view', async () => {
+      renderPage()
+      const outline = await screen.findByRole('complementary', { name: '大纲' })
+      expect(observed).toEqual(['scene-s1', 'scene-s2', 'scene-s3'])
+      act(() => callback([
+        { target: document.getElementById('scene-s2') as Element, isIntersecting: true },
+        { target: document.getElementById('scene-s3') as Element, isIntersecting: true },
+      ]))
+      expect(within(outline).getByRole('button', { name: /场 2 · 破庙避雪/ })).toHaveAttribute('aria-current', 'true')
+      // s2 滚出后落到 s3
+      act(() => callback([{ target: document.getElementById('scene-s2') as Element, isIntersecting: false }]))
+      expect(within(outline).getByRole('button', { name: /场 3 · 灯下露尾/ })).toHaveAttribute('aria-current', 'true')
+    })
+
+    it('ignores observer updates while a click-triggered scroll is under way', async () => {
+      renderPage()
+      const outline = await screen.findByRole('complementary', { name: '大纲' })
+      fireEvent.click(within(outline).getByRole('button', { name: /场 3 · 灯下露尾/ }))
+      act(() => callback([{ target: document.getElementById('scene-s2') as Element, isIntersecting: true }]))
+      expect(within(outline).getByRole('button', { name: /场 3 · 灯下露尾/ })).toHaveAttribute('aria-current', 'true')
+    })
   })
 })

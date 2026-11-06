@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Loader2, Trash2 } from 'lucide-react'
 import { scriptApi, type RewriteMode, type ScriptBlock, type ScriptScene } from '../../api/script'
 import { toast } from '../ui/Toast'
+import { caretPosition, placeBar, scrollParent } from './caret'
 import { insertBlock, moveBlock, replaceSelection, sceneSeconds } from './model'
 
 const MAX_BLOCKS = 200
@@ -31,7 +32,9 @@ function AutoText({ value, onChange, onSelect, label, placeholder, className }: 
   )
 }
 
-interface Selection { start: number; end: number; text: string }
+const BAR_WIDTH = 280
+
+interface Selection { start: number; end: number; text: string; top: number; left: number }
 type Suggestion = { selection: Selection; status: 'loading' } | { selection: Selection; status: 'ready'; text: string }
 
 /** 单个块：动作（一个 textarea）或对白（角色名 + 台词）；选中文字后出现 AI 改写小工具条。 */
@@ -48,7 +51,17 @@ function BlockEditor({ canvasId, label, block, onChange }: {
   const read = (event: React.SyntheticEvent<HTMLTextAreaElement>) => {
     const { selectionStart, selectionEnd, value } = event.currentTarget
     const text = value.slice(selectionStart, selectionEnd)
-    setSelection(text.trim() ? { start: selectionStart, end: selectionEnd, text } : null)
+    if (!text.trim()) { setSelection(null); setToneOpen(false); return }
+    const el = event.currentTarget
+    const caret = caretPosition(el, selectionStart)
+    // 横向不超出文本框右缘
+    const left = Math.max(0, Math.min(caret.left, el.offsetLeft + el.clientWidth - BAR_WIDTH))
+    // 纵向按滚动容器的可视边界放：上方放不下就放到所在行下面，并夹在可视区内
+    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20
+    const lineTop = el.getBoundingClientRect().top + (caret.top - el.offsetTop)
+    const box = scrollParent(el)?.getBoundingClientRect()
+    const barTop = placeBar(lineTop, lineHeight, box ? box.top : 0, box ? box.bottom : window.innerHeight)
+    setSelection({ start: selectionStart, end: selectionEnd, text, top: barTop - lineTop + caret.top, left })
     setToneOpen(false)
   }
 
@@ -99,7 +112,7 @@ function BlockEditor({ canvasId, label, block, onChange }: {
         </>
       ) : text}
       {selection && !suggestion && (
-        <div role="toolbar" aria-label="选中文字操作" title="按 Tab 进入工具条" className="sc-selbar" onMouseDown={keep}>
+        <div role="toolbar" aria-label="选中文字操作" title="按 Tab 进入工具条" className="sc-selbar" style={{ top: selection.top, left: selection.left }} onMouseDown={keep}>
           <button type="button" onClick={() => void ask('rewrite')}>AI 改写</button>
           <button type="button" onClick={() => void ask('shorten')}>缩短</button>
           <span className="sc-selbar__tone">

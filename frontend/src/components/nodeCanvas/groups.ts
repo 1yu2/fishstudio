@@ -312,3 +312,9 @@ export function contentBottom(nodes: SizedNode[], groups: ShotGroup[], collapsed
   ]
   return rects.length ? Math.max(...rects.map((rect) => rect.y + rect.height)) : null
 }
+
+/** 画布画幅 "9:16" → CSS aspect-ratio "9 / 16"；格式不对时按竖屏处理 */
+export function aspectCss(value: string): string {
+  const match = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(value)
+  return match ? `${match[1]} / ${match[2]}` : '9 / 16'
+}

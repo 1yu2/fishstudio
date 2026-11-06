@@ -22,6 +22,8 @@ import './script.css'
 
 const SAVE_TEXT: Record<SaveState, string> = { saved: '已保存', saving: '保存中…', dirty: '未保存', error: '保存失败' }
 const CONFIRM_LABEL = '确认剧本，拆出角色和分镜 →'
+/** 后端没有拆分报价接口（拆分走免费额度，不计入画布花费），所以只提示额度，不显示金额 */
+const SPLIT_NOTE = '拆分免费额度内'
 const DONE_LABEL = '剧本已确认，去定角色 →'
 
 interface CanvasSnapshot { loaded: boolean; failed: boolean; nodes: StoredNode[]; edges: StoredEdge[] }
@@ -78,8 +80,31 @@ export default function ScriptPage() {
   const current = activeId && scenes.some((scene) => scene.id === activeId) ? activeId : scenes[0]?.id ?? null
   const showEmpty = script.revision === null && payload.acts.length === 0 && !started.current
 
+  // 大纲随滚动高亮：观察每一场卡片，取视口上部区域里最靠前的一场
+  const sceneKey = scenes.map((scene) => scene.id).join('|')
+  const quietUntil = useRef(0)  // 点大纲触发的平滑滚动期间不跟随，避免高亮在途经的场之间跳
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined' || !sceneKey) return
+    const ids = sceneKey.split('|')
+    const visible = new Set<string>()
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const id = entry.target.id.replace(/^scene-/, '')
+        if (entry.isIntersecting) visible.add(id); else visible.delete(id)
+      }
+      if (Date.now() < quietUntil.current) return
+      const first = ids.find((id) => visible.has(id))
+      if (first) setActiveId(first)
+    }, { rootMargin: '-10% 0px -70% 0px' })
+    for (const id of ids) {
+      const el = document.getElementById(`scene-${id}`)
+      if (el) observer.observe(el)
+    }
+    return () => observer.disconnect()
+  }, [sceneKey, script.loaded])
+
   // ── 编辑 ──
-  const select = (sceneId: string) => { setActiveId(sceneId); setScrollTo(sceneId); setOutlineOpen(false) }
+  const select = (sceneId: string) => { quietUntil.current = Date.now() + 800; setActiveId(sceneId); setScrollTo(sceneId); setOutlineOpen(false) }
   const actOf = (sceneId: string | null) => Math.max(0, payload.acts.findIndex((act) => act.scenes.some((scene) => scene.id === sceneId)))
 
   const handleAddScene = () => {
@@ -167,7 +192,7 @@ export default function ScriptPage() {
   }, [hasShots, flush, navigate, canvasId, runSplit])
   const ready = script.loaded && canvas.loaded
   const footerLabel = splitting ? '正在拆分…' : hasShots ? DONE_LABEL : CONFIRM_LABEL
-  const footerNote = !ready ? '' : hasShots ? '' : canvas.failed ? '画布加载失败' : !content ? '先写剧本' : ''
+  const footerNote = !ready ? '' : hasShots ? '' : canvas.failed ? '画布加载失败' : !content ? '先写剧本' : SPLIT_NOTE
   const footerDisabled = !ready || (!hasShots && (!content || canvas.failed))
   useEffect(() => {
     setFooter?.({ label: footerLabel, onClick: () => clickRef.current(), disabled: footerDisabled, busy: splitting, note: footerNote || undefined, hint: hint || undefined })
